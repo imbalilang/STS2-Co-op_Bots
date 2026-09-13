@@ -1,0 +1,12 @@
+# Normalise line endings in the repository so a Windows checkout and a
+# macOS/Linux checkout produce the same diff, and so scripts/*.sh keeps the
+# LF it needs to run.
+* text=auto
+
+*.sh text eol=lf
+*.py text eol=lf
+
+*.png binary
+*.jpg binary
+*.webp binary
+*.zip binary
