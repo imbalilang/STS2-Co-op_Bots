@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
@@ -116,5 +117,21 @@ internal static class BotRemoteChoicePatch
             return true;
         __result = Task.FromResult(BotRewardDriver.ChoiceForWait(player));
         return false;
+    }
+}
+
+// Cheated bots are meant to feel like a teammate who is quietly cheating: every
+// gold payout is tripled. Patching the single command that pays gold keeps the
+// cheat deterministic for every peer (it derives from the bot's NetId) instead
+// of persisting an extra field the fixed run schema has no room for. Gold
+// stolen back was already the player's, so it is not multiplied again.
+[HarmonyPatch(typeof(PlayerCmd), nameof(PlayerCmd.GainGold))]
+internal static class BotGoldCheatPatch
+{
+    private static void Prefix(Player player, ref decimal amount, bool wasStolenBack)
+    {
+        if (wasStolenBack || !BotRegistry.IsCheated(player.NetId))
+            return;
+        amount *= 3m;
     }
 }

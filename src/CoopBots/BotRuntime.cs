@@ -42,9 +42,23 @@ public static class BotRuntime
         try
         {
             var manager = RunManager.Instance;
-            if (!manager.IsInProgress) { Reset(); return; }
+            if (!manager.IsInProgress)
+            {
+                // The run just ended: the final decks are the only durable record
+                // of how construction turned out, so write them before clearing.
+                if (_lastState is { } finished) BuildTrace.LogAllDecks("final", finished.Players);
+                Reset(); return;
+            }
             var state = manager.DebugOnlyGetState();
             if (state is null) return;
+            // One snapshot per act: a compact deck listing per bot, so a review
+            // can compare the intended build against what was actually drafted.
+            if (state.CurrentActIndex != _lastAct)
+            {
+                _lastAct = state.CurrentActIndex;
+                BuildTrace.LogAllDecks($"act{_lastAct + 1}", state.Players);
+            }
+            _lastState = state;
             // Local route recommendation overlay; no-ops unless the map is open.
             MapRouteOverlay.Update(state);
             if (!ReferenceEquals(_runIdentity, state)) { Reset(); _runIdentity = state; }
@@ -56,6 +70,7 @@ public static class BotRuntime
                 _nextActionAt = DateTime.MinValue;
                 _lastProgressAt = ClockMs;
                 BotCooperation.Reset();
+                HumanFinisherHints.Reset();
                 Pacing.Reset();
                 KernelPlanner.Reset(newCombat: true);
                 BotChoicePlanSync.Cancel();
@@ -66,6 +81,8 @@ public static class BotRuntime
             if (!manager.NetService.IsConnected) { KernelPlanner.Reset(); _planStartedAt = 0; return; }
             BotCooperation.Refresh(state);
             if (manager.NetService.Type != NetGameType.Host) { KernelPlanner.Reset(); _planStartedAt = 0; return; }
+            HumanFinisherHints.Invalidate();
+            if (BotCooperation.Gate.Paused) HumanFinisherHints.Reset();
             if (DateTime.UtcNow < _nextActionAt) { KernelPlanner.Reset(); _planStartedAt = 0; return; }
             // A transient busy queue or running action must NOT discard an
             // in-flight kernel search. The search is expanded across frames, so
@@ -73,24 +90,61 @@ public static class BotRuntime
             // returns Pending forever and the bots never submit a card. Poll
             // revalidates the root itself and falls back if it truly went stale.
             if (manager.ActionExecutor.CurrentlyRunningAction is not null
-                || !manager.ActionQueueSet.IsEmpty) { _planStartedAt = 0; return; }
+                || !manager.ActionQueueSet.IsEmpty)
+            {
+                HumanFinisherHints.Reset();
+                _planStartedAt = 0; return;
+            }
             if (TryVoteOnMap(manager, state) || TryPickTreasureRelic(manager, state)) return;
             if (!CombatManager.Instance.IsInProgress || CombatManager.Instance.IsPaused || CombatManager.Instance.IsEnding
                 || manager.ActionQueueSynchronizer.CombatState != MegaCrit.Sts2.Core.Entities.Multiplayer.ActionSynchronizerCombatState.PlayPhase
                 || BotCooperation.Gate.Paused) { KernelPlanner.Reset(); _planStartedAt = 0; return; }
             var humansFinished = BotCooperation.HumansFinished(state);
+            var teamDifficulty = TeamDifficulty(state);
             if (combatIdentity is not MegaCrit.Sts2.Core.Combat.CombatState combat) return;
             Pacing.Observe(combat, combat.RoundNumber, ClockMs);
-            if (!Pacing.IsDue(ClockMs, humansFinished, BotCooperation.Gate.Paused)) { _planStartedAt = 0; return; }
-            // Stamp the start of this plan once: the search spans several frames,
-            // and the next wait is shortened by how long it actually took.
-            if (_planStartedAt == 0) _planStartedAt = ClockMs;
 
             var eligible = state.Players.Where(p => BotRegistry.IsBot(p.NetId) && p.Creature.IsAlive
                 && p.PlayerCombatState?.Phase == PlayerTurnPhase.Play
                 && !CombatManager.Instance.IsPlayerReadyToEndTurn(p)
                 && !manager.ActionQueueSet.ActionQueueIsPaused(p.NetId)).ToList();
+            if (eligible.Count == 0) { KernelPlanner.Reset(); _planStartedAt = 0; return; }
             var candidates = new List<(MegaCrit.Sts2.Core.Entities.Players.Player Player, BotBrain.CombatMove Move)>();
+            var botsIdle = NoPlayableCard(eligible);
+            // The interval throttles only the idle re-check, never the action
+            // itself: an in-flight search keeps its frames, and a team with a
+            // playable card acts as soon as the plan is ready. Waiting the whole
+            // interval after thinking had already finished is what made the bots
+            // feel slow in real play.
+            if ((botsIdle || _idleLast) && !KernelPlanner.IsSearching
+                && !Pacing.IsDue(ClockMs, humansFinished, BotCooperation.Gate.Paused,
+                    teamDifficulty.CardIntervalMs())) { _planStartedAt = 0; return; }
+            // Reuse the tail of the last plan: the team already thought once this
+            // turn, so submit the next card it chose without searching again. This
+            // is what turns "one long think" into "then play it out"; each step is
+            // re-validated against the live board inside TryTakeNextCard.
+            if (!botsIdle && KernelPlanner.TryTakeNextCard(out var reuse))
+            {
+                var reuseCard = reuse.Card!;
+                EnqueueAs.Invoke(manager.ActionQueueSynchronizer,
+                    new object[] { new PlayCardAction(reuseCard, reuse.Target), reuse.Player.NetId });
+                var reuseTurn = reuse.Player.PlayerCombatState!.TurnNumber;
+                if (!TurnState.TryGetValue(reuse.Player.NetId, out var reuseProgress) || reuseProgress.Turn != reuseTurn)
+                    TurnState[reuse.Player.NetId] = reuseProgress = (reuseTurn, 0);
+                TurnState[reuse.Player.NetId] = (reuseTurn, reuseProgress.Actions + 1);
+                BotCooperation.LastAction = $"续用计划：{BotRegistry.DisplayName(reuse.Player.NetId)} — {reuseCard.Title}";
+                Log.Info($"CoopBots team: {reuse.Player.NetId} plays {reuseCard.Id.Entry} on {reuse.Target?.LogName}; reused-plan");
+                _lastProgressAt = ClockMs;
+                _idleLast = false;
+                Pacing.MarkAction(ClockMs, 0);
+                return;
+            }
+            // Stamp the start of this plan once: the search spans several frames,
+            // and the next wait is shortened by how long it actually took.
+            if (_planStartedAt == 0) _planStartedAt = ClockMs;
+            // The request describes the REAL post-bot board, never a future search leaf.
+            // Do not ask a human to abandon defence while bots still have actions pending.
+            HumanFinisherHints.Tick(combat, NoPlayableCards(eligible) && !humansFinished, ClockMs);
             var faulty = new HashSet<ulong>();
             foreach (var player in eligible)
             {
@@ -121,7 +175,7 @@ public static class BotRuntime
                 // all searches, which is exactly that state. Searching (and
                 // capturing) here cannot find anything, so skip the poll and let
                 // the potion and end-turn paths below run instead.
-                if (NoPlayableCard(eligible))
+                if (botsIdle)
                 {
                     if (++_idleSkips % 40 == 0) ReportIdleIdle();
                     KernelPlanner.Reset();
@@ -131,7 +185,7 @@ public static class BotRuntime
                 else if (BotChoicePlanSync.Resume(combat, out joint))
                     kernelStatus = joint is null ? KernelCombatPlanner.Status.Pending : KernelCombatPlanner.Status.Ready;
                 else kernelStatus = KernelPlanner.Poll(combat, eligible, manager.ActionQueueSet.NextActionId,
-                    BotCooperation.FocusTarget, humansFinished, out joint);
+                    BotCooperation.FocusTarget, humansFinished, teamDifficulty, out joint);
             }
             catch (Exception error)
             {
@@ -141,9 +195,7 @@ public static class BotRuntime
                 joint = null;
             }
             if (kernelStatus == KernelCombatPlanner.Status.Pending) return;
-            // Ask the humans for the finishing damage when the plan needs it.
-            if (KernelPlanner.Callout is { } callout)
-                BotCalloutSync.Publish(callout.Text, callout.Enemy.CombatId ?? 0);
+            // HumanFinisherHints alone publishes verified, current-board requests.
             // Free potion actions are taken before card planning: a rescue potion
             // wins; otherwise a kernel-confirmed proactive potion (e.g. buff then
             // burst) is used now and the cards are replanned against real state.
@@ -154,6 +206,7 @@ public static class BotRuntime
                 BotCooperation.LastAction = "主动用药：" + proactivePotion.Potion.Id.Entry;
                 Log.Info($"CoopBots proactive potion: {proactivePotion.Potion.Id.Entry}; {proactivePotion.Reason}");
                 _lastProgressAt = ClockMs;
+                _idleLast = false;
                 Pacing.MarkAction(ClockMs, _planStartedAt);
                 return;
             }
@@ -163,6 +216,7 @@ public static class BotRuntime
                 EnqueueAs.Invoke(manager.ActionQueueSynchronizer,
                     new object[] { new EndPlayerTurnAction(endingPlan, endingPlan.PlayerCombatState!.TurnNumber), endingPlan.NetId });
                 _lastProgressAt = ClockMs;
+                _idleLast = false;
                 Pacing.MarkAction(ClockMs, _planStartedAt);
                 return;
             }
@@ -177,8 +231,7 @@ public static class BotRuntime
                     try
                     {
                         var progress = TurnState[player.NetId];
-                        var move = BotBrain.ShouldEndTurnEarly(player, progress.Actions)
-                            ? null : BotBrain.ChooseCombatMove(player, progress.Actions);
+                        var move = BotBrain.ChooseCombatMove(player, progress.Actions);
                         if (move.HasValue) candidates.Add((player, move.Value));
                     }
                     catch (Exception error) { faulty.Add(player.NetId); Report(error); }
@@ -272,6 +325,7 @@ public static class BotRuntime
                     BotCooperation.LastAction += $"\n计划预计减少全队战损 {joint.HpSaved:F0} 点";
                 Log.Info($"CoopBots team: {best.Player.NetId} plays {chosen.Id.Entry} on {best.Move.Target?.LogName}; score={best.Move.Score:F1}; {best.Move.Reason}");
                 _lastProgressAt = ClockMs;
+                _idleLast = false;
                 Pacing.MarkAction(ClockMs, _planStartedAt);
                 return;
             }
@@ -285,21 +339,36 @@ public static class BotRuntime
             {
                 // Keep turns open for later human energy/draw effects; don't repeatedly plan at frame rate.
                 ReportIdle(kernelStatus, legacyPlan, humansFinished);
+                _idleLast = true;
                 Pacing.MarkAction(ClockMs, _planStartedAt);
                 return;
             }
-            // Waiting is distinct from ready-to-end. No bot ends while another has a useful action.
-            var ending = eligible.FirstOrDefault();
-            if (ending is not null)
+            // Nothing left to play and every human is done: end the whole team's
+            // turn in one tick. Ending one bot per interval made the team trickle
+            // out over several seconds while the player waited.
+            if (eligible.Count > 0)
             {
-                EnqueueAs.Invoke(manager.ActionQueueSynchronizer,
-                    new object[] { new EndPlayerTurnAction(ending, ending.PlayerCombatState!.TurnNumber), ending.NetId });
+                foreach (var ending in eligible)
+                {
+                    EnqueueAs.Invoke(manager.ActionQueueSynchronizer,
+                        new object[] { new EndPlayerTurnAction(ending, ending.PlayerCombatState!.TurnNumber), ending.NetId });
+                    BotCooperation.LastAction = $"{BotRegistry.DisplayName(ending.NetId)}：结束回合";
+                }
                 _lastProgressAt = ClockMs;
+                _idleLast = false;
                 Pacing.MarkAction(ClockMs, _planStartedAt);
             }
         }
         catch (Exception error) { Report(error); _nextActionAt = DateTime.UtcNow.AddSeconds(2); }
     }
+
+    // The team plans as one unit, so the whole search runs at the strongest tier
+    // present. No bots at all (or a human-only lobby) falls back to Pro pacing.
+    private static BotDifficulty TeamDifficulty(RunState state)
+        => state.Players.Where(p => BotRegistry.IsBot(p.NetId))
+            .Select(p => BotRegistry.Difficulty(p.NetId))
+            .DefaultIfEmpty(BotDifficulty.Pro)
+            .Strongest();
 
     private static long _lastProgressAt;
     private static long _planStartedAt;
@@ -307,6 +376,13 @@ public static class BotRuntime
     // large means the idle guard is doing its job; it should never grow while a
     // bot still has a card to play.
     private static long _idleSkips;
+    // The previous tick reached its end with nothing to do. The pacing interval
+    // then applies to the re-check, so an idle team is not re-planned per frame.
+    private static bool _idleLast;
+    // Last run state seen while in progress, so the run-end branch can still dump
+    // the final decks after RunManager has already stopped reporting them.
+    private static RunState? _lastState;
+    private static int _lastAct = -1;
     private static DateTime _nextIdleSkipLogAt = DateTime.MinValue;
     private static void ReportIdleIdle()
     {
@@ -318,6 +394,12 @@ public static class BotRuntime
     // Only true when no eligible bot can play a card AND none holds a usable
     // combat potion: a potion can still be worth using (a rescue, or the energy
     // that unlocks a hand), so those cases keep the full search.
+    private static bool NoPlayableCards(IReadOnlyList<MegaCrit.Sts2.Core.Entities.Players.Player> eligible)
+    {
+        try { return eligible.All(p => !p.PlayerCombatState!.Hand.Cards.Any(c => c.CanPlay())); }
+        catch (Exception error) { Report(error); return false; }
+    }
+
     private static bool NoPlayableCard(IReadOnlyList<MegaCrit.Sts2.Core.Entities.Players.Player> eligible)
     {
         foreach (var player in eligible)
@@ -359,7 +441,11 @@ public static class BotRuntime
         TurnState.Clear(); _nextActionAt = _nextErrorAt = DateTime.MinValue; _badPlans = 0; _lastProgressAt = ClockMs;
         _planStartedAt = 0;
         _idleSkips = 0;
+        _idleLast = false;
+        _lastState = null;
+        _lastAct = -1;
         BotCooperation.Reset(); BotEventDriver.Reset();
+        HumanFinisherHints.Reset();
         Pacing.Reset();
         KernelPlanner.Reset(newCombat: true);
         BotChoicePlanSync.Cancel();

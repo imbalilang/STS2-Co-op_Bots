@@ -87,7 +87,7 @@ internal static class HumanCoopAdvisor
     {
         var teamMove = TeamCoordinator.Advise(human, party);
         if (teamMove.HasValue) return teamMove;
-        var legal = BotBrain.LegalCombatMoves(human, BotDifficulty.Genius);
+        var legal = BotBrain.LegalCombatMoves(human);
         var scored = GeniusCombatStrategy.ScoreLegalMoves(human, legal, 0)
             .Select(m => m with { Score = m.Score + SetupValue(m, party) })
             .OrderByDescending(m => m.Score).ToList();

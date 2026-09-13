@@ -24,8 +24,8 @@ internal static class MultiHumanScenarios
     {
         var host = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
         var guest = Player.CreateForNewRun<Deprived>(UnlockState.all, 2);
-        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 2));
-        var bot2 = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 2, 3));
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 2));
+        var bot2 = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 3));
         var party = new[] { host, guest, bot, bot2 };
         var run = RunState.CreateForTest(party, seed: "TWO-HUMAN-COOP");
         var combat = new CombatState(runState: run);

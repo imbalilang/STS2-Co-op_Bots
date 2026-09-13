@@ -18,7 +18,7 @@ internal static class ResourceScenarios
     internal static void Run()
     {
         var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
-        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 1));
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
         var party = new[] { human, bot }; var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "RESOURCES-17"));
         foreach (var p in party) { p.ResetCombatState(); combat.AddPlayer(p); p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80); p.PlayerCombatState!.Phase = PlayerTurnPhase.Play; }
         var enemy = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "0");

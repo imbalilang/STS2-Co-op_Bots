@@ -622,6 +622,16 @@ internal sealed partial class SimulatedCombatState
                 throw new InvalidOperationException("击倒 Power 的施加者不是战斗中的玩家。");
             ((StringVar)knockdown.DynamicVars["Applier"]).StringValue = _playerNames[applyingPlayer];
         }
+        // CoopBots multiplayer port: FLANKING needs the same applier record as
+        // KNOCKDOWN, because its damage bonus excludes the applier's own attack.
+        if (simulated is FlankingPower flanking && applier != null)
+        {
+            Player? applyingPlayer = applier.Player
+                ?? Players.FirstOrDefault(player => player.Creature.CombatId == applier.CombatId);
+            if (applyingPlayer == null)
+                throw new InvalidOperationException("夹击 Power 的施加者不是战斗中的玩家。");
+            ((StringVar)flanking.DynamicVars["Applier"]).StringValue = _playerNames[applyingPlayer];
+        }
     }
 
     public void ApplyPower(Type powerType, Creature target, int amount, Creature? applier = null)

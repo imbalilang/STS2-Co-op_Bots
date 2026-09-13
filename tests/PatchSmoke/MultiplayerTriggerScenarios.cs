@@ -18,8 +18,8 @@ internal static class MultiplayerTriggerScenarios
 {
     internal static void Run()
     {
-        var support = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 1));
-        var attacker = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 2, 2));
+        var support = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
+        var attacker = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 2));
         var party = new[] { support, attacker };
         var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "TEAM-TRIGGERS"));
         foreach (var player in party) { player.ResetCombatState(); combat.AddPlayer(player); }

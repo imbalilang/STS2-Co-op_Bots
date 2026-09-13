@@ -129,6 +129,43 @@ internal static class BuildValueScenarios
                 + $"({twinInStrengthDeck:F1} vs {twinInPlainDeck:F1}).");
         Console.WriteLine("PASS: a card that feeds the deck's route is worth more than the same card elsewhere.");
 
+        // Size pressure: past the forming stage the same card must be worth less,
+        // and a mediocre one must go below zero. This is the lever that makes Skip
+        // a real answer to "the card is fine but not what the deck needs".
+        // Calibrated on real reward screens: at 19 cards the best candidate was
+        // ~18-20 and should have been skipped.
+        ClearOutsider(); GiveOutsider<StrikeIronclad>(5); GiveOutsider<DefendIronclad>(4);
+        var smallDeck = outsider.Deck.Cards.ToList();
+        var smallValue = BuildValue.Add(routeCombat.CreateCard<TwinStrike>(outsider), outsider, smallDeck).Total;
+        ClearOutsider(); GiveOutsider<StrikeIronclad>(11); GiveOutsider<DefendIronclad>(9);
+        var bigDeck = outsider.Deck.Cards.ToList();
+        var bigValuation = BuildValue.Add(routeCombat.CreateCard<TwinStrike>(outsider), outsider, bigDeck);
+        if (!(bigValuation.Total < smallValue))
+            throw new Exception($"The same card must be worth less in a 20-card deck ({bigValuation.Total:F1}) "
+                + $"than in a 9-card one ({smallValue:F1}).");
+        if (bigValuation.Total >= 0)
+            throw new Exception($"A filler card in a 20-card starter deck must score below skipping, "
+                + $"got {bigValuation.Total:F1} ({bigValuation.Reason}).");
+        if (!bigValuation.Reason.Contains("size:"))
+            throw new Exception($"The size pressure must be visible in the reason: {bigValuation.Reason}");
+        Console.WriteLine("PASS: deck size pressure makes a filler card in a large deck score below skipping.");
+
+        // A payoff whose enabler is missing must not read as a plan. Rupture gains
+        // Strength when you lose HP, and every card the mining pairs it with is a
+        // self-damage card; without one its scaling credit drops and the reason
+        // says why. This is the act-2 Ironclad that drafted Rupture with no way to
+        // trigger it.
+        Clear(); Give<StrikeIronclad>(5); Give<DefendIronclad>(4);
+        var ruptureAlone = BuildValue.Marginal(combat.CreateCard<Rupture>(bot), bot);
+        if (!ruptureAlone.Reason.Contains("scaling-unsupported"))
+            throw new Exception($"Rupture without a self-damage source must be flagged, got: {ruptureAlone.Reason}");
+        Give<Hemokinesis>(1);
+        var ruptureWithEnabler = BuildValue.Marginal(combat.CreateCard<Rupture>(bot), bot);
+        if (!(ruptureWithEnabler.Total > ruptureAlone.Total))
+            throw new Exception($"Rupture must be worth more once its mined enabler is in the deck: "
+                + $"{ruptureWithEnabler.Total:F1} vs {ruptureAlone.Total:F1}");
+        Console.WriteLine("PASS: a scaling payoff without its mined enabler is flagged and valued lower.");
+
         // No recognised route must leave the valuation exactly as it was: this is
         // the guarantee that an unknown or modded deck cannot be made worse.
         ClearOutsider(); GiveOutsider<StrikeIronclad>(5); GiveOutsider<DefendIronclad>(4);

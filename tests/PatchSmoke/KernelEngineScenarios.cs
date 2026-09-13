@@ -1,3 +1,4 @@
+using System.Reflection;
 using CoopBots;
 using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.Combat;
@@ -28,8 +29,8 @@ internal static class KernelEngineScenarios
             prefix: new HarmonyLib.HarmonyMethod(typeof(KernelEngineScenarios), nameof(FormatText)));
         KernelRoundScenarios.Run();
         var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
-        var a = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 1));
-        var b = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 2, 2));
+        var a = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
+        var b = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 2));
         var party = new[] { human, a, b }; var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "KERNEL-21"));
         foreach (var p in party) { p.ResetCombatState(); combat.AddPlayer(p); p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80); p.PlayerCombatState!.Phase = PlayerTurnPhase.Play; p.PlayerCombatState.GainEnergy(3); }
         var enemy = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "0");
@@ -170,14 +171,20 @@ internal static class KernelEngineScenarios
         AuditPartialPlanAndForecast();
         AuditProactivePotion();
         AuditJointPotionSequence();
+        AuditRedundantPotionDeclined();
         AuditBossReactiveMechanics();
         AuditScalingThreatFocus();
         AuditCrossTurn();
         AuditMultiplayerBlockScaling();
-        AuditHumanCallout();
+        HumanFinisherScenarios.Run();
         AuditTurnStrengthDown();
         AuditStructuralFallback();
         AuditHeldStatusPenalty();
+        AuditOutrage();
+        AuditMultiplayerBatchA();
+        AuditFlankingKnockdown();
+        AuditPlanReuse();
+        AuditCardCoverage();
 
         Console.WriteLine("PASS: kernel team beam reorders actors, shares Vulnerable, discovers draw chains, enforces owner-only exhaust/NoDraw, rejects invalid targets and discards stale/cancelled plans with bounded nodes.");
         Console.WriteLine("PASS: kernel forced end readies only its owner; imported Shuriken counter/owner isolation.");
@@ -189,9 +196,12 @@ internal static class KernelEngineScenarios
     {
         // Vendored snapshot has no mirror/spec for these; if one ever starts
         // being "modeled" without a multiplayer differential test, fail loudly.
+        // Cards that left this list once they got a kernel mirror and a
+        // differential test: DemonicShield (AuditMultiplayerBatchA), Flanking and
+        // Knockdown (AuditFlankingKnockdown).
         var mustBoundary = new HashSet<string>
         {
-            "OneForAll", "Flanking", "Intercept", "Tutor", "DemonicShield", "Knockdown",
+            "OneForAll", "Intercept", "Tutor",
         };
         // Concoct is the same shape as Blaze/Coordinate (Skill, one declared
         // PowerVar, one ally) so the structural fallback deliberately prices it
@@ -305,7 +315,7 @@ internal static class KernelEngineScenarios
         {
             var players = new List<Player>
             {
-                Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 7, allies)),
+                Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 7, allies)),
             };
             for (var i = 1; i < allies; i++)
                 players.Add(Player.CreateForNewRun<Deprived>(UnlockState.all, (ulong)(900 + i)));
@@ -348,8 +358,8 @@ internal static class KernelEngineScenarios
         // teammate's follow-up attack in the same shared plan.
         var vPlayers = new List<Player>
         {
-            Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 8, 1)),
-            Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 8, 2)),
+            Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 8, 1)),
+            Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 8, 2)),
         };
         var vCombat = new CombatState(runState: RunState.CreateForTest(vPlayers.ToArray(), seed: "VULN-ORDER"));
         foreach (var p in vPlayers)
@@ -385,7 +395,7 @@ internal static class KernelEngineScenarios
         // after a bot applies Vulnerable (18 * 1.5 = 27 >= 22) is it a soft kill.
         var hPlayers = new List<Player>
         {
-            Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 9, 1)),
+            Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 9, 1)),
             Player.CreateForNewRun<Deprived>(UnlockState.all, 77UL),
         };
         var hCombat = new CombatState(runState: RunState.CreateForTest(hPlayers.ToArray(), seed: "HUMAN-VULN"));
@@ -425,7 +435,7 @@ internal static class KernelEngineScenarios
         {
             var players = new List<Player>
             {
-                Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 6, allies)),
+                Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 6, allies)),
             };
             for (var i = 1; i < allies; i++)
                 players.Add(Player.CreateForNewRun<Deprived>(UnlockState.all, (ulong)(600 + i)));
@@ -472,7 +482,7 @@ internal static class KernelEngineScenarios
     // never submits an action, leaving the bots idle for the whole fight.
     private static void AuditPlannerLiveness()
     {
-        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 4, 1));
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 4, 1));
         var ally = Player.CreateForNewRun<Deprived>(UnlockState.all, (ulong)555);
         var players = new[] { bot, ally };
         var combat = new CombatState(runState: RunState.CreateForTest(players, seed: "LIVENESS"));
@@ -493,7 +503,7 @@ internal static class KernelEngineScenarios
         TeamCombatPlanner.Decision? decision = null;
         var ticks = 0;
         while (status == KernelCombatPlanner.Status.Pending && ticks++ < 400)
-            status = planner.Poll(combat, new[] { bot }, 0, null, false, out decision);
+            status = planner.Poll(combat, new[] { bot }, 0, null, false, BotDifficulty.Pro, out decision);
         if (status == KernelCombatPlanner.Status.Pending)
             throw new Exception($"Kernel planner stayed Pending for {ticks} ticks; bots would never act.");
         if (status == KernelCombatPlanner.Status.Ready && decision is null)
@@ -509,10 +519,37 @@ internal static class KernelEngineScenarios
         uint version = 0;
         var churnTicks = 0;
         while (churnStatus == KernelCombatPlanner.Status.Pending && churnTicks++ < 400)
-            churnStatus = churning.Poll(combat, new[] { bot }, version++, null, false, out churnDecision);
+            churnStatus = churning.Poll(combat, new[] { bot }, version++, null, false, BotDifficulty.Pro, out churnDecision);
         if (churnStatus == KernelCombatPlanner.Status.Pending)
             throw new Exception($"A moving live root spun the kernel planner for {churnTicks} ticks; bots would never act.");
-        Console.WriteLine($"PASS: kernel planner falls back to the legacy planner ({churnStatus}) after a moving live root instead of spinning.");
+        Console.WriteLine($"PASS: kernel planner falls back to the legacy planner ({churnStatus}) after a queued action moves the root instead of spinning.");
+
+        // Notification-only churn must NOT discard an in-flight search: the
+        // revision counter fires on every combat-state notification, most of
+        // which change nothing a branch depends on. The captured state stamp on
+        // the completion path is the real gate, so a search that is still valid
+        // must be allowed to finish instead of being thrown away mid-expansion.
+        var notified = new KernelCombatPlanner();
+        var notifyStatus = KernelCombatPlanner.Status.Pending;
+        TeamCombatPlanner.Decision? notifyDecision = null;
+        var isolation = typeof(KernelSession).Assembly.GetType("CoopBots.Kernel.KernelIsolation")
+            ?? throw new Exception("KernelIsolation type was not found.");
+        var notify = isolation.GetMethod("NotifyPrefix", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new Exception("KernelIsolation.NotifyPrefix was not found.");
+        var notifyTicks = 0;
+        while (notifyStatus == KernelCombatPlanner.Status.Pending && notifyTicks++ < 400)
+        {
+            notify.Invoke(null, null); // a non-state notification lands mid-search
+            notifyStatus = notified.Poll(combat, new[] { bot }, 0, null, false, BotDifficulty.Pro, out notifyDecision);
+        }
+        if (notifyStatus == KernelCombatPlanner.Status.Pending)
+            throw new Exception($"Notification churn spun the kernel planner for {notifyTicks} ticks.");
+        // The same board must reach the same outcome as the no-churn run above;
+        // a stale fallback here means notification noise still discarded a valid
+        // search, which is exactly the waste this guards against.
+        if (notifyStatus != status || (notifyDecision is null) != (decision is null))
+            throw new Exception($"Notification churn changed the kernel outcome ({status} -> {notifyStatus}); it must be invisible to the planner.");
+        Console.WriteLine($"PASS: notification-only churn does not discard an in-flight kernel search ({notifyStatus}).");
 
         // Deep phase: once every human has ended their turn the planner spends a
         // much larger budget and projects further rounds; it must still resolve.
@@ -521,7 +558,7 @@ internal static class KernelEngineScenarios
         TeamCombatPlanner.Decision? deepDecision = null;
         var deepTicks = 0;
         while (deepStatus == KernelCombatPlanner.Status.Pending && deepTicks++ < 4000)
-            deepStatus = deep.Poll(combat, new[] { bot }, 0, null, true, out deepDecision);
+            deepStatus = deep.Poll(combat, new[] { bot }, 0, null, true, BotDifficulty.Pro, out deepDecision);
         if (deepStatus == KernelCombatPlanner.Status.Pending)
             throw new Exception("Deep phase (humans finished) must resolve, not spin.");
         Console.WriteLine($"PASS: kernel planner resolves in the deep (humans finished) phase: {deepStatus}.");
@@ -531,7 +568,7 @@ internal static class KernelEngineScenarios
     // (2) next-round enemy threat must be priced into the team score.
     private static void AuditPartialPlanAndForecast()
     {
-        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 3, 1));
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 3, 1));
         var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "PARTIAL"));
         bot.ResetCombatState(); combat.AddPlayer(bot);
         bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
@@ -549,7 +586,7 @@ internal static class KernelEngineScenarios
         TeamCombatPlanner.Decision? decision = null;
         var ticks = 0;
         while (status == KernelCombatPlanner.Status.Pending && ticks++ < 400)
-            status = planner.Poll(combat, new[] { bot }, 0, null, false, out decision);
+            status = planner.Poll(combat, new[] { bot }, 0, null, false, BotDifficulty.Pro, out decision);
         if (status != KernelCombatPlanner.Status.Ready || decision is null)
             throw new Exception($"An unmodeled card must not disable the kernel; got {status}.");
         Console.WriteLine("PASS: kernel keeps planning when the hand contains an unmodeled card (partial plan).");
@@ -588,7 +625,7 @@ internal static class KernelEngineScenarios
     // detected by simulating the potion, not guessed from live state.
     private static void AuditProactivePotion()
     {
-        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 2, 1));
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 1));
         var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "POTION"));
         bot.ResetCombatState(); combat.AddPlayer(bot);
         bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
@@ -618,7 +655,7 @@ internal static class KernelEngineScenarios
         TeamCombatPlanner.Decision? decision = null;
         var ticks = 0;
         while (status == KernelCombatPlanner.Status.Pending && ticks++ < 400)
-            status = planner.Poll(combat, new[] { bot }, 0, null, false, out decision);
+            status = planner.Poll(combat, new[] { bot }, 0, null, false, BotDifficulty.Pro, out decision);
         if (planner.ConfirmedPotion is not { } plan || plan.Potion.GetType().Name != "StrengthPotion")
             throw new Exception($"A Strength potion that enables a kill must be confirmed, got {planner.ConfirmedPotion?.Potion.Id.Entry ?? "none"} ({status}).");
         if (plan.Target != bot.Creature)
@@ -634,7 +671,7 @@ internal static class KernelEngineScenarios
         KernelCombatPlanner.Status Run(int enemyHp, out KernelCombatPlanner planner)
         {
             planner = new KernelCombatPlanner();
-            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 1));
+            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
             var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: $"SEQ-{enemyHp}"));
             bot.ResetCombatState(); combat.AddPlayer(bot);
             bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
@@ -650,7 +687,7 @@ internal static class KernelEngineScenarios
             TeamCombatPlanner.Decision? decision = null;
             var ticks = 0;
             while (status == KernelCombatPlanner.Status.Pending && ticks++ < 400)
-                status = planner.Poll(combat, new[] { bot }, 0, null, false, out decision);
+                status = planner.Poll(combat, new[] { bot }, 0, null, false, BotDifficulty.Pro, out decision);
             return status;
         }
 
@@ -668,11 +705,36 @@ internal static class KernelEngineScenarios
         Console.WriteLine("PASS: kernel keeps the potion when the cards alone already kill.");
     }
 
+    // A Vulnerable potion is wasted on an enemy that already carries several
+    // stacks unless the line turns it into a kill this turn. Real run: a boss at
+    // 15% HP with four Vulnerable stacks, and a bot drank the potion, then died
+    // with the slot empty. The search cannot see this because it prices the
+    // resulting board, not the potion slot it consumes.
+    private static void AuditRedundantPotionDeclined()
+    {
+        if (!KernelCombatPlanner.RedundantDebuff("VulnerablePotion", livingEnemy: true, diesThisPlan: false, existingPower: 4))
+            throw new Exception("A Vulnerable potion on a target that already has stacks and survives must be declined.");
+        if (!KernelCombatPlanner.RedundantDebuff("WeakPotion", true, false, 2))
+            throw new Exception("A Weak potion must get the same redundancy check as Vulnerable.");
+        // A kill this turn is exactly when the extra Vulnerable does real work.
+        if (KernelCombatPlanner.RedundantDebuff("VulnerablePotion", true, true, 4))
+            throw new Exception("A potion that turns the line into a kill must not be declined as redundant.");
+        // No existing stacks, or a single expiring one, must stay usable.
+        if (KernelCombatPlanner.RedundantDebuff("VulnerablePotion", true, false, 0)
+            || KernelCombatPlanner.RedundantDebuff("VulnerablePotion", true, false, 1))
+            throw new Exception("A refresh with no or one stack must not be treated as redundant.");
+        if (KernelCombatPlanner.RedundantDebuff("StrengthPotion", true, false, 4))
+            throw new Exception("Only debuff potions are subject to the redundancy rule.");
+        if (KernelCombatPlanner.RedundantDebuff("VulnerablePotion", livingEnemy: false, diesThisPlan: false, existingPower: 4))
+            throw new Exception("A non-enemy target must not be declined by the enemy-debuff rule.");
+        Console.WriteLine("PASS: redundant debuff potions are declined unless they convert the line into a kill.");
+    }
+
     // Boss reactive mechanics (e.g. Thorns) must be simulated, so the search
     // prices the reflected damage instead of ignoring or refusing the attack.
     private static void AuditBossReactiveMechanics()
     {
-        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 3));
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 3));
         var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "THORNS"));
         bot.ResetCombatState(); combat.AddPlayer(bot);
         bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
@@ -701,7 +763,7 @@ internal static class KernelEngineScenarios
     {
         (CombatState Combat, Creature Cultist, Creature Mob) Build(bool ritual)
         {
-            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 4));
+            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 4));
             var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "SCALING-" + ritual));
             bot.ResetCombatState(); combat.AddPlayer(bot);
             bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
@@ -765,7 +827,7 @@ internal static class KernelEngineScenarios
     {
         (CombatState Combat, Player Bot, Creature Foe) Build(string seed)
         {
-            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 5));
+            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 5));
             var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: seed));
             bot.ResetCombatState(); combat.AddPlayer(bot);
             bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
@@ -845,7 +907,7 @@ internal static class KernelEngineScenarios
     {
         var party = new[]
         {
-            Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 6)),
+            Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 6)),
             Player.CreateForNewRun<Deprived>(UnlockState.all, 41UL),
             Player.CreateForNewRun<Deprived>(UnlockState.all, 42UL),
         };
@@ -880,117 +942,14 @@ internal static class KernelEngineScenarios
 
     // When the bots cannot finish an enemy alone but the human's damage covers
     // the remainder, the planner must ask the human for that hit.
-    private static void AuditHumanCallout()
-    {
-        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 7));
-        var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 71UL);
-        var party = new[] { bot, human };
-        var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "CALLOUT"));
-        foreach (var player in party)
-        {
-            player.ResetCombatState(); combat.AddPlayer(player);
-            player.Creature.SetMaxHpInternal(80); player.Creature.SetCurrentHpInternal(80);
-            player.PlayerCombatState!.Phase = PlayerTurnPhase.Play; player.PlayerCombatState.GainEnergy(3);
-        }
-        var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "callout");
-        combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
-        // Bot Strike deals 6; three human Strikes cover 18, so 17 flips to a kill
-        // only with the human's contribution.
-        foe.SetMaxHpInternal(17); foe.SetCurrentHpInternal(17);
-        foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(5)), true);
-        bot.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
-        for (var i = 0; i < 3; i++)
-            human.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(human));
-
-        var planner = new KernelCombatPlanner();
-        var status = KernelCombatPlanner.Status.Pending;
-        TeamCombatPlanner.Decision? decision = null;
-        var ticks = 0;
-        while (status == KernelCombatPlanner.Status.Pending && ticks++ < 400)
-            status = planner.Poll(combat, new[] { bot }, 0, null, false, out decision);
-        if (status != KernelCombatPlanner.Status.Ready || planner.Callout is not { } callout)
-            throw new Exception($"A human-finish callout must be raised when the plan needs their damage ({status}).");
-        if (callout.NeededHp != 11)
-            throw new Exception($"The callout must state the remaining HP (11), got {callout.NeededHp}.");
-        Console.WriteLine("PASS: the planner asks the human for the finishing damage when it decides a kill needs them.");
-
-        // The score credit and the callout must agree. Vulnerable amplifies the
-        // human's follow-up, so a kill that only becomes reachable through it
-        // must still raise the request — the two disagreeing is exactly why the
-        // callout never appeared in real play.
-        var vPlayers = new List<Player>
-        {
-            Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 13, 1)),
-            Player.CreateForNewRun<Deprived>(UnlockState.all, 72UL),
-        };
-        var vCombat = new CombatState(runState: RunState.CreateForTest(vPlayers.ToArray(), seed: "CALLOUT-VULN"));
-        foreach (var player in vPlayers)
-        {
-            player.ResetCombatState(); vCombat.AddPlayer(player);
-            player.Creature.SetMaxHpInternal(80); player.Creature.SetCurrentHpInternal(80);
-            player.PlayerCombatState!.Phase = PlayerTurnPhase.Play; player.PlayerCombatState.GainEnergy(3);
-        }
-        var vFoe = vCombat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "cvuln");
-        vCombat.AddCreature(vFoe); vFoe.Monster!.SetUpForCombat();
-        // 30 HP, and the bot's own hit is also Vulnerable-amplified (6 -> 9):
-        // it leaves 21, which the humans' raw 18 cannot finish but 18 x 1.5 can.
-        vFoe.SetMaxHpInternal(30); vFoe.SetCurrentHpInternal(30);
-        vFoe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(5)), true);
-        var vStrike = vCombat.CreateCard<StrikeIronclad>(vPlayers[0]);
-        vPlayers[0].PlayerCombatState!.Hand.AddInternal(vStrike);
-        for (var i = 0; i < 3; i++)
-            vPlayers[1].PlayerCombatState!.Hand.AddInternal(vCombat.CreateCard<StrikeIronclad>(vPlayers[1]));
-        var vuln = ModelDb.Power<VulnerablePower>().ToMutable();
-        vuln.ApplyInternal(vFoe, 2, true);
-        // What the bot's own (Vulnerable-amplified) Strike leaves behind.
-        var vProbe = KernelSession.Capture(vCombat).Fork();
-        if (!vProbe.Play(vStrike, vFoe, out var vReason)) throw new Exception("Vulnerable callout probe: " + vReason);
-        var expectedHp = vProbe.Hp(vFoe);
-        if (expectedHp >= 30) throw new Exception("The bot's Vulnerable Strike must damage the target.");
-        var vPlanner = new KernelCombatPlanner();
-        var vStatus = KernelCombatPlanner.Status.Pending;
-        TeamCombatPlanner.Decision? vDecision = null;
-        var vTicks = 0;
-        while (vStatus == KernelCombatPlanner.Status.Pending && vTicks++ < 400)
-            vStatus = vPlanner.Poll(vCombat, new[] { vPlayers[0] }, 0, null, false, out vDecision);
-        if (vStatus != KernelCombatPlanner.Status.Ready || vPlanner.Callout is not { } vCallout)
-            throw new Exception($"A Vulnerable-enabled human kill must raise the callout too ({vStatus}).");
-        if (vCallout.NeededHp != expectedHp)
-            throw new Exception($"The callout must state the remaining HP ({expectedHp}), got {vCallout.NeededHp}.");
-        Console.WriteLine("PASS: the callout and the score credit agree on Vulnerable-enabled human kills.");
-
-        // ...and the credit must not count Vulnerable twice. At 40 HP the human's
-        // Vulnerable-amplified 27 is genuinely short of the 31 left behind, so
-        // neither the credit nor a callout may be claimed.
-        vFoe.SetMaxHpInternal(40); vFoe.SetCurrentHpInternal(40);
-        var wProbe = KernelSession.Capture(vCombat).Fork();
-        if (!wProbe.Play(vStrike, vFoe, out var wReason)) throw new Exception("Vulnerable over-credit probe: " + wReason);
-        var tooBig = wProbe.Hp(vFoe);
-        var wEval = new KernelCombatEvaluation(vCombat, new[] { vPlayers[0] }, null);
-        var wRoot = KernelSession.Capture(vCombat);
-        if (wEval.HumanFinishTarget(wRoot) is not null)
-            throw new Exception("Vulnerable must not be counted twice: 27 cover cannot finish 31 HP.");
-        if (wEval.Evaluate(wRoot).SoftFinish > 0)
-            throw new Exception("The score credit must not claim a kill the human cannot actually land.");
-        var wPlanner = new KernelCombatPlanner();
-        var wStatus = KernelCombatPlanner.Status.Pending;
-        TeamCombatPlanner.Decision? wDecision = null;
-        var wTicks = 0;
-        while (wStatus == KernelCombatPlanner.Status.Pending && wTicks++ < 400)
-            wStatus = wPlanner.Poll(vCombat, new[] { vPlayers[0] }, 0, null, false, out wDecision);
-        if (wPlanner.Callout is not null)
-            throw new Exception($"No callout may be raised for an unreachable kill (left {tooBig}).");
-        Console.WriteLine("PASS: Vulnerable is not double-counted in the kill credit or the callout.");
-    }
-
     // Turn-scoped enemy Strength loss (PiercingWail / DarkShackles /
     // EnfeeblingTouch / DyingStar) must be simulated, must cut the incoming the
     // evaluation scores, and must be played before a plain block so the rest of
     // the team can size its block to the reduced hit.
     private static void AuditTurnStrengthDown()
     {
-        var a = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 12, 1));
-        var b = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 12, 2));
+        var a = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 12, 1));
+        var b = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 12, 2));
         var party = new[] { a, b };
         var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "STRENGTH-DOWN"));
         foreach (var player in party)
@@ -1020,8 +979,8 @@ internal static class KernelEngineScenarios
         // The loss is temporary: it must not survive the enemy side turn end. The
         // round advance needs a real move state machine, so this uses a real
         // monster rather than a hand-built mock move.
-        var tBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 12, 3));
-        var tAlly = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 12, 4));
+        var tBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 12, 3));
+        var tAlly = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 12, 4));
         var tParty = new[] { tBot, tAlly };
         var tCombat = new CombatState(runState: RunState.CreateForTest(tParty, seed: "STRENGTH-DOWN-TURN"));
         foreach (var player in tParty)
@@ -1054,8 +1013,8 @@ internal static class KernelEngineScenarios
         // so it does not keep spending block on damage that is already gone. The
         // block cards are listed first in hand; only the modeled reduction can
         // make the planner leave them unplayed.
-        var oBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 12, 5));
-        var oAlly = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 12, 6));
+        var oBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 12, 5));
+        var oAlly = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 12, 6));
         var oParty = new[] { oBot, oAlly };
         var oCombat = new CombatState(runState: RunState.CreateForTest(oParty, seed: "STRENGTH-DOWN-ORDER"));
         foreach (var player in oParty)
@@ -1097,8 +1056,8 @@ internal static class KernelEngineScenarios
     // own declared variables instead, and stay estimates.
     private static void AuditStructuralFallback()
     {
-        var a = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 21, 1));
-        var b = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 21, 2));
+        var a = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 21, 1));
+        var b = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 21, 2));
         var party = new[] { a, b };
         var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "STRUCTURAL"));
         foreach (var player in party)
@@ -1162,7 +1121,7 @@ internal static class KernelEngineScenarios
     // treated "status" as "never play".
     private static void AuditHeldStatusPenalty()
     {
-        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 30, 1));
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 30, 1));
         var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "HELD-STATUS"));
         bot.ResetCombatState(); combat.AddPlayer(bot);
         bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
@@ -1191,6 +1150,322 @@ internal static class KernelEngineScenarios
         if (move?.Card.Id.Entry != "BECKON")
             throw new Exception($"A held-penalty status must be played, chose {move?.Card.Id.Entry ?? "nothing"}.");
         Console.WriteLine($"PASS: a status that costs {held:F0} HP to hold is played instead of refused.");
+    }
+
+    // OUTRAGE: damage plus a copy into EVERY player's discard pile. The copy is
+    // the part the snapshot could not express; without it the kernel values the
+    // card as plain damage and the deck pollution that cost a real act-2 run is
+    // invisible to the search.
+    private static void AuditOutrage()
+    {
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 42, 1));
+        var ally = Player.CreateForNewRun<Deprived>(UnlockState.all, (ulong)442);
+        var party = new[] { bot, ally };
+        var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "OUTRAGE"));
+        foreach (var p in party)
+        {
+            p.ResetCombatState(); combat.AddPlayer(p);
+            p.Creature.SetMaxHpInternal(999); p.Creature.SetCurrentHpInternal(999);
+            p.PlayerCombatState!.Phase = PlayerTurnPhase.Play; p.PlayerCombatState.GainEnergy(9);
+        }
+        var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "rage");
+        combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+        foe.SetMaxHpInternal(999); foe.SetCurrentHpInternal(999);
+        foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(1)), true);
+        var outrage = combat.CreateCard<MegaCrit.Sts2.Core.Models.Cards.Outrage>(bot);
+        bot.PlayerCombatState!.Hand.AddInternal(outrage);
+
+        var root = KernelSession.Capture(combat);
+        var branch = root.Fork();
+        var before = branch.Hp(foe);
+        if (!branch.Play(outrage, foe, out var boundary))
+            throw new Exception($"OUTRAGE must be simulatable now: {boundary}");
+        // Enemy must have taken the attack.
+        foe.SetCurrentHpInternal(branch.Hp(foe));
+        if (branch.Hp(foe) >= before)
+            throw new Exception("OUTRAGE must still deal its damage, not only generate copies.");
+        // One copy per player, the caster included, in the discard pile.
+        foreach (var p in party)
+            if (!branch.Discard(p).Any(c => c.Id.Entry == "OUTRAGE"))
+                throw new Exception($"OUTRAGE must add a copy to {p.NetId}'s discard pile.");
+        Console.WriteLine("PASS: OUTRAGE deals damage and adds a copy to every player's discard pile.");
+    }
+
+    // Batch A multiplayer cards whose underlying power hook already exists, so
+    // the OnPlay application was the only missing piece. Each assertion checks
+    // the card's literal effect, not merely that the card became playable: a
+    // boundary that is suppressed without the effect is a confident wrong plan.
+    private static void AuditMultiplayerBatchA()
+    {
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 43, 1));
+        var ally = Player.CreateForNewRun<Deprived>(UnlockState.all, (ulong)443);
+        var party = new[] { bot, ally };
+        var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "BATCH-A"));
+        foreach (var p in party)
+        {
+            p.ResetCombatState(); combat.AddPlayer(p);
+            p.Creature.SetMaxHpInternal(999); p.Creature.SetCurrentHpInternal(999);
+            p.PlayerCombatState!.Phase = PlayerTurnPhase.Play;
+            p.PlayerCombatState.GainEnergy(9); p.PlayerCombatState.GainStars(9);
+        }
+        var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "a");
+        combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+        foe.SetMaxHpInternal(999); foe.SetCurrentHpInternal(999);
+        foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(1)), true);
+
+        KernelSession PlayCard<T>(Player owner, Creature? target) where T : CardModel
+        {
+            var live = combat.CreateCard<T>(owner);
+            owner.PlayerCombatState!.Hand.AddInternal(live);
+            try
+            {
+                var branch = KernelSession.Capture(combat).Fork();
+                var card = branch.Hand(owner).First(c => c is T);
+                var targets = branch.Targets(card);
+                var chosen = targets.Contains(target) ? target : targets.FirstOrDefault(t => t is not null);
+                if (!targets.Contains(chosen))
+                    throw new Exception($"{typeof(T).Name} has no valid target.");
+                if (!branch.Play(card, chosen, out var boundary))
+                    throw new Exception($"{typeof(T).Name} must be simulatable: {boundary}");
+                return branch;
+            }
+            finally { owner.PlayerCombatState!.Hand.RemoveInternal(live); }
+        }
+
+        // Cacophony: power carries the draw interval from its own var.
+        var cacophony = PlayCard<Cacophony>(bot, null);
+        if (cacophony.Power<CacophonyPower>(bot.Creature) <= 0)
+            throw new Exception("CACOPHONY must apply its draw counter power.");
+        // Underworld: power on the caster.
+        var underworld = PlayCard<Underworld>(bot, null);
+        if (underworld.Power<UnderworldPower>(bot.Creature) <= 0)
+            throw new Exception("UNDERWORLD must apply its Doom-conversion power.");
+        // Soulbound targets the chosen ally and records the caster as applier.
+        var soulbound = PlayCard<Soulbound>(bot, ally.Creature);
+        if (soulbound.Power<SoulboundPower>(ally.Creature) <= 0)
+            throw new Exception("SOULBOUND must land on the chosen ally.");
+        // Hibernate: the shared-block power. The Frost channel goes through the
+        // same vendor-tested OrbChannel helper Chill/ColdSnap use, but this
+        // fixture's Deprived caster has no orb slots to hold the result.
+        var hibernate = PlayCard<Hibernate>(bot, null);
+        if (hibernate.Power<HibernatePower>(bot.Creature) <= 0)
+            throw new Exception("HIBERNATE must apply its Frost-sharing power.");
+        // BladeSymphony: every player, caster included, gains the Shivs.
+        var symphony = PlayCard<BladeSymphony>(bot, null);
+        foreach (var p in party)
+            if (!symphony.Hand(p).Any(c => c.Id.Entry == "SHIV"))
+                throw new Exception($"BLADE_SYMPHONY must give {p.NetId} Shivs.");
+        // GlimpseBeyond: every player's draw pile gains Souls.
+        var glimpse = PlayCard<GlimpseBeyond>(bot, null);
+        foreach (var p in party)
+            if (!glimpse.DrawPile(p).Any(c => c.Id.Entry == "SOUL"))
+                throw new Exception($"GLIMPSE_BEYOND must give {p.NetId} a Soul in the draw pile.");
+        // LegionOfBone: every player summons an Osty.
+        var legion = PlayCard<LegionOfBone>(bot, null);
+        foreach (var p in party)
+            if (!legion.HasOsty(p))
+                throw new Exception($"LEGION_OF_BONE must summon an Osty for {p.NetId}.");
+        // Plot: next-turn draw power on every player, not just the caster.
+        var plot = PlayCard<Plot>(bot, null);
+        foreach (var p in party)
+            if (plot.Power<DrawCardsNextTurnPower>(p.Creature) <= 0)
+                throw new Exception($"PLOT must grant next-turn draw to {p.NetId}.");
+        // DemonicShield: caster pays HP, the chosen ally gains block equal to the
+        // caster's current block, so the caster must actually hold block first.
+        bot.Creature.GainBlockInternal(20);
+        var hpBefore = bot.Creature.CurrentHp;
+        var demonic = PlayCard<DemonicShield>(bot, ally.Creature);
+        if (demonic.Hp(bot.Creature) >= hpBefore)
+            throw new Exception("DEMONIC_SHIELD must cost the caster HP.");
+        if (demonic.Block(ally.Creature) <= 0)
+            throw new Exception("DEMONIC_SHIELD must give the ally block.");
+        Console.WriteLine("PASS: batch-A multiplayer cards apply their literal team effect "
+            + "(Cacophony, Underworld, Soulbound, Hibernate, BladeSymphony, GlimpseBeyond, LegionOfBone, Plot, DemonicShield).");
+    }
+
+    // FLANKING / KNOCKDOWN: enemy takes extra attack damage from the applier's
+    // ALLIES this turn. They are a special Vulnerable, but their stacks compound
+    // (three Flanking = 2x2x2 = 8x) instead of extending a duration like
+    // Vulnerable does, so the differential has to pin the exact multiplier and
+    // prove the applier's own attack is not amplified.
+    private static void AuditFlankingKnockdown()
+    {
+        var applier = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 44, 1));
+        var ally = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 44, 2));
+        var party = new[] { applier, ally };
+        var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "FLANK"));
+        foreach (var p in party)
+        {
+            p.ResetCombatState(); combat.AddPlayer(p);
+            p.Creature.SetMaxHpInternal(999); p.Creature.SetCurrentHpInternal(999);
+            p.PlayerCombatState!.Phase = PlayerTurnPhase.Play; p.PlayerCombatState.GainEnergy(20);
+        }
+        var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "flank");
+        combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+        foe.SetMaxHpInternal(99_999); foe.SetCurrentHpInternal(99_999);
+        foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(1)), true);
+
+        // Three FLANKING for the applier, three TwinStrikes for the ally, one
+        // plain Strike for the applier so its own attack can be checked too.
+        for (var i = 0; i < 3; i++) applier.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<Flanking>(applier));
+        for (var i = 0; i < 3; i++) ally.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<TwinStrike>(ally));
+        applier.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(applier));
+        applier.PlayerCombatState.Hand.AddInternal(combat.CreateCard<Knockdown>(applier));
+        var upgraded = combat.CreateCard<Knockdown>(applier); upgraded.UpgradeInternal();
+        applier.PlayerCombatState.Hand.AddInternal(upgraded);
+        var root = KernelSession.Capture(combat);
+        var baseHp = root.Hp(foe);
+
+        int Damage(KernelSession branch, bool allyAttacks, int flankings, int knockDowns, bool upgradedKnockdown)
+        {
+            for (var i = 0; i < flankings; i++)
+                if (!branch.Play(branch.Hand(applier).First(c => c is Flanking), foe, out var f))
+                    throw new Exception("FLANKING play failed: " + f);
+            for (var i = 0; i < knockDowns; i++)
+                if (!branch.Play(branch.Hand(applier).First(c => c is Knockdown && c.IsUpgraded == upgradedKnockdown), foe, out var k))
+                    throw new Exception("KNOCKDOWN play failed: " + k);
+            // Measure only the attack: Knockdown itself deals damage, which
+            // would otherwise be read as part of the multiplier.
+            var before = branch.Hp(foe);
+            var attacker = allyAttacks ? ally : applier;
+            var attack = branch.Hand(attacker).First(c => allyAttacks ? c is TwinStrike : c is StrikeIronclad);
+            if (!branch.Play(attack, foe, out var a))
+                throw new Exception("attack failed: " + a);
+            return before - branch.Hp(foe);
+        }
+
+        var plainTwin = Damage(root.Fork(), allyAttacks: true, 0, 0, false);
+        var flanked1 = Damage(root.Fork(), allyAttacks: true, 1, 0, false);
+        var flanked3 = Damage(root.Fork(), allyAttacks: true, 3, 0, false);
+        if (flanked1 != plainTwin * 2)
+            throw new Exception($"One FLANKING must double ally damage, got {flanked1} vs base {plainTwin}.");
+        if (flanked3 != plainTwin * 8)
+            throw new Exception($"Three FLANKING must compound to 8x, got {flanked3} vs base {plainTwin}.");
+
+        // The applier's own attack is not amplified.
+        var plainStrike = Damage(root.Fork(), allyAttacks: false, 0, 0, false);
+        var selfStrike = Damage(root.Fork(), allyAttacks: false, 3, 0, false);
+        if (selfStrike != plainStrike)
+            throw new Exception($"FLANKING must not amplify the applier's own attack: {selfStrike} vs {plainStrike}.");
+
+        // KNOCKDOWN: one application is double, the upgraded one is triple.
+        var knockBase = Damage(root.Fork(), allyAttacks: true, 0, 1, false);
+        if (knockBase != plainTwin * 2)
+            throw new Exception($"Base KNOCKDOWN must double ally damage, got {knockBase} vs base {plainTwin}.");
+        var knockUp = Damage(root.Fork(), allyAttacks: true, 0, 1, true);
+        if (knockUp != plainTwin * 3)
+            throw new Exception($"Upgraded KNOCKDOWN must triple ally damage, got {knockUp} vs base {plainTwin}.");
+        Console.WriteLine($"PASS: FLANKING compounds (1 stack {flanked1}, 3 stacks {flanked3} on base {plainTwin}), "
+            + $"excludes the applier, and KNOCKDOWN is 2x / 3x upgraded.");
+    }
+
+    // After one think the team should play the rest of that plan without paying
+    // for another search. The tail is only replayed while every step is still
+    // legal on the live board; anything else drops it and searches again.
+    private static void AuditPlanReuse()
+    {
+        KernelCombatPlanner Plan(out CardModel secondStrike, out Player owner)
+        {
+            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 46, 1));
+            owner = bot;
+            var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "REUSE"));
+            bot.ResetCombatState(); combat.AddPlayer(bot);
+            bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
+            bot.PlayerCombatState!.Phase = PlayerTurnPhase.Play; bot.PlayerCombatState.GainEnergy(3);
+            var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "reuse");
+            combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+            foe.SetMaxHpInternal(12); foe.SetCurrentHpInternal(12);
+            foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(1)), true);
+            bot.PlayerCombatState.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
+            secondStrike = combat.CreateCard<StrikeIronclad>(bot);
+            bot.PlayerCombatState.Hand.AddInternal(secondStrike);
+            var planner = new KernelCombatPlanner();
+            var status = KernelCombatPlanner.Status.Pending;
+            TeamCombatPlanner.Decision? decision = null;
+            var ticks = 0;
+            while (status == KernelCombatPlanner.Status.Pending && ticks++ < 2000)
+                status = planner.Poll(combat, new[] { bot }, 0, null, false, BotDifficulty.Pro, out decision);
+            if (status != KernelCombatPlanner.Status.Ready || decision is null)
+                throw new Exception($"A two-Strike kill must produce a plan, got {status}.");
+            return planner;
+        }
+
+        var planner = Plan(out var second, out var owner);
+        if (!planner.TryTakeNextCard(out var reused) || !ReferenceEquals(reused.Card, second))
+            throw new Exception("The remaining card of the plan must be reusable without another search.");
+        if (planner.TryTakeNextCard(out _))
+            throw new Exception("A consumed plan tail must not yield more actions.");
+
+        // If the live board no longer matches the plan, the tail is dropped so a
+        // stale assumption can never be played.
+        var stale = Plan(out var gone, out var staleOwner);
+        staleOwner.PlayerCombatState!.Hand.RemoveInternal(gone);
+        if (stale.TryTakeNextCard(out _))
+            throw new Exception("A plan whose card left the hand must not be replayed.");
+        Console.WriteLine("PASS: the tail of a plan is replayed without a new search, and dropped when the board moved.");
+    }
+
+    // Authoritative coverage probe: ask the kernel, per card, whether it can
+    // simulate the card's OnPlay at all. That is the same question the live
+    // planner asks, so it cannot drift from shipped behaviour the way a static
+    // supported-list can. It also catches a mirror that throws, which a static
+    // list would happily call "supported".
+    private static void AuditCardCoverage()
+    {
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 41, 1));
+        var ally = Player.CreateForNewRun<Deprived>(UnlockState.all, (ulong)441);
+        var party = new[] { bot, ally };
+        var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "CARD-COVERAGE"));
+        foreach (var p in party)
+        {
+            p.ResetCombatState(); combat.AddPlayer(p);
+            p.Creature.SetMaxHpInternal(999); p.Creature.SetCurrentHpInternal(999);
+            p.PlayerCombatState!.Phase = PlayerTurnPhase.Play;
+            p.PlayerCombatState.GainEnergy(99); p.PlayerCombatState.GainStars(99);
+        }
+        var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "cov");
+        combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+        foe.SetMaxHpInternal(99999); foe.SetCurrentHpInternal(99999);
+        foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(1)), true);
+        var factory = typeof(CombatState).GetMethods()
+            .First(m => m.Name == "CreateCard" && m.IsGenericMethodDefinition && m.GetParameters().Length == 1);
+
+        var modeled = new List<string>();
+        var unmodeled = new List<string>();
+        var choice = new List<string>();
+        var broken = new List<string>();
+        var skipped = new List<string>();
+        foreach (var type in typeof(CardModel).Assembly.GetTypes()
+            .Where(t => !t.IsAbstract && !t.IsGenericTypeDefinition
+                && t.Namespace == "MegaCrit.Sts2.Core.Models.Cards" && typeof(CardModel).IsAssignableFrom(t))
+            .OrderBy(t => t.Name, StringComparer.Ordinal))
+        {
+            CardModel card;
+            try { card = (CardModel)factory.MakeGenericMethod(type).Invoke(combat, new object[] { bot })!; }
+            catch { skipped.Add(type.Name + "(create)"); continue; }
+            bot.PlayerCombatState!.Hand.AddInternal(card);
+            try
+            {
+                var branch = KernelSession.Capture(combat).Fork();
+                if (!branch.CanPlay(card)) { skipped.Add($"{card.Id.Entry}:{card.Type}"); continue; }
+                var target = branch.Targets(card).FirstOrDefault(t => t is not null);
+                if (branch.Play(card, target, out var boundary)) { modeled.Add(card.Id.Entry); continue; }
+                if (boundary.StartsWith("prediction-risk:", StringComparison.Ordinal)) unmodeled.Add(card.Id.Entry);
+                else if (boundary.StartsWith("prediction-exception:", StringComparison.Ordinal)) broken.Add($"{card.Id.Entry}:{boundary}");
+                else if (boundary == "pending-choice") choice.Add(card.Id.Entry);
+                else skipped.Add($"{card.Id.Entry}:{boundary}");
+            }
+            catch (Exception error) { broken.Add($"{card.Id.Entry}:{error.GetType().Name}"); }
+            finally { bot.PlayerCombatState!.Hand.RemoveInternal(card); }
+        }
+        var total = modeled.Count + unmodeled.Count + choice.Count + broken.Count + skipped.Count;
+        Console.WriteLine($"CARD COVERAGE: total={total} modeled={modeled.Count} unmodeled={unmodeled.Count} "
+            + $"choice={choice.Count} broken={broken.Count} skipped={skipped.Count}");
+        Console.WriteLine("COVERAGE UNMODELED: " + string.Join(" ", unmodeled.OrderBy(n => n, StringComparer.Ordinal)));
+        Console.WriteLine("COVERAGE CHOICE: " + string.Join(" ", choice.OrderBy(n => n, StringComparer.Ordinal)));
+        Console.WriteLine("COVERAGE BROKEN: " + string.Join(" ", broken.OrderBy(n => n, StringComparer.Ordinal)));
+        Console.WriteLine("COVERAGE SKIPPED: " + string.Join(" ", skipped.OrderBy(n => n, StringComparer.Ordinal)));
+        if (unmodeled.Count == 0) throw new Exception("Coverage probe found nothing unmodeled; it is not probing.");
     }
 
     private static void Clear(Player p)

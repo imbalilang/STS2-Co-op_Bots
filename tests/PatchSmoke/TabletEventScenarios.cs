@@ -97,7 +97,7 @@ internal static class TabletEventScenarios
         // Reflections gets a handler: cloning the whole deck for a curse is not a
         // trade any option data expresses, so no generic rule can refuse it.
         // Asserted in both orders to prove it is chosen by identity, not index.
-        var reflectionsPlayer = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 7, 1));
+        var reflectionsPlayer = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 7, 1));
         RunState.CreateForTest(new[] { reflectionsPlayer }, seed: "REFLECTIONS-HANDLER");
         foreach (var reversed in new[] { false, true })
         {

@@ -37,8 +37,8 @@ internal static class CooperativeScenarios
         MegaCrit.Sts2.Core.Modding.AssemblyInfo.Init();
         ModelDb.Init(typeof(AbstractModel).Assembly.GetTypes().Where(t => !t.IsAbstract && t.IsSubclassOf(typeof(AbstractModel)) && t.GetConstructor(Type.EmptyTypes) is not null).ToArray()); MegaCrit.Sts2.Core.Multiplayer.Serialization.ModelIdSerializationCache.Init(); ModelDb.InitIds();
         var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
-        var attacker = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 1));
-        var support = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 2, 2));
+        var attacker = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
+        var support = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 2));
         var party = new[] { human, attacker, support };
         var run = RunState.CreateForTest(party, seed: "COOP-REGRESSION");
         var combat = new CombatState(runState: run);
@@ -333,7 +333,7 @@ internal static class CooperativeScenarios
         {
             var players = new List<Player>
             {
-                Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 5, allies)),
+                Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 5, allies)),
             };
             for (var i = 1; i < allies; i++)
                 players.Add(Player.CreateForNewRun<Deprived>(UnlockState.all, (ulong)(700 + i)));

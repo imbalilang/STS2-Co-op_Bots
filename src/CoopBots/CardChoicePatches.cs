@@ -73,8 +73,6 @@ internal static class BotCardChoiceDispatcher
         var options = bundles.Where(bundle => bundle.Count > 0).ToList();
         if (options.Count == 0)
             return Array.Empty<CardModel>();
-        if (BotRegistry.Difficulty(player.NetId) == BotDifficulty.Dumb)
-            return options[BotBrain.StableIndex($"bundle:{player.NetId}:{purpose}", options.Count)];
 
         return options
             .OrderByDescending(bundle => BotBrain.SelectCards(player, bundle, 1, 1, purpose).Count)
@@ -123,11 +121,7 @@ internal static class BotRelicSelectPatch
     {
         if (!BotRegistry.IsBot(player.NetId))
             return true;
-        var selected = relics.Count == 0
-            ? null
-            : relics[BotRegistry.Difficulty(player.NetId) == BotDifficulty.Dumb
-                ? BotBrain.StableIndex($"relic:{player.NetId}:{relics.Count}", relics.Count)
-                : 0];
+        var selected = relics.Count == 0 ? null : relics[0];
         __result = Task.FromResult(selected);
         return false;
     }

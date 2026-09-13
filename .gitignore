@@ -25,3 +25,7 @@ STS2MCP-main/
 sts2-advisor-main/
 StsCompanion/
 
+
+# Python bytecode from the bake/import scripts.
+__pycache__/
+*.pyc

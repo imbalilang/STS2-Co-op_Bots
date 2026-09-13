@@ -232,17 +232,46 @@ internal sealed class KernelCombatEvaluation
     // applies. Multiplying unconditionally double-counted it and made the score
     // credit claim kills the callout (correctly) would not ask for, which is why
     // the request never reached the player.
-    internal HumanFinish? HumanFinishTarget(KernelSession state)
+    /// <param name="requireBotsUnable">
+    /// The score credit must not hand a kill to the human that the bots could
+    /// have taken themselves, or the planner would rather leave an enemy alive
+    /// than finish it. The callout is the opposite case: it is exactly when the
+    /// plan leaves an enemy standing that the human's damage is worth asking
+    /// for, so it passes false. Using the score's stricter test there is why no
+    /// callout was ever raised in real play.
+    /// </param>
+    internal HumanFinish? HumanFinishTarget(KernelSession state, bool requireBotsUnable = true)
     {
         foreach (var enemy in state.Enemies)
         {
             var remaining = state.Hp(enemy);
-            if (remaining <= 0 || botKillable.Contains(enemy)) continue;
+            if (remaining <= 0) continue;
+            if (requireBotsUnable && botKillable.Contains(enemy)) continue;
             if (!humanCover.TryGetValue(enemy, out var cover)) continue;
             if (state.Power<VulnerablePower>(enemy) > 0 && !coverHasVulnerable.Contains(enemy)) cover *= 1.5;
             if (remaining <= cover) return new(enemy, remaining, cover);
         }
         return null;
+    }
+
+    /// <summary>
+    /// The enemy the plan came closest to leaving within the humans' reach, for
+    /// diagnosis. A missing estimate means the hand probe never ran at all, which
+    /// is a different problem from simply not being close enough.
+    /// </summary>
+    internal (Creature Enemy, int Remaining, double Cover)? ClosestFinish(KernelSession state)
+    {
+        (Creature Enemy, int Remaining, double Cover)? closest = null;
+        foreach (var enemy in state.Enemies)
+        {
+            var remaining = state.Hp(enemy);
+            if (remaining <= 0) continue;
+            if (!humanCover.TryGetValue(enemy, out var cover)) continue;
+            if (state.Power<VulnerablePower>(enemy) > 0 && !coverHasVulnerable.Contains(enemy)) cover *= 1.5;
+            if (closest is null || remaining - cover < closest.Value.Remaining - closest.Value.Cover)
+                closest = (enemy, remaining, cover);
+        }
+        return closest;
     }
 
     // Vulnerable on the live target at capture time, so the hand estimate that

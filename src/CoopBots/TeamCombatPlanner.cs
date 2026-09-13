@@ -377,7 +377,7 @@ internal static class TeamCombatPlanner
         var cardIndexes = new Dictionary<CardModel, int>(ReferenceEqualityComparer.Instance);
         foreach (var (bot, playerIndex) in bots.Select((player, index) => (player, index)))
         {
-            var legal = BotBrain.PlanningCombatMoves(bot, BotDifficulty.Genius, allowFutureResources: true);
+            var legal = BotBrain.PlanningCombatMoves(bot, allowFutureResources: true);
             if ((bot.PlayerCombatState!.Hand.Cards.Any(CombatResourceProjection.ModelsDraw)
                 || bot.PlayerCombatState.Hand.Cards.Any(card => card.GetType().Name == "DarkEmbrace")
                 || bot.Creature.Powers.Any(power => power.GetType().Name == "DarkEmbracePower"))
@@ -1116,7 +1116,7 @@ internal static class TeamCombatPlanner
             && !CombatManager.Instance.IsPlayerReadyToEndTurn(player)))
         {
             var energy = Math.Max(0, human.PlayerCombatState?.Energy ?? 0);
-            var legal = BotBrain.LegalCombatMoves(human, BotDifficulty.Genius);
+            var legal = BotBrain.LegalCombatMoves(human);
             attackCards += legal.Select(move => move.Card).Distinct()
                 .Count(card => card.Type == CardType.Attack);
             blockCards += legal.Select(move => move.Card).Distinct()

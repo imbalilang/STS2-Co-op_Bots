@@ -13,27 +13,12 @@ public static class BotBrain
 
     public static CombatMove? ChooseCombatMove(Player player, int actionNumber)
     {
-        var difficulty = BotRegistry.Difficulty(player.NetId);
-        var moves = LegalCombatMoves(player, difficulty);
-
+        var moves = LegalCombatMoves(player);
         if (moves.Count == 0)
             return null;
-
-        if (difficulty == BotDifficulty.Dumb)
-        {
-            var combat = player.PlayerCombatState!;
-            var key = $"combat:{player.NetId}:{combat.TurnNumber}:{actionNumber}:{moves.Count}";
-            return moves[StableIndex(key, moves.Count)];
-        }
-
-        if (difficulty == BotDifficulty.Genius)
-            return GeniusCombatStrategy.Choose(player, moves, actionNumber);
-
-        return moves
-            .OrderByDescending(move => move.Score)
-            .ThenBy(move => move.Card.Id.Entry, StringComparer.Ordinal)
-            .ThenBy(move => move.Target?.CombatId ?? uint.MaxValue)
-            .First();
+        // Every tier runs the same policy; difficulty only changes pacing and
+        // thinking budget, never the quality of a single decision.
+        return GeniusCombatStrategy.Choose(player, moves, actionNumber);
     }
 
     // One-action fallback for effects outside the team projection.
@@ -53,18 +38,16 @@ public static class BotBrain
 
     // The live policy requires full legality. Search may also retain cards blocked
     // only by resources; its root action still requires full live legality.
-    internal static List<CombatMove> LegalCombatMoves(Player player, BotDifficulty? difficultyOverride = null)
-        => PlanningCombatMoves(player, difficultyOverride);
+    internal static List<CombatMove> LegalCombatMoves(Player player)
+        => PlanningCombatMoves(player);
 
-    internal static List<CombatMove> PlanningCombatMoves(Player player, BotDifficulty? difficultyOverride = null,
-        bool allowFutureResources = false)
+    internal static List<CombatMove> PlanningCombatMoves(Player player, bool allowFutureResources = false)
     {
         var state = player.Creature.CombatState;
         var combat = player.PlayerCombatState;
         if (state is null || combat is null)
             return new List<CombatMove>();
 
-        var difficulty = difficultyOverride ?? BotRegistry.Difficulty(player.NetId);
         var moves = new List<CombatMove>();
         foreach (var card in combat.Hand.Cards.Where(card =>
         {
@@ -80,21 +63,11 @@ public static class BotBrain
             foreach (var target in candidates.Cast<Creature?>())
             {
                 if (allowFutureResources || card.CanPlayTargeting(target))
-                    moves.Add(new CombatMove(card, target, ScoreCombatCard(card, target, difficulty)));
+                    moves.Add(new CombatMove(card, target, ScoreCombatCard(card, target)));
             }
         }
 
         return moves;
-    }
-
-    public static bool ShouldEndTurnEarly(Player player, int actionNumber)
-    {
-        if (BotRegistry.Difficulty(player.NetId) != BotDifficulty.Dumb)
-            return false;
-
-        var turn = player.PlayerCombatState?.TurnNumber ?? 0;
-        var roll = StableIndex($"end:{player.NetId}:{turn}:{actionNumber}", 100);
-        return roll < (actionNumber == 0 ? 18 : 38);
     }
 
     // The native entry points that permanently edit the deck. `FromDeckForUpgrade`
@@ -104,23 +77,30 @@ public static class BotBrain
         Player player, List<CardModel> list, int count, string purpose)
     {
         if (!purpose.Contains("FromDeck", StringComparison.OrdinalIgnoreCase)) return null;
-        Func<CardModel, double> score;
+        Func<CardModel, Building.BuildValue.Valuation> value;
         var worst = false;
         if (purpose.Contains("ForUpgrade", StringComparison.OrdinalIgnoreCase))
-            score = card => Building.BuildValue.UpgradeDelta(card, player).Total;
+            value = card => Building.BuildValue.UpgradeDelta(card, player);
         else if (purpose.Contains("ForRemoval", StringComparison.OrdinalIgnoreCase))
-            score = card => Building.BuildValue.Remove(card, player).Total;
+            value = card => Building.BuildValue.Remove(card, player);
         else if (purpose.Contains("ForTransformation", StringComparison.OrdinalIgnoreCase))
         {
             // A transform should target the card contributing the least.
-            score = card => Building.BuildValue.Marginal(card, player, list).Total;
+            value = card => Building.BuildValue.Marginal(card, player, list);
             worst = true;
         }
         else return null;
+        var ranked = list.Select(card => (Card: card, Valuation: value(card))).ToList();
         var ordered = worst
-            ? list.OrderBy(score).ThenBy(card => card.Id.Entry, StringComparer.Ordinal)
-            : list.OrderByDescending(score).ThenBy(card => card.Id.Entry, StringComparer.Ordinal);
-        return ordered.Take(count).ToList();
+            ? ranked.OrderBy(entry => entry.Valuation.Total).ThenBy(entry => entry.Card.Id.Entry, StringComparer.Ordinal)
+            : ranked.OrderByDescending(entry => entry.Valuation.Total).ThenBy(entry => entry.Card.Id.Entry, StringComparer.Ordinal);
+        var picked = ordered.Take(count).ToList();
+        // Construction decisions were invisible in the log; record what was
+        // chosen and what every candidate scored, so a bad draft can be traced.
+        BuildTrace.LogDeckEdit(player, purpose, picked.Select(entry => entry.Card).ToList(),
+            ranked.OrderByDescending(entry => entry.Valuation.Total)
+                .Select(entry => (entry.Card, entry.Valuation.Total, entry.Valuation.Reason)).ToList());
+        return picked.Select(entry => entry.Card).ToList();
     }
 
     public static IReadOnlyList<CardModel> SelectCards(
@@ -138,15 +118,6 @@ public static class BotBrain
         if (count == 0 && purpose.Contains("ChooseA", StringComparison.OrdinalIgnoreCase))
             count = 1;
 
-        var difficulty = BotRegistry.Difficulty(player.NetId);
-        if (difficulty == BotDifficulty.Dumb)
-        {
-            return list
-                .OrderBy(card => StableHash($"choice:{player.NetId}:{purpose}:{card.Id.Entry}"))
-                .Take(count)
-                .ToList();
-        }
-
         // Permanent deck edits are decided by the same valuation the reward screen
         // and the shop use, so "is this worth doing" and "which card" cannot
         // disagree. Hand-based variants are combat effects and keep their own
@@ -158,8 +129,8 @@ public static class BotBrain
                          || purpose.Contains("Removal", StringComparison.OrdinalIgnoreCase)
                          || purpose.Contains("Transform", StringComparison.OrdinalIgnoreCase);
         return (preferWeak
-                ? list.OrderBy(card => ScoreDeckCard(card, difficulty))
-                : list.OrderByDescending(card => ScoreDeckCard(card, difficulty)))
+                ? list.OrderBy(card => ScoreDeckCard(card))
+                : list.OrderByDescending(card => ScoreDeckCard(card)))
             .ThenBy(card => card.Id.Entry, StringComparer.Ordinal)
             .Take(count)
             .ToList();
@@ -169,35 +140,15 @@ public static class BotBrain
     {
         if (cards.Count == 0)
             return -1;
-        var difficulty = BotRegistry.Difficulty(player.NetId);
-        if (difficulty == BotDifficulty.Dumb)
-            return StableIndex($"reward:{player.NetId}:{player.Deck.Cards.Count}:{cards.Count}", cards.Count + 1) - 1;
-
         // Every candidate is compared against the deck as it stands, so skipping
         // is a real candidate rather than a fallback: a card that takes more
         // draws from the deck than it contributes is worth less than nothing.
-        // Only Smart and above act on that; the lower difficulties still rank the
-        // candidates and take the best one.
-        return Building.BuildValue.BestReward(player, cards, allowSkip: difficulty >= BotDifficulty.Smart);
+        var chosen = Building.BuildValue.BestReward(player, cards, allowSkip: true);
+        BuildTrace.LogReward(player, cards, chosen, skip: chosen < 0);
+        return chosen;
     }
 
-    public static int StableIndex(string key, int count)
-        => count <= 0 ? 0 : (int)(StableHash(key) % (uint)count);
-
-    private static uint StableHash(string value)
-    {
-        const uint offset = 2166136261;
-        const uint prime = 16777619;
-        var hash = offset;
-        foreach (var character in value)
-        {
-            hash ^= character;
-            hash *= prime;
-        }
-        return hash;
-    }
-
-    private static double ScoreCombatCard(CardModel card, Creature? target, BotDifficulty difficulty)
+    private static double ScoreCombatCard(CardModel card, Creature? target)
     {
         var damage = card.DynamicVars.Values.OfType<DamageVar>().Sum(variable => (double)variable.BaseValue);
         var block = card.DynamicVars.Values.OfType<BlockVar>().Sum(variable => (double)variable.BaseValue);
@@ -212,30 +163,24 @@ public static class BotBrain
             _ => 2.0,
         };
 
-        if (difficulty >= BotDifficulty.Smart)
-        {
-            score -= cost * 2.2;
-            if (cost == 0)
-                score += 2.5;
-            if (card.GainsBlock && card.Owner.Creature.Block < 12)
-                score += block * 0.5;
-            if (target?.IsEnemy == true)
-                score += 10.0 / Math.Max(1, target.CurrentHp + target.Block);
-        }
+        score -= cost * 2.2;
+        if (cost == 0)
+            score += 2.5;
+        if (card.GainsBlock && card.Owner.Creature.Block < 12)
+            score += block * 0.5;
+        if (target?.IsEnemy == true)
+            score += 10.0 / Math.Max(1, target.CurrentHp + target.Block);
 
-        if (difficulty == BotDifficulty.Genius)
-        {
-            score += card.Type == CardType.Power ? 5.0 : 0.0;
-            if (target?.IsEnemy == true && damage >= target.CurrentHp + target.Block)
-                score += 80.0;
-            if (card.TargetType == TargetType.AllEnemies)
-                score += damage * Math.Max(0, card.Owner.Creature.CombatState!.Enemies.Count - 1);
-        }
+        score += card.Type == CardType.Power ? 5.0 : 0.0;
+        if (target?.IsEnemy == true && damage >= target.CurrentHp + target.Block)
+            score += 80.0;
+        if (card.TargetType == TargetType.AllEnemies)
+            score += damage * Math.Max(0, card.Owner.Creature.CombatState!.Enemies.Count - 1);
 
         return score;
     }
 
-    private static double ScoreDeckCard(CardModel card, BotDifficulty difficulty)
+    private static double ScoreDeckCard(CardModel card)
     {
         var damage = card.DynamicVars.Values.OfType<DamageVar>().Sum(variable => (double)variable.BaseValue);
         var block = card.DynamicVars.Values.OfType<BlockVar>().Sum(variable => (double)variable.BaseValue);
@@ -257,13 +202,10 @@ public static class BotBrain
             _ => 0.0,
         };
         var value = rarity + type + damage * 0.25 + block * 0.25;
-        if (difficulty >= BotDifficulty.Smart)
-        {
-            var cost = Math.Max(0, card.EnergyCost.GetWithModifiers(CostModifiers.Local));
-            value -= cost * 1.25;
-            if (cost == 0)
-                value += 1.5;
-        }
+        var cost = Math.Max(0, card.EnergyCost.GetWithModifiers(CostModifiers.Local));
+        value -= cost * 1.25;
+        if (cost == 0)
+            value += 1.5;
         if (card.IsUpgraded)
             value += 3.0;
         return value;

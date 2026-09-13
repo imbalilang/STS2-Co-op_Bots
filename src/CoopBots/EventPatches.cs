@@ -106,12 +106,6 @@ public static class BotEventDriver
             if (usable.Any(pair => pair.index == special)) return special;
         }
 
-        var difficulty = BotRegistry.Difficulty(player.NetId);
-        if (difficulty == BotDifficulty.Dumb)
-            return usable[BotBrain.StableIndex(
-                $"event:{player.NetId}:{eventModel.Id.Entry}:{string.Join(",", usable.Select(pair => pair.option.TextKey))}",
-                usable.Count)].index;
-
         double Score(EventOption option)
         {
             if (option.IsProceed)
@@ -127,7 +121,7 @@ public static class BotEventDriver
             if (key.Contains("gold"))
                 score += 4;
             if (key.Contains("damage") || key.Contains("lose") || key.Contains("curse"))
-                score -= difficulty == BotDifficulty.Genius ? 9 : 5;
+                score -= 9;
             // The key only says what the option is called; the game states what
             // it actually gives. Read that instead of inferring magnitude from
             // text: a key like LOST_WISP...CLAIM never mentions the Decay curse

@@ -81,8 +81,21 @@ internal static class BuildValue
         var scaling = facts.Scaling * ScalingWeight + (facts.Poison + facts.Doom) * DoomWeight;
         if (scaling > 0)
         {
-            score += scaling * RoleWeight(saturation, facts, "scaling", "poison", "doom");
-            reasons.Add("scaling");
+            if (UnsupportedScaling(card, deck))
+            {
+                // The card's mined partners exist and none are in the deck: it is
+                // a payoff whose enabler is missing. Rupture (Strength when you
+                // lose HP) wants Hemokinesis/Inferno/Breakthrough; without one its
+                // scaling is not a plan, it is a promise. Keep a share so a route
+                // can still be started, but stop it outbidding real route cards.
+                score += scaling * RoleWeight(saturation, facts, "scaling", "poison", "doom") * 0.4;
+                reasons.Add("scaling-unsupported");
+            }
+            else
+            {
+                score += scaling * RoleWeight(saturation, facts, "scaling", "poison", "doom");
+                reasons.Add("scaling");
+            }
         }
 
         score += (3 - Math.Min(3, facts.Cost)) * 2;
@@ -112,11 +125,14 @@ internal static class BuildValue
         }
         // Feeds the route the deck is already on. Zero when no route is
         // recognised, so a deck nobody understands behaves exactly as before.
-        var archetype = Archetypes.Bonus(facts, card, deck, player);
+        var archetype = Archetypes.Bonus(facts, card, deck, player, out var route);
         if (Math.Abs(archetype) > 0.01)
         {
             score += archetype;
-            reasons.Add(archetype > 0 ? "fits-route" : "off-route");
+            // Naming the route makes the log auditable: "fits-route" alone cannot
+            // tell whether the deck is converging on a build or just collecting.
+            var label = archetype > 0 ? "fits-route" : "off-route";
+            reasons.Add(route.Length == 0 ? label : $"{label}:{route}");
         }
         score -= Duplicates(card, deck) * DuplicatePenalty;
         return new Valuation(score, reasons.Count == 0 ? "no role" : string.Join(',', reasons));
@@ -141,10 +157,31 @@ internal static class BuildValue
         var own = Marginal(card, player, deck);
         var average = deck.Count == 0 ? 0 : deck.Average(existing => Marginal(existing, player, deck).Total);
         var dilution = Math.Max(0, average - own.Total) * (HandSize / (deck.Count + 1.0));
-        var total = own.Total - dilution;
-        var reason = own.Reason + (dilution > 0.5 ? $",dilutes:{dilution:F1}" : "");
+        // Past its forming stage a deck is not improved by "another fine card": it
+        // is improved by thinning and by the cards the plan actually asked for.
+        // This pressure is what lets a reward be skipped — or a shop card be
+        // declined — because it is not closer to the target build, rather than
+        // because it is weak. A card that advances the recognised route pays much
+        // less of it, which is how a plan-advancing card still gets in.
+        var route = Archetypes.Bonus(CardProfile.Of(card), card, deck, player);
+        var pressure = Oversize(deck.Count) * (route > 0 ? OnPlanRelief : 1.0);
+        var total = own.Total - dilution - pressure;
+        var reason = own.Reason
+            + (dilution > 0.5 ? $",dilutes:{dilution:F1}" : "")
+            + (pressure > 0.5 ? $",size:{pressure:F1}" : "");
         return new Valuation(total, reason);
     }
+
+    // Deck size at which "one more card" stops being free. Calibrated against
+    // real reward screens: at 19 cards the best candidate was worth ~18-20 and
+    // should have been skipped, while a 20-card screen offering a 46-point card
+    // and a 21-card screen offering a 28-point route card are real upgrades that
+    // must still be taken.
+    private const int FormingSize = 15;
+    private const double SizePressure = 5.0;
+    // A card the recognised route asked for justifies most of the extra size.
+    private const double OnPlanRelief = 0.4;
+    private static double Oversize(int size) => Math.Max(0, size - FormingSize) * SizePressure;
 
     /// <summary>
     /// Removing a card is worth the value it was contributing, plus the draws it
@@ -296,6 +333,18 @@ internal static class BuildValue
     private const int AffinityPartners = 2;
     private const double AffinityLiftCap = 2.5;
     private const double AffinityCap = 6.0;
+
+    // A payoff with no enabler. The mined affinity table is the evidence: every
+    // partner Rupture has (Hemokinesis, Inferno, Breakthrough, Spite) is a card
+    // that costs HP. When none of them is in the deck its trigger never fires, so
+    // the scaling term must not read as if the plan were assembled. Cards with no
+    // mining record keep their previous valuation exactly.
+    private static bool UnsupportedScaling(CardModel card, IReadOnlyList<CardModel> deck)
+    {
+        if (!BakedCardAffinity.Pairs.TryGetValue(card.Id.Entry, out var partners) || partners.Length == 0) return false;
+        return !deck.Any(existing => !ReferenceEquals(existing, card)
+            && partners.Any(partner => string.Equals(partner.Card, existing.Id.Entry, StringComparison.Ordinal)));
+    }
 
     private static double Affinity(CardModel card, IReadOnlyList<CardModel> deck)
     {

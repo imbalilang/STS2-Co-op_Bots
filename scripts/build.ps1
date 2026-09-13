@@ -18,6 +18,10 @@ $release = Join-Path $repo "outputs\CoopBots-v$Version"
 $project = Join-Path $repo 'src\CoopBots\CoopBots.csproj'
 & $Dotnet build $project -c Release "-p:STS2DataDir=$GameData" "-p:OutputPath=$build\" -p:NuGetAudit=false
 if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+# The game enumerates our types before the initializer can load CoopBots.Kernel.
+# Guard against a type that needs the kernel at load time (see tests/TypeLoadCheck).
+& $Dotnet run --project (Join-Path $repo 'tests\TypeLoadCheck\TypeLoadCheck.csproj') -c Release -- $build $GameData
+if ($LASTEXITCODE -ne 0) { throw 'Type-load guard failed: the mod cannot be loaded without CoopBots.Kernel.' }
 & $Dotnet run --project (Join-Path $repo 'tests\PatchSmoke\PatchSmoke.csproj') -c Release "-p:STS2DataDir=$GameData" "-p:CoopBotsDll=$build\CoopBots.dll" -p:NuGetAudit=false
 if ($LASTEXITCODE -ne 0) { throw 'Regression tests failed; package not produced.' }
 & $Dotnet run --project (Join-Path $repo 'tests\PatchSmoke\PatchSmoke.csproj') -c Release "-p:STS2DataDir=$GameData" "-p:CoopBotsDll=$build\CoopBots.dll" -p:EnableKernelTests=true -p:NuGetAudit=false

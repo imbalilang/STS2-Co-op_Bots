@@ -52,7 +52,7 @@ public static class LobbyUi
         var difficultySelect = new OptionButton { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
         foreach (BotDifficulty difficulty in Enum.GetValues<BotDifficulty>())
             difficultySelect.AddItem(difficulty.Chinese());
-        difficultySelect.Select((int)BotDifficulty.Normal);
+        difficultySelect.Select((int)BotDifficulty.Pro);
 
         root.AddChild(Row("角色", characterSelect));
         root.AddChild(Row("难度", difficultySelect));
@@ -83,7 +83,8 @@ public static class LobbyUi
         add.Pressed += () =>
         {
             var character = characters[Math.Clamp(characterSelect.Selected, 0, characters.Count - 1)];
-            var difficulty = (BotDifficulty)Math.Clamp(difficultySelect.Selected, 0, 3);
+            var difficulty = (BotDifficulty)Math.Clamp(difficultySelect.Selected, 0,
+                (int)BotDifficulty.Cheated);
             Refresh(LobbyBotService.Add(lobby, character, difficulty, out var error) ? null : error);
         };
         remove.Pressed += () => Refresh(LobbyBotService.RemoveLast(lobby, out var error) ? null : error);

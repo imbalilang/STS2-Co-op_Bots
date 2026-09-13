@@ -20,8 +20,8 @@ internal static class LastStandScenarios
     {
         var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
         var otherHuman = Player.CreateForNewRun<Deprived>(UnlockState.all, 2);
-        var doomed = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 1));
-        var support = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 2, 2));
+        var doomed = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
+        var support = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 2));
         var party = new[] { human, otherHuman, doomed, support }; var bots = new[] { doomed, support };
         var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "LAST-STAND"));
         foreach (var p in party) { p.ResetCombatState(); combat.AddPlayer(p); }

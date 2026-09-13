@@ -19,8 +19,8 @@ internal static class MonsterHazardScenarios
     internal static void Run()
     {
         var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
-        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 1));
-        var other = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 2, 2));
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
+        var other = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 2));
         var party = new[] { human, bot, other }; var bots = new[] { bot, other };
         var run = RunState.CreateForTest(party, seed: "SANDPIT-19"); var combat = new CombatState(runState: run);
         foreach (var p in party) { p.ResetCombatState(); combat.AddPlayer(p); p.PlayerCombatState!.Phase = PlayerTurnPhase.Play; p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80); }

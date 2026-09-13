@@ -18,8 +18,8 @@ internal static class MultiplayerCoverageAudit
 {
     internal static void Run()
     {
-        var support = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 1));
-        var attacker = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 2, 2));
+        var support = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
+        var attacker = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 2));
         var party = new[] { support, attacker };
         var run = RunState.CreateForTest(party, seed: "SHARED-BENEFIT-AUDIT");
         var combat = new CombatState(runState: run);

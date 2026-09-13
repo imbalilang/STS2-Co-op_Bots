@@ -42,10 +42,18 @@ foreach (var name in expected)
         throw new InvalidOperationException($"Required patch was not applied: {name}");
 }
 
-if (!BotRegistry.IsBot(BotRegistry.CreateId(BotDifficulty.Genius, 2, 3)))
+if (!BotRegistry.IsBot(BotRegistry.CreateId(BotDifficulty.Pro, 2, 3)))
     throw new InvalidOperationException("Bot id round-trip failed.");
-if (BotRegistry.Difficulty(BotRegistry.CreateId(BotDifficulty.Smart, 1, 0)) != BotDifficulty.Smart)
-    throw new InvalidOperationException("Difficulty round-trip failed.");
+if (BotRegistry.Difficulty(BotRegistry.CreateId(BotDifficulty.Pro, 1, 0)) != BotDifficulty.Pro)
+    throw new InvalidOperationException("Pro difficulty round-trip failed.");
+if (BotRegistry.Difficulty(BotRegistry.CreateId(BotDifficulty.Cheated, 1, 0)) != BotDifficulty.Cheated
+    || !BotRegistry.IsCheated(BotRegistry.CreateId(BotDifficulty.Cheated, 1, 0)))
+    throw new InvalidOperationException("Cheated difficulty round-trip failed.");
+// Old saves encoded Smart=2 / Genius=3 in the same tier field. Both were full
+// bots, so they must read back as Pro and never as the new cheated tier.
+foreach (var legacyTier in new[] { 2UL, 3UL })
+    if (BotRegistry.Difficulty(0xB07B_0000_0000_0000UL | (legacyTier << 16)) != BotDifficulty.Pro)
+        throw new InvalidOperationException("A legacy tier id must clamp to Pro.");
 
 var strategyType = typeof(BotBrain).Assembly.GetType("CoopBots.GeniusCombatStrategy")
     ?? throw new InvalidOperationException("Genius strategy type was not found.");

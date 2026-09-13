@@ -86,10 +86,6 @@ internal static class BotRestSitePatch
         if (usable.Count == 0)
             return 0;
 
-        var difficulty = BotRegistry.Difficulty(player.NetId);
-        if (difficulty == BotDifficulty.Dumb)
-            return usable[BotBrain.StableIndex($"rest:{player.NetId}:{player.RunState.TotalFloor}", usable.Count)].index;
-
         decimal EffectiveHp(Player candidate) => candidate.Creature.CurrentHp + PlannedHeal.GetValueOrDefault(candidate.NetId);
 
         var hp = (double)player.Creature.CurrentHp / Math.Max(1, player.Creature.MaxHp);

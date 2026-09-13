@@ -21,7 +21,7 @@ internal static class RestSiteScenarios
         int Pick(Player player, params RestSiteOption[] options)
             => (int)choose.Invoke(null, new object[] { player, options })!;
 
-        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 1));
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
         var teammate = Player.CreateForNewRun<Deprived>(UnlockState.all, 77UL);
         var run = RunState.CreateForTest(new[] { bot, teammate }, seed: "RESTSITE");
         bot.ResetCombatState(); teammate.ResetCombatState();
@@ -47,7 +47,7 @@ internal static class RestSiteScenarios
 
         // Cook removes two cards AND grants +5 max HP, so it must be attractive
         // with a bloated basic deck and left alone when the worst cards are good.
-        var junkBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 2, 1));
+        var junkBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 1));
         junkBot.ResetCombatState();
         junkBot.Creature.SetMaxHpInternal(80); junkBot.Creature.SetCurrentHpInternal(80);
         for (var i = 0; i < 12; i++) junkBot.Deck.AddInternal(run.CreateCard<StrikeIronclad>(junkBot));
@@ -60,7 +60,7 @@ internal static class RestSiteScenarios
         // "The worst cards are good" needs a deck of distinct quality cards.
         // Twelve copies of one card is a duplicate-heavy deck, where the surplus
         // copies genuinely are the worst cards and thinning them is right.
-        var goodBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 3, 1));
+        var goodBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 3, 1));
         goodBot.ResetCombatState();
         goodBot.Creature.SetMaxHpInternal(80); goodBot.Creature.SetCurrentHpInternal(80);
         foreach (var make in new Func<MegaCrit.Sts2.Core.Models.CardModel>[]
@@ -81,7 +81,7 @@ internal static class RestSiteScenarios
         // Adding a thirteenth copy is refused, but upgrading one of the copies
         // already in the deck is worth it: addition and upgrade are now separate
         // quantities, each measured against the deck as it stands.
-        var dupeBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 4, 1));
+        var dupeBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 4, 1));
         dupeBot.ResetCombatState();
         dupeBot.Creature.SetMaxHpInternal(80); dupeBot.Creature.SetCurrentHpInternal(80);
         for (var i = 0; i < 12; i++) dupeBot.Deck.AddInternal(run.CreateCard<Inflame>(dupeBot));
@@ -98,8 +98,8 @@ internal static class RestSiteScenarios
         // an ordinary wound is left alone so the bot upgrades its deck instead.
         var reset = typeof(BotBrain).Assembly.GetType("CoopBots.BotRestSitePatch")!
             .GetMethod("ResetPlanning", BindingFlags.Static | BindingFlags.NonPublic)!;
-        var healer = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 4, 1));
-        var helper = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 5, 1));
+        var healer = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 4, 1));
+        var helper = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 5, 1));
         var patient = Player.CreateForNewRun<Deprived>(UnlockState.all, 78UL);
         var healRun = RunState.CreateForTest(new[] { healer, helper, patient }, seed: "RESTSITE-HEAL");
         foreach (var medic in new[] { healer, helper })

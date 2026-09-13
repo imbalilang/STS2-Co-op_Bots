@@ -53,6 +53,184 @@ def add_multiplayer_card_support(text):
         text=text.replace(anchor, addition+anchor if before else anchor+addition)
     return text
 
+def add_team_card_support(text):
+    """CoopBots multiplayer cards the snapshot cannot infer, applied after
+    add_multiplayer_card_support. Each block is anchored on upstream text and
+    aborts the import if the anchor moved, so a silent loss is impossible."""
+    replacements=[
+        # 1. Power hooks that already exist; only the OnPlay application was missing.
+        ('        [typeof(Unrelenting)] = [Owner<FreeAttackPower>(_ => 1)],\n'
+         '        [typeof(Veilpiercer)] = [Owner<VeilpiercerPower>(_ => 1)],\n'
+         '    };\n',
+         '        [typeof(Unrelenting)] = [Owner<FreeAttackPower>(_ => 1)],\n'
+         '        [typeof(Veilpiercer)] = [Owner<VeilpiercerPower>(_ => 1)],\n'
+         '        // CoopBots multiplayer port: the power hooks already exist in this\n'
+         '        // snapshot (AfterCardDrawn / FrostOrb / AfterCardGeneratedForCombat /\n'
+         '        // AfterDamageGiven), so only the OnPlay application was missing.\n'
+         '        [typeof(Cacophony)] = [Owner<CacophonyPower>(card => card.DynamicVars.Cards.IntValue)],\n'
+         '        [typeof(Hibernate)] = [Owner<HibernatePower>(_ => 1)],\n'
+         '        [typeof(Soulbound)] = [Target<SoulboundPower>(_ => 1)],\n'
+         '        [typeof(Underworld)] = [Owner<UnderworldPower>(_ => 1)],\n'
+         '    };\n'),
+        # 2. Resource effects: team-wide next-turn draw, HP-for-ally-block.
+        ('        typeof(EnergySurge), typeof(BelieveInYou),\n',
+         '        typeof(EnergySurge), typeof(BelieveInYou),\n'
+         '        // CoopBots multiplayer port: team-wide next-turn draw and the\n'
+         '        // HP-for-ally-block trade; both are handled in the switch.\n'
+         '        typeof(Plot), typeof(DemonicShield),\n'),
+        # 3. Generation effects: copies / gifts to every player.
+        ('        typeof(Severance), typeof(Undeath),\n'
+         '    ];\n',
+         '        typeof(Severance), typeof(Undeath),\n'
+         '        // CoopBots multiplayer port: copies and gifts that reach EVERY player.\n'
+         '        typeof(Outrage), typeof(BladeSymphony), typeof(GlimpseBeyond), typeof(LegionOfBone),\n'
+         '    ];\n'),
+        # 4. The per-player loops themselves.
+        ('                        && candidate.Preview.Type is CardType.Attack or CardType.Skill or CardType.Power)\n'
+         '                    .ToArray();\n'
+         '                simulator.AddToPile(cards, PileType.Hand);\n'
+         '                applied = true;\n'
+         '                break;\n'
+         '            }\n',
+         '                        && candidate.Preview.Type is CardType.Attack or CardType.Skill or CardType.Power)\n'
+         '                    .ToArray();\n'
+         '                simulator.AddToPile(cards, PileType.Hand);\n'
+         '                applied = true;\n'
+         '                break;\n'
+         '            }\n'
+         '            case Outrage:\n'
+         '                // One copy per player, the caster included.\n'
+         '                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)\n'
+         '                {\n'
+         '                    simulator.CreateAndAddGeneratedCardsToCombat<Outrage>(\n'
+         '                        recipient, PileType.Discard, 1, card.Owner);\n'
+         '                    if (simulator.HasPendingChoice)\n'
+         '                        return true;\n'
+         '                }\n'
+         '                applied = true;\n'
+         '                break;\n'
+         '            case BladeSymphony:\n'
+         '                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)\n'
+         '                {\n'
+         '                    simulator.CreateAndAddGeneratedCardsToCombat<Shiv>(\n'
+         '                        recipient, PileType.Hand, card.DynamicVars.Cards.IntValue, card.Owner);\n'
+         '                    if (simulator.HasPendingChoice)\n'
+         '                        return true;\n'
+         '                }\n'
+         '                applied = true;\n'
+         '                break;\n'
+         '            case GlimpseBeyond:\n'
+         '                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)\n'
+         '                {\n'
+         '                    simulator.CreateAndAddGeneratedCardsToCombat<Soul>(\n'
+         '                        recipient, PileType.Draw, card.DynamicVars.Cards.IntValue, card.Owner);\n'
+         '                    if (simulator.HasPendingChoice)\n'
+         '                        return true;\n'
+         '                }\n'
+         '                applied = true;\n'
+         '                break;\n'
+         '            case LegionOfBone when combat is ICombatPredictionEffectSink summonSink:\n'
+         '                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)\n'
+         '                {\n'
+         '                    summonSink.SummonOsty(simulator, recipient, card.DynamicVars["Summon"].IntValue);\n'
+         '                    if (simulator.HasPendingChoice)\n'
+         '                        return true;\n'
+         '                }\n'
+         '                applied = true;\n'
+         '                break;\n'
+         '            case Plot:\n'
+         '                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)\n'
+         '                    ApplyPower(combat, typeof(DrawCardsNextTurnPower), recipient.Creature,\n'
+         '                        card.DynamicVars.Cards.IntValue, ownerCreature);\n'
+         '                applied = true;\n'
+         '                break;\n'
+         '            case DemonicShield when target is { IsPlayer: true }:\n'
+         '                simulator.Damage(card.Owner.Creature, card.DynamicVars.HpLoss.IntValue,\n'
+         '                    ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move, card.Owner.Creature);\n'
+         '                if (simulator.HasPendingChoice)\n'
+         '                    return true;\n'
+         '                simulator.GainBlock(target, card.DynamicVars["CalculatedBlock"].IntValue, ValueProp.Unpowered);\n'
+         '                applied = true;\n'
+         '                break;\n'),
+    ]
+    for anchor, replacement in replacements:
+        if text.count(anchor) != 1:
+            raise RuntimeError(f'CardEffectSpecRegistry team-card anchor changed: {anchor.strip()[:60]!r}')
+        text=text.replace(anchor, replacement)
+    # FLANKING joins KNOCKDOWN as a teammate-only damage amplifier.
+    flanking_anchor='        [typeof(Knockdown)] = [Target<KnockdownPower>("KnockdownPower")],\n'
+    flanking_replacement=(flanking_anchor +
+        '        // CoopBots multiplayer port: FLANKING declares no variable; each\n'
+        '        // application is one stack and the multiplier lives in the power hook.\n'
+        '        [typeof(Flanking)] = [Target<FlankingPower>(_ => 1)],\n')
+    if text.count(flanking_anchor) != 1:
+        raise RuntimeError('CardEffectSpecRegistry Knockdown spec anchor changed; review Flanking.')
+    text=text.replace(flanking_anchor, flanking_replacement)
+    # The Applier name is recorded by SimulatedCombatState from its own table;
+    # overwriting it with the live platform lookup threw outside a Steam host.
+    nre_anchor=('                        if (effect.PowerType == typeof(KnockdownPower)\n'
+                '                            && combat.GetPower<KnockdownPower>(effectTarget) is { } knockdown)\n'
+                '                        {\n'
+                '                            ((StringVar)knockdown.DynamicVars["Applier"]).StringValue = PlatformUtil.GetPlayerName(\n'
+                '                                RunManager.Instance.NetService.Platform,\n'
+                '                                playedCard.Preview.Owner.NetId);\n'
+                '                        }\n')
+    if text.count(nre_anchor) != 1:
+        raise RuntimeError('CardEffectSpecRegistry Knockdown applier anchor changed; review the NRE fix.')
+    text=text.replace(nre_anchor,
+        '                        // CoopBots multiplayer port: SimulatedCombatState.ApplyPower\n'
+        '                        // records the Applier from its own player-name table. The\n'
+        '                        // live platform lookup that used to run here threw outside a\n'
+        '                        // Steam host and disagreed with the simulated state.\n')
+    return text
+
+def add_team_damage_support(text):
+    """FLANKING / KNOCKDOWN ride the same ModifyDamageMultiplicative pass as
+    Vulnerable; the handlers live in the non-vendored TeamDamageMirrors."""
+    anchor=('        registry.Register<PenNib>(HandlePenNib);\n'
+            '        registry.Register<UndyingSigil>(HandleUndyingSigil);\n'
+            '\n'
+            '        return registry;\n'
+            '    }\n')
+    replacement=('        registry.Register<PenNib>(HandlePenNib);\n'
+                 '        registry.Register<UndyingSigil>(HandleUndyingSigil);\n'
+                 '\n'
+                 '        // CoopBots multiplayer port: FLANKING / KNOCKDOWN amplify another\n'
+                 '        // player\'s attack damage for the rest of the turn. They are a special\n'
+                 '        // Vulnerable, so they belong on this same multiplicative pass.\n'
+                 '        CoopBots.Kernel.TeamDamageMirrors.Register(registry);\n'
+                 '\n'
+                 '        return registry;\n'
+                 '    }\n')
+    if text.count(anchor) != 1:
+        raise RuntimeError('ModifyDamageMirrors multiplicative registry anchor changed; review Flanking/Knockdown.')
+    return text.replace(anchor, replacement)
+
+def add_flanking_applier(text):
+    """FLANKING needs the applier recorded, because its bonus excludes the
+    applier's own attack; KNOCKDOWN already does this."""
+    anchor=('        if (simulated is KnockdownPower knockdown && applier != null)\n'
+            '        {\n'
+            '            Player? applyingPlayer = applier.Player\n'
+            '                ?? Players.FirstOrDefault(player => player.Creature.CombatId == applier.CombatId);\n'
+            '            if (applyingPlayer == null)\n'
+            '                throw new InvalidOperationException("击倒 Power 的施加者不是战斗中的玩家。");\n'
+            '            ((StringVar)knockdown.DynamicVars["Applier"]).StringValue = _playerNames[applyingPlayer];\n'
+            '        }\n')
+    addition=('        // CoopBots multiplayer port: FLANKING needs the same applier record as\n'
+              '        // KNOCKDOWN, because its damage bonus excludes the applier\'s own attack.\n'
+              '        if (simulated is FlankingPower flanking && applier != null)\n'
+              '        {\n'
+              '            Player? applyingPlayer = applier.Player\n'
+              '                ?? Players.FirstOrDefault(player => player.Creature.CombatId == applier.CombatId);\n'
+              '            if (applyingPlayer == null)\n'
+              '                throw new InvalidOperationException("夹击 Power 的施加者不是战斗中的玩家。");\n'
+              '            ((StringVar)flanking.DynamicVars["Applier"]).StringValue = _playerNames[applyingPlayer];\n'
+              '        }\n')
+    if text.count(anchor) != 1:
+        raise RuntimeError('SimulatedCombatState Knockdown applier anchor changed; review Flanking.')
+    return text.replace(anchor, anchor + addition)
+
 files=[p for folder in ['Engine','Prediction','Search'] for p in (source/folder).rglob('*.cs')]
 runtime='CombatRootSnapshot ContinuationStamp LiveCombatStamp BattleDamageTracker CardDynamicVarWarmup PowerDynamicVarWarmup SimulationNotificationIsolation SolverDisplayNames SolverProgress SolverSettings SolverDiagnostics CombatReplayOutcome PhysicalMemoryUsage SearchGcLifecycleMetrics SearchMemoryPressureSignal'.split()
 files += [source/'Runtime'/f'{name}.cs' for name in runtime]
@@ -74,6 +252,11 @@ for path in sorted(files):
         adapted=adapted.replace('Player player = LocalContext.GetMe(state)', 'Player player = selectedPlayer ?? LocalContext.GetMe(state)')
     if relative.as_posix() == 'Prediction/CardEffectSpecRegistry.cs':
         adapted=add_multiplayer_card_support(adapted)
+        adapted=add_team_card_support(adapted)
+    if relative.as_posix() == 'Engine/InCombat/Mirrors/Hooks/Damage/ModifyDamageMirrors.cs':
+        adapted=add_team_damage_support(adapted)
+    if relative.as_posix() == 'Search/SimulatedCombatState.cs':
+        adapted=add_flanking_applier(adapted)
     if relative.as_posix() == 'Engine/InCombat/Mirrors/Hooks/Block/ModifyBlockMultiplicativeMirrors.cs':
         anchor=('        int playerCount = context.State.CombatState.Players.Count;\n'
                 '        if (playerCount != 1)\n'

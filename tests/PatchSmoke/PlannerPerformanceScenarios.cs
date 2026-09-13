@@ -18,7 +18,7 @@ internal static class PlannerPerformanceScenarios
     internal static void Run(bool withDraw = false, bool withPlating = false)
     {
         var party = Enumerable.Range(0, 4).Select(i => Player.CreateForNewRun<Deprived>(UnlockState.all,
-            i == 0 ? 1UL : BotRegistry.CreateId(BotDifficulty.Genius, i, i))).ToArray();
+            i == 0 ? 1UL : BotRegistry.CreateId(BotDifficulty.Pro, i, i))).ToArray();
         var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "PERFORMANCE-OPENING"));
         foreach (var p in party)
         {

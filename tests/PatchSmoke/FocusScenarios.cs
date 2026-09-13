@@ -18,7 +18,7 @@ internal static class FocusScenarios
     {
         var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
         var bots = Enumerable.Range(1, 2).Select(i => Player.CreateForNewRun<Deprived>(UnlockState.all,
-            BotRegistry.CreateId(BotDifficulty.Genius, i, i))).ToArray();
+            BotRegistry.CreateId(BotDifficulty.Pro, i, i))).ToArray();
         var party = new[] { human }.Concat(bots).ToArray();
         var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "FOCUS-ALTERNATING"));
         foreach (var p in party)

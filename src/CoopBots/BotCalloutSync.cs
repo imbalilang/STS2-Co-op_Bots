@@ -50,7 +50,7 @@ internal static class BotCalloutSync
     // Host publishes; every client (including the host) shows it locally.
     internal static void Publish(string text, uint target)
     {
-        if (manager is null || string.IsNullOrWhiteSpace(text)) return;
+        if (manager is null) return;
         if (text == lastText && Environment.TickCount64 - lastSentMs < 4000) return;
         lastText = text;
         lastSentMs = Environment.TickCount64;
@@ -72,4 +72,6 @@ internal static class BotCalloutSync
     }
 
     internal static void Reset() => lastText = "";
+
+    internal static void Clear() => Publish("", 0);
 }

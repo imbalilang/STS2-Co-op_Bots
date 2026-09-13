@@ -50,6 +50,9 @@ internal static class CardEffectSpecRegistry
         [typeof(Hegemony)] = [Owner<EnergyNextTurnPower>(card => card.DynamicVars.Energy.IntValue)],
         [typeof(Hyperbeam)] = [Owner<HyperbeamFocusDownPower>("FocusPower")],
         [typeof(Knockdown)] = [Target<KnockdownPower>("KnockdownPower")],
+        // CoopBots multiplayer port: FLANKING declares no variable; each
+        // application is one stack and the multiplier lives in the power hook.
+        [typeof(Flanking)] = [Target<FlankingPower>(_ => 1)],
         [typeof(LightningRod)] = [Owner<LightningRodPower>("LightningRodPower")],
         [typeof(Mangle)] = [Target<ManglePower>("StrengthLoss")],
         [typeof(NegativePulse)] = [AllEnemies<DoomPower>(card => card.DynamicVars.Doom.IntValue)],
@@ -79,6 +82,13 @@ internal static class CardEffectSpecRegistry
         [typeof(TheGambit)] = [Owner<TheGambitPower>(_ => 1)],
         [typeof(Unrelenting)] = [Owner<FreeAttackPower>(_ => 1)],
         [typeof(Veilpiercer)] = [Owner<VeilpiercerPower>(_ => 1)],
+        // CoopBots multiplayer port: the power hooks already exist in this
+        // snapshot (AfterCardDrawn / FrostOrb / AfterCardGeneratedForCombat /
+        // AfterDamageGiven), so only the OnPlay application was missing.
+        [typeof(Cacophony)] = [Owner<CacophonyPower>(card => card.DynamicVars.Cards.IntValue)],
+        [typeof(Hibernate)] = [Owner<HibernatePower>(_ => 1)],
+        [typeof(Soulbound)] = [Target<SoulboundPower>(_ => 1)],
+        [typeof(Underworld)] = [Owner<UnderworldPower>(_ => 1)],
     };
 
     private static readonly HashSet<Type> ResourceEffects =
@@ -86,6 +96,9 @@ internal static class CardEffectSpecRegistry
         typeof(Adrenaline), typeof(BigBang), typeof(BloodWall), typeof(Breakthrough), typeof(BrightestFlame), typeof(GatherLight),
         // CoopBots multiplayer port: instant team/target energy, no power lifecycle needed.
         typeof(EnergySurge), typeof(BelieveInYou),
+        // CoopBots multiplayer port: team-wide next-turn draw and the
+        // HP-for-ally-block trade; both are handled in the switch below.
+        typeof(Plot), typeof(DemonicShield),
         typeof(Glow), typeof(Hemokinesis), typeof(Neurosurge), typeof(Offering), typeof(ShiningStrike), typeof(SolarStrike),
         typeof(AllForOne), typeof(BoneShards), typeof(Bulwark), typeof(Claw), typeof(Compact),
         typeof(DeathsDoor), typeof(EvilEye), typeof(GeneticAlgorithm), typeof(Glitterstream), typeof(GoForTheEyes),
@@ -98,6 +111,12 @@ internal static class CardEffectSpecRegistry
         typeof(AdaptiveStrike), typeof(BoostAway), typeof(CollisionCourse), typeof(CrashLanding),
         typeof(FightThrough), typeof(GraveWarden), typeof(GunkUp), typeof(Overclock), typeof(Reave),
         typeof(Severance), typeof(Undeath),
+        // CoopBots multiplayer port: "add a copy of this card to EVERY player's
+        // discard pile". Generation only; the damage is the generic attack recipe.
+        typeof(Outrage),
+        // CoopBots multiplayer port: cards that hand every player generated
+        // cards or a summon; the per-player loops live in the switch below.
+        typeof(BladeSymphony), typeof(GlimpseBeyond), typeof(LegionOfBone),
     ];
 
     public static IReadOnlyCollection<Type> SupportedTypes
@@ -162,13 +181,11 @@ internal static class CardEffectSpecRegistry
                             effectTarget,
                             amount,
                             owner);
-                        if (effect.PowerType == typeof(KnockdownPower)
-                            && combat.GetPower<KnockdownPower>(effectTarget) is { } knockdown)
-                        {
-                            ((StringVar)knockdown.DynamicVars["Applier"]).StringValue = PlatformUtil.GetPlayerName(
-                                RunManager.Instance.NetService.Platform,
-                                playedCard.Preview.Owner.NetId);
-                        }
+                        // CoopBots multiplayer port: the Applier name is recorded by
+                        // SimulatedCombatState.ApplyPower from its own player-name
+                        // table. Overwriting it here used the live platform lookup,
+                        // which threw outside a Steam host and disagreed with the
+                        // simulated state compared by SemanticStateFieldPolicy.
                         break;
                     }
                     case CardEffectTarget.AllEnemies:
@@ -203,6 +220,70 @@ internal static class CardEffectSpecRegistry
                 applied = true;
                 break;
             }
+            case Outrage:
+                // CoopBots multiplayer port: the damage is the generic attack
+                // recipe; what the snapshot could not express is the copy every
+                // player receives. One per player, the caster included, matching
+                // the native "EVERYONE'S discard pile" wording.
+                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
+                {
+                    simulator.CreateAndAddGeneratedCardsToCombat<Outrage>(
+                        recipient, PileType.Discard, 1, card.Owner);
+                    if (simulator.HasPendingChoice)
+                        return true;
+                }
+                applied = true;
+                break;
+            case BladeSymphony:
+                // "ALL players get {Cards} Shivs into their Hand."
+                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
+                {
+                    simulator.CreateAndAddGeneratedCardsToCombat<Shiv>(
+                        recipient, PileType.Hand, card.DynamicVars.Cards.IntValue, card.Owner);
+                    if (simulator.HasPendingChoice)
+                        return true;
+                }
+                applied = true;
+                break;
+            case GlimpseBeyond:
+                // "ALL players get {Cards} Souls into their Draw Pile."
+                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
+                {
+                    simulator.CreateAndAddGeneratedCardsToCombat<Soul>(
+                        recipient, PileType.Draw, card.DynamicVars.Cards.IntValue, card.Owner);
+                    if (simulator.HasPendingChoice)
+                        return true;
+                }
+                applied = true;
+                break;
+            case LegionOfBone when combat is ICombatPredictionEffectSink summonSink:
+                // "ALL players Summon {Summon}."
+                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
+                {
+                    summonSink.SummonOsty(simulator, recipient, card.DynamicVars["Summon"].IntValue);
+                    if (simulator.HasPendingChoice)
+                        return true;
+                }
+                applied = true;
+                break;
+            case Plot:
+                // "Next turn ALL players draw {Cards} cards." One draw power per
+                // player, matching the native loop over every player.
+                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
+                    ApplyPower(combat, typeof(DrawCardsNextTurnPower), recipient.Creature,
+                        card.DynamicVars.Cards.IntValue, ownerCreature);
+                applied = true;
+                break;
+            case DemonicShield when target is { IsPlayer: true }:
+                // "Lose {HpLoss} HP. Give another player Block equal to your Block."
+                // CalculatedBlock is already resolved to the caster's current block.
+                simulator.Damage(card.Owner.Creature, card.DynamicVars.HpLoss.IntValue,
+                    ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move, card.Owner.Creature);
+                if (simulator.HasPendingChoice)
+                    return true;
+                simulator.GainBlock(target, card.DynamicVars["CalculatedBlock"].IntValue, ValueProp.Unpowered);
+                applied = true;
+                break;
             case EnergySurge:
                 // Every living teammate, matching the native GetTeammatesOf loop.
                 foreach (Creature ally in combat.GetTeammatesOf(ownerCreature))

@@ -46,7 +46,7 @@ internal static class Archetypes
     /// a known signature.
     /// </summary>
     internal sealed record Match(string Name, double Strength,
-        IReadOnlyCollection<string> Signature, IReadOnlyCollection<string> Roles);
+        IReadOnlyCollection<string> Signature, IReadOnlyCollection<string> Roles, int Hits);
 
     internal static IReadOnlyList<Match> Detect(IReadOnlyList<CardModel> deck) => Detect(deck, null);
 
@@ -64,14 +64,31 @@ internal static class Archetypes
     /// deck already holds, or feeds the roles that signature is built from.
     /// </summary>
     internal static double Bonus(CardProfile.Facts facts, CardModel card, IReadOnlyList<CardModel> deck, Player? player)
+        => Bonus(facts, card, deck, player, out _);
+
+    /// <param name="route">
+    /// Name of the route the bonus was computed against, so the decision log can
+    /// say *which* build a pick served instead of a bare "fits/off route" that
+    /// cannot be audited afterwards. Empty when nothing is recognised.
+    /// </param>
+    internal static double Bonus(CardProfile.Facts facts, CardModel card, IReadOnlyList<CardModel> deck, Player? player,
+        out string route)
     {
         var matches = Detect(deck, player);
+        route = matches.Count == 0 ? string.Empty : matches[0].Name;
         if (matches.Count == 0) return 0;
         var counts = Counts(deck);
         var bonus = 0.0;
         for (var rank = 0; rank < Math.Min(2, matches.Count); rank++)
         {
             var match = matches[rank];
+            // Dual-wielding is only for builds that actually combine in real runs:
+            // clusters that share a signature card (BLADE_DANCE belongs to two
+            // Silent shiv clusters) or routes that draw on the same roles (Envenom
+            // feeds poison while a shiv line supplies the attack count that
+            // triggers it). A second unrelated route is hedging, and hedging is
+            // what split the last Silent between poison and attack-count.
+            if (rank == 1 && !Compatible(matches[0], match)) continue;
             var rankWeight = rank == 0 ? 1.0 : 0.5;
             var signatureHit = match.Signature.Contains(card.Id.Entry);
             if (signatureHit)
@@ -81,9 +98,31 @@ internal static class Archetypes
                     bonus += 8 * match.Strength * rankWeight * Decay(counts.GetValueOrDefault(role));
         }
         // A deck that is committed to a route is also paying for cards that serve
-        // no part of it.
-        if (bonus <= 0 && matches[0].Strength > 0.5) bonus -= 4;
+        // no part of it, and the further in it is the more that costs.
+        if (bonus <= 0 && matches[0].Strength > 0.5) bonus -= 4 + Math.Max(0, matches[0].Hits - 2) * 2;
         return bonus;
+    }
+
+    // Two routes may coexist only when the data says they do: they share a
+    // signature card, or they draw on the same role (one route supplying what the
+    // other's payoff needs).
+    private static bool Compatible(Match first, Match second)
+        => first.Signature.Any(second.Signature.Contains) || first.Roles.Any(second.Roles.Contains);
+
+    /// <summary>
+    /// The route(s) a deck currently reads as, for the build log: top match with
+    /// its strength, plus a second when the deck is hedging between two. A deck
+    /// that never names a route is not converging on anything.
+    /// </summary>
+    internal static string Describe(IReadOnlyList<CardModel> deck, Player? player)
+    {
+        try
+        {
+            var matches = Detect(deck, player);
+            if (matches.Count == 0) return "none";
+            return string.Join("+", matches.Take(2).Select(match => $"{match.Name}({match.Strength:F2})"));
+        }
+        catch { return "?"; }
     }
 
     // A cluster is recognised by its signature cards: at least two of them in the
@@ -109,11 +148,14 @@ internal static class Archetypes
         {
             if (!string.Equals(cluster.Character, character, StringComparison.OrdinalIgnoreCase)) continue;
             var hits = cluster.Cards.Count(deckIds.Contains);
+            // One signature is a lean, not a plan: the card may be a payoff whose
+            // enabler is still missing (Rupture with no self-damage source). Only
+            // two-or-more signatures mean the deck has committed to the cluster.
             if (hits < 2) continue;
             var relicHits = cluster.Relics.Count(relicIds.Contains);
             var strength = Math.Min(1.0, (hits / (2.0 * 2.0) + 0.2 * Math.Min(1, relicHits)) * density);
             if (strength <= 0) continue;
-            matches.Add(new Match(cluster.Name, strength, cluster.Cards, RolesOf(cluster.Cards, deck)));
+            matches.Add(new Match(cluster.Name, strength, cluster.Cards, RolesOf(cluster.Cards, deck), hits));
         }
         return matches
             .OrderByDescending(match => match.Strength)
@@ -151,7 +193,7 @@ internal static class Archetypes
             if (strength <= 0) continue;
             var roles = new List<string> { route.Payoff };
             roles.AddRange(route.Enablers);
-            matches.Add(new Match(route.Name, strength, [], roles));
+            matches.Add(new Match(route.Name, strength, [], roles, payoffs));
         }
         return matches.OrderByDescending(match => match.Strength).ThenBy(match => match.Name, StringComparer.Ordinal)
             .ToList();

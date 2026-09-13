@@ -24,6 +24,10 @@ mkdir -p "${baseline_output}"
   -p:STS2DataDir="${game_data}" -p:NuGetAudit=false
 "${dotnet_bin}" build "${repo_dir}/src/CoopBots/CoopBots.csproj" -c Release --no-restore \
   -p:STS2DataDir="${game_data}" -p:NuGetAudit=false -p:OutputPath="${baseline_output}/"
+# The game enumerates our types before the initializer can load CoopBots.Kernel.
+# Guard against a type that needs the kernel at load time (see tests/TypeLoadCheck).
+"${dotnet_bin}" run --project "${repo_dir}/tests/TypeLoadCheck/TypeLoadCheck.csproj" -c Release \
+  -- "${baseline_output}" "${game_data}"
 "${dotnet_bin}" restore "${repo_dir}/tests/PatchSmoke/PatchSmoke.csproj" --ignore-failed-sources \
   -p:CoopBotsDll="${baseline_output}/CoopBots.dll" -p:STS2DataDir="${game_data}"
 "${dotnet_bin}" run --project "${repo_dir}/tests/PatchSmoke/PatchSmoke.csproj" -c Release --no-restore \

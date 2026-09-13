@@ -107,6 +107,10 @@ public sealed partial class KernelSession
     public int Energy(Player player) => simulator.State.GetPlayerCombatState(player).Energy;
     public IReadOnlyList<CardModel> Hand(Player player) => simulator.State.GetPlayerCombatState(player).Hand.Cards.Select(c => c.Original).ToArray();
     public IReadOnlyList<CardModel> Exhaust(Player player) => simulator.State.GetPlayerCombatState(player).ExhaustPile.Cards.Select(c => c.Original).ToArray();
+    public IReadOnlyList<CardModel> Discard(Player player) => simulator.State.GetPlayerCombatState(player).DiscardPile.Cards.Select(c => c.Original).ToArray();
+    public IReadOnlyList<CardModel> DrawPile(Player player) => simulator.State.GetPlayerCombatState(player).DrawPile.Cards.Select(c => c.Original).ToArray();
+    public int OrbCount(Player player) => simulator.State.GetPlayerCombatState(player).OrbQueue.Orbs.Count;
+    public bool HasOsty(Player player) => Combat.GetOsty(player) is not null;
     public IReadOnlyList<PotionModel> UsablePotions(Player player) => player.Potions
         .Where(p => !p.IsQueued && !p.HasBeenRemovedFromState && p.PassesCustomUsabilityCheck
             && p.Usage is PotionUsage.CombatOnly or PotionUsage.AnyTime)

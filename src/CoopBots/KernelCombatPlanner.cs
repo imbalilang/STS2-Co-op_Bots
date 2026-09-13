@@ -15,12 +15,11 @@ namespace CoopBots;
 internal sealed class KernelCombatPlanner
 {
     internal enum Status { Pending, Ready, Fallback }
+    // True while a search is still expanding. The runtime must keep feeding it
+    // frames rather than treating the inter-action interval as a reason to wait.
+    internal bool IsSearching => search is not null;
     internal sealed record PotionPlan(PotionModel Potion, Creature? Target, string Reason);
     internal PotionPlan? ConfirmedPotion { get; private set; }
-    // Set when the plan leaves an enemy that only a human's damage can finish
-    // this turn: the team asks that player to commit the hit.
-    internal sealed record CalloutPlan(Creature Enemy, int NeededHp, string Text);
-    internal CalloutPlan? Callout { get; private set; }
     internal Player? ConfirmedEndTurn { get; private set; }
     private Player[] actorList = [];
     private KernelTeamSearch? search;
@@ -34,6 +33,16 @@ internal sealed class KernelCombatPlanner
     private long revision;
     private int round;
     private uint? focus;
+    // Round whose first post-human plan already spent the deep budget.
+    private int deepRound = -1;
+    // The tail of the last plan, replayed without another search. The team has
+    // already paid for the thinking once; paying again per card is what made a
+    // long think feel like it changed nothing.
+    private readonly Queue<KernelTeamSearch.Action> pending = new();
+    // Ceiling on the one deep plan the team gets per round once the humans have
+    // finished. Deliberately generous — the team usually has little left to
+    // consider by then — but bounded so the player never waits longer than this.
+    private const int MaxDeepWallMs = 5000;
     private long nextLog;
     private double computeMs;
     private int staleCount;
@@ -48,15 +57,25 @@ internal sealed class KernelCombatPlanner
     private int fallbackStale;
     // Split of the stale counter: a search discarded because the world really
     // moved (wasted but necessary) versus one discarded by an unrelated combat
-    // notification that changed nothing the branch depended on.
+    // notification that changed nothing the branch depended on. Notification
+    // churn no longer cancels an in-flight search, so this second bucket should
+    // now be near zero; a non-zero value means a real board change arrived.
     private int fallbackStaleRoot;
     private int fallbackStaleNoise;
     private int fallbackException;
+    // Proactive potions the search proposed but that were declined as redundant.
+    // Kept in the summary so a tuning change can be judged against real runs.
+    private int potionDeclined;
     // Post-mortem context: which encounter this was, how far it got, and the
     // party state, so a wipe can be reviewed from the log alone.
     private string combatLabel = "";
     private int maxRoundSeen;
     private string partyState = "";
+    // Which unmodeled card/mechanic truncated a search, tallied per combat. This
+    // is the data the optimization plan wants model work to be ordered by,
+    // instead of guessing which card matters: a boundary that never appears
+    // cannot be the reason a fight went wrong.
+    private readonly Dictionary<string, int> boundaryKinds = new(StringComparer.Ordinal);
     private void ObserveCombat(CombatState combat, IReadOnlyList<Player> actors)
     {
         combatLabel = $"{combat.Encounter?.Id.Entry ?? "unknown"} act={combat.RunState.CurrentActIndex + 1}";
@@ -69,31 +88,50 @@ internal sealed class KernelCombatPlanner
         search?.Dispose(); search = null; evaluation = null; rootMetrics = null; rootCombat = null;
         if (newCombat)
         {
-            disabledCombat = null; staleCount = 0;
-            if (plans + fallbackBoundary + fallbackNoAction + fallbackStale + fallbackException > 0)
+            disabledCombat = null; staleCount = 0; deepRound = -1; pending.Clear();
+            if (plans + fallbackBoundary + fallbackNoAction + fallbackStale + fallbackException + potionDeclined > 0)
             {
+                // Coverage is the metric the optimization plan is built around:
+                // how often a kernel search actually ends in a deployable plan.
+                // Boundary is an annotation on a plan, not a separate outcome, so
+                // it is excluded from the denominator.
+                var resolved = plans + fallbackNoAction + fallbackStale;
+                var coverage = resolved == 0 ? 0 : 100.0 * plans / resolved;
+                var topBoundaries = boundaryKinds.Count == 0 ? "none"
+                    : string.Join(";", boundaryKinds.OrderByDescending(pair => pair.Value)
+                        .ThenBy(pair => pair.Key, StringComparer.Ordinal).Take(3)
+                        .Select(pair => $"{pair.Key}x{pair.Value}"));
                 Log.Info($"CoopBots kernel combat summary: encounter={combatLabel}, "
-                    + $"plans={plans}, boundary={fallbackBoundary}, no-action={fallbackNoAction}, "
+                    + $"plans={plans} (coverage={coverage:F0}%), boundary={fallbackBoundary}, no-action={fallbackNoAction}, "
                     + $"stale={fallbackStale}(root={fallbackStaleRoot},notification={fallbackStaleNoise}), "
+                    + $"potion-declined={potionDeclined}, "
                     + $"exception={fallbackException}, maxRound={maxRoundSeen}, "
-                    + $"party={partyState}");
+                    + $"party={partyState}, boundaries={topBoundaries}");
             }
             plans = fallbackBoundary = fallbackNoAction = fallbackStale = fallbackException = 0;
-            fallbackStaleRoot = fallbackStaleNoise = 0;
+            fallbackStaleRoot = fallbackStaleNoise = 0; potionDeclined = 0;
+            boundaryKinds.Clear();
             combatLabel = ""; maxRoundSeen = 0; partyState = "";
         }
     }
     internal Status Poll(CombatState combat, IReadOnlyList<Player> actors, uint actionVersion, uint? manualFocus,
-        bool humansFinished, out TeamCombatPlanner.Decision? decision)
+        bool humansFinished, BotDifficulty difficulty, out TeamCombatPlanner.Decision? decision)
     {
         decision = null;
         ConfirmedPotion = null;
         ConfirmedEndTurn = null;
-        Callout = null;
+
         if (actors.Count == 0) { Reset(); return Status.Ready; }
         if (ReferenceEquals(combat, disabledCombat)) return Status.Fallback;
+        // Scope and a queued action: cheap, unambiguous reasons to abandon a
+        // branch. `KernelSession.LiveRevision` deliberately is NOT part of this
+        // check — it counts every combat-state notification, including ones a
+        // branch does not depend on, and discarding on those threw away deep
+        // searches that were still valid. A queued action is a real event and
+        // still cancels here; anything subtler is caught by the authoritative
+        // state-stamp comparison on the completion path before a plan is deployed.
         bool Current() => ReferenceEquals(rootCombat, combat) && round == combat.RoundNumber
-            && queueVersion == actionVersion && revision == KernelSession.LiveRevision && focus == manualFocus
+            && queueVersion == actionVersion && focus == manualFocus
             && actorIds.SequenceEqual(actors.Select(p => p.NetId));
         try
         {
@@ -110,6 +148,7 @@ internal sealed class KernelCombatPlanner
             }
             if (search is null)
             {
+                pending.Clear();
                 var capture = Stopwatch.StartNew();
                 rootCombat = combat; round = combat.RoundNumber; focus = manualFocus; queueVersion = actionVersion;
                 actorIds = actors.Select(p => p.NetId).ToArray();
@@ -121,11 +160,35 @@ internal sealed class KernelCombatPlanner
                 if (fresh) Log.Info($"CoopBots combat start: {combatLabel}; {partyState}");
                 // Two scheduling regimes: while humans are still deciding the
                 // battlefield keeps changing, so each card gets a short, turn-local
-                // search; once everyone has ended their turn we can spend a much
-                // larger budget and project further ahead.
-                var (depth, width, nodes, budgetMs, wallMs, rounds) = humansFinished
-                    ? (16, 12, 3072, 1200, 600, 4)
+                // search; once everyone has ended their turn the team can afford to
+                // project much further and plays its remaining cards out of that
+                // one plan. Only the first plan of the round gets the deep budget:
+                // charging it per remaining card made the team crawl out of its
+                // turn. Later plans in the same round reuse the live budget.
+                var deep = humansFinished && deepRound != round;
+                if (deep) deepRound = round;
+                // Rounds is how many turns each end-turn expansion simulates, and
+                // it dominates the tree size: at six the deep search could never
+                // exhaust its frontier, so every plan — including a zero-energy
+                // one with only free cards left — burned the full wall budget.
+                // Three keeps real cross-turn projection (the live phase uses two)
+                // while letting most searches terminate on their own well before
+                // the five-second ceiling, which is the point of that ceiling.
+                var (depth, width, nodes, budgetMs, wallMs, rounds) = deep
+                    ? (24, 12, 12288, 4500, MaxDeepWallMs, 3)
                     : (9, 8, 768, 200, 300, 2);
+                // Difficulty is a thinking-time knob, not a different algorithm:
+                // scale the node and time budgets, keep the search shape (depth
+                // and width) identical so a fast tier cuts the thinking short
+                // rather than planning something structurally worse.
+                var thinking = difficulty.ThinkingScale();
+                nodes = Math.Max(64, (int)(nodes * thinking));
+                budgetMs = Math.Max(20, (int)(budgetMs * thinking));
+                wallMs = Math.Max(40, (int)(wallMs * thinking));
+                // Hard ceiling for the post-human deep plan. Pro's x1.5 scale would
+                // otherwise push the wall budget past this; Flash's x0.5 stays well
+                // under it, which is the tier behaving as intended.
+                if (deep) wallMs = Math.Min(wallMs, MaxDeepWallMs);
                 timeBudgetMs = budgetMs;
                 // The CPU budget is spread over frames (4ms each), so it must be
                 // capped by wall clock too or a deep search could run for seconds.
@@ -134,7 +197,8 @@ internal sealed class KernelCombatPlanner
                 evaluation = new(combat, actors, manualFocus, null, rounds);
                 rootMetrics = evaluation.Evaluate(root);
                 search = new(root, actors, s => evaluation.Evaluate(s).Score,
-                    new(Depth: depth, Width: width, MaxNodes: nodes, IncludeEndTurns: humansFinished));
+                    new(Depth: depth, Width: width, MaxNodes: nodes, IncludeEndTurns: humansFinished,
+                        MaxRounds: rounds));
                 revision = KernelSession.LiveRevision;
                 computeMs = capture.Elapsed.TotalMilliseconds;
                 // Capture and JIT are not preemptible; never add an expansion slice
@@ -152,6 +216,9 @@ internal sealed class KernelCombatPlanner
             // A completed search must always end in Ready or Fallback. Returning
             // Pending here re-captures and re-searches every frame without ever
             // submitting an action, which leaves the bots idle for the fight.
+            // The state stamp is the authoritative check: Since Current() no
+            // longer treats notification churn as staleness, this is what stops a
+            // plan captured before a real board change from being deployed.
             if (!Current() || KernelSession.CaptureLiveStamp(combat) != stamp)
             {
                 fallbackStale++;
@@ -159,6 +226,10 @@ internal sealed class KernelCombatPlanner
                 Reset(); return Status.Fallback;
             }
             staleCount = 0;
+            // Only a result that passed the stamp check describes the live board,
+            // so only its boundaries are useful model-work evidence.
+            foreach (var (kind, count) in result.Boundaries)
+                boundaryKinds[kind] = boundaryKinds.GetValueOrDefault(kind) + count;
             if (result.Boundaries.Count > 0)
             {
                 // An unmodeled card only removes that card from the search; it must
@@ -190,6 +261,29 @@ internal sealed class KernelCombatPlanner
                         if (++staleCount >= 2) { Reset(); disabledCombat = combat; return Status.Fallback; }
                         Reset(); return Status.Fallback;
                     }
+                    // The search prices boards, not inventory, so a debuff the
+                    // target already carries looks like a small gain and is worth
+                    // "spending" a potion on. The run that exposed this: a boss at
+                    // 15% HP already carrying four Vulnerable stacks, and a bot
+                    // drank a Vulnerable potion into it instead of keeping the
+                    // slot; it died the next turn with nothing left. Re-applying a
+                    // debuff only extends its duration, so treat it as no gain
+                    // unless the line turns it into a kill this turn.
+                    var powerName = planned.GetType().Name switch
+                    {
+                        "VulnerablePotion" => "VulnerablePower",
+                        "WeakPotion" => "WeakPower",
+                        _ => null,
+                    };
+                    var existing = powerName is null || first.Target is null ? 0
+                        : first.Target.Powers.Where(power => power.GetType().Name == powerName).Sum(power => power.Amount);
+                    if (RedundantDebuff(planned.GetType().Name, first.Target is { IsEnemy: true },
+                            first.Target is not null && final.Hp(first.Target) <= 0, existing))
+                    {
+                        potionDeclined++;
+                        Report($"declined redundant potion {planned.Id.Entry}: existing={existing}");
+                        Reset(); return Status.Fallback;
+                    }
                     ConfirmedPotion = new PotionPlan(planned, first.Target,
                         $"kernel-plan:potion:{planned.Id.Entry},sequence:{result.Actions.Count},{result.StopReason}");
                     Report($"planned potion first: {planned.Id.Entry} ({result.Actions.Count} actions)");
@@ -215,7 +309,12 @@ internal sealed class KernelCombatPlanner
                     result.Actions.Count,
                     estimated ? 0 : Math.Max(0, rootMetrics!.WeightedDeaths - metrics.WeightedDeaths),
                     rootMetrics.HpLoss - metrics.HpLoss);
-                Callout = BuildCallout(final);
+                // Replay only a fully modelled tail: an estimated line must be
+                // re-derived against the real board rather than executed blind.
+                if (!estimated && result.Actions.Count > 1)
+                    RememberSequence(result.Actions.Skip(1));
+                // A speculative leaf is not a promise that bots have executed it.
+                // Current-board hints are verified independently after bot actions settle.
                 plans++;
                 if (computeMs >= 80)
                     Report($"search={computeMs:F1}ms wall={Environment.TickCount64 - planningStartMs}ms; "
@@ -257,18 +356,47 @@ internal sealed class KernelCombatPlanner
         catch { fallbackStaleRoot++; }
     }
 
-    // If the plan cannot finish an enemy alone but the humans' combined damage
-    // could, ask them to commit it: the kill removes this and future damage.
-    private CalloutPlan? BuildCallout(KernelSession final)
+    private void RememberSequence(IEnumerable<KernelTeamSearch.Action> actions)
     {
-        if (evaluation is null || final.HasWon) return null;
-        // Same predicate the score credit uses, so a kill that only becomes
-        // reachable through Vulnerable still raises the request.
-        if (evaluation.HumanFinishTarget(final) is not { } finish) return null;
-        var name = finish.Enemy.Monster?.Id.Entry ?? "目标";
-        return new CalloutPlan(finish.Enemy, finish.Remaining,
-            $"请对 {name} 输出，本回合可斩杀（约需 {finish.Remaining} 点，真人可覆盖 {finish.Cover:0} 点）");
+        pending.Clear();
+        foreach (var action in actions) pending.Enqueue(action);
     }
+
+    /// <summary>
+    /// The next card of the plan the team already paid to compute, if it is still
+    /// legal on the live board. Each step is re-validated: anything the plan
+    /// assumed but the board no longer matches drops the whole remainder, so a
+    /// stale assumption can never be played out. Returns false when there is
+    /// nothing to reuse, and the caller searches normally.
+    /// </summary>
+    internal bool TryTakeNextCard(out KernelTeamSearch.Action action)
+    {
+        action = null!;
+        while (pending.Count > 0)
+        {
+            var next = pending.Peek();
+            if (next.Card is not { } card || next.Player.Creature.IsDead
+                || next.Player.PlayerCombatState is not { } state
+                || !state.Hand.Cards.Contains(card) || !card.CanPlayTargeting(next.Target))
+            {
+                pending.Clear();
+                return false;
+            }
+            pending.Dequeue();
+            action = next;
+            return true;
+        }
+        return false;
+    }
+
+    // Re-applying a debuff the target already carries only extends its duration,
+    // so the board barely changes while a limited potion is spent. A potion that
+    // turns the line into a kill this turn is exempt: there the extra Vulnerable
+    // does real work. The threshold is >1 rather than >0 so a single expiring
+    // stack does not block a legitimate refresh.
+    internal static bool RedundantDebuff(string potionName, bool livingEnemy, bool diesThisPlan, int existingPower)
+        => potionName is "VulnerablePotion" or "WeakPotion"
+            && livingEnemy && !diesThisPlan && existingPower > 1;
 
     private void Report(string message)
     {

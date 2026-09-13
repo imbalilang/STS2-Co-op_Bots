@@ -21,7 +21,7 @@ internal static class ShopScenarios
     internal static void Run()
     {
         void Check(bool value, string message) { if (!value) throw new InvalidOperationException("Shop regression: " + message); }
-        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 1));
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
         var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
         var state = RunState.CreateForTest(new[] { human, bot }, seed: "SHOP");
         var combat = new CombatState(runState: state);

@@ -21,7 +21,7 @@ internal static class ImportedCardRelicScenarios
     internal static void Run()
     {
         var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
-        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Genius, 1, 1));
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
         var party = new[] { human, bot }; var bots = new[] { bot };
         var run = RunState.CreateForTest(party, seed: "PORT-20"); var combat = new CombatState(runState: run);
         foreach (var p in party) { p.ResetCombatState(); combat.AddPlayer(p); p.Creature.SetMaxHpInternal(80); p.PlayerCombatState!.Phase = PlayerTurnPhase.Play; }

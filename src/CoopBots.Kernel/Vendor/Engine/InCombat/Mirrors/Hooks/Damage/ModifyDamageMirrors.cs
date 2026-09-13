@@ -105,6 +105,11 @@ internal static class ModifyDamageMirrors
         registry.Register<PenNib>(HandlePenNib);
         registry.Register<UndyingSigil>(HandleUndyingSigil);
 
+        // CoopBots multiplayer port: FLANKING / KNOCKDOWN amplify another
+        // player's attack damage for the rest of the turn. They are a special
+        // Vulnerable, so they belong on this same multiplicative pass.
+        CoopBots.Kernel.TeamDamageMirrors.Register(registry);
+
         return registry;
     }
 

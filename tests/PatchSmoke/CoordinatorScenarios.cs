@@ -18,8 +18,8 @@ internal static class CoordinatorScenarios
     internal static void Run()
     {
         var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
-        var support = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Normal, 1, 1));
-        var attacker = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Normal, 2, 2));
+        var support = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
+        var attacker = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 2));
         var party = new[] { human, support, attacker };
         var run = RunState.CreateForTest(party, seed: "COORDINATOR");
         var combat = new CombatState(runState: run);
