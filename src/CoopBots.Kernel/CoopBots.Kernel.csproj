@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework><LangVersion>13.0</LangVersion>
+    <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>CoopBots.Kernel</AssemblyName><EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RestorePackagesPath>$(MSBuildThisFileDirectory).nuget/packages</RestorePackagesPath>
+  </PropertyGroup>
+  <Import Project="KernelDependencies.props" />
+  <ItemGroup>
+    <PackageReference Include="Krafs.Publicizer" Version="2.3.0" PrivateAssets="all" />
+    <Publicize Include="sts2" IncludeVirtualMembers="false" IncludeCompilerGeneratedMembers="false" />
+    <Reference Include="sts2" HintPath="$(STS2DataDir)/sts2.dll" Private="false" />
+    <Reference Include="0Harmony" HintPath="$(STS2DataDir)/0Harmony.dll" Private="false" />
+    <Reference Include="GodotSharp" HintPath="$(STS2DataDir)/GodotSharp.dll" Private="false" />
+    <Reference Include="STS2-RitsuLib" HintPath="$(RitsuLibDir)/STS2-RitsuLib.dll" Private="false" />
+    <Compile Include="Vendor/**/*.cs" /><Compile Include="*.cs" />
+    <Compile Remove="Vendor/Runtime/CombatReplayOutcome.cs" />
+    <None Include="../../THIRD_PARTY_NOTICES.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

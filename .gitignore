@@ -1,0 +1,27 @@
+.DS_Store
+work/
+outputs/
+**/bin/
+**/obj/
+**/releases/
+*.dll
+*.pdb
+*.exe
+*.zip
+*.rar
+*.dylib
+*.so
+local.props
+
+# Local package cache for the kernel project.
+src/CoopBots.Kernel/.nuget/
+
+# Third-party projects kept in the working copy for reference only. They are not
+# ours to redistribute; what CoopBots does ship from upstream is recorded in
+# THIRD_PARTY_NOTICES.md.
+CombatSolver-0.33.9/
+STS2-AiTeammate-main/
+STS2MCP-main/
+sts2-advisor-main/
+StsCompanion/
+

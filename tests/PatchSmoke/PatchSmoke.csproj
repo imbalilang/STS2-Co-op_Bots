@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <STS2DataDir Condition="'$(STS2DataDir)' == ''">/Users/xiwa/Library/Application Support/Steam/steamapps/common/Slay the Spire 2/SlayTheSpire2.app/Contents/Resources/data_sts2_macos_arm64</STS2DataDir>
+    <CoopBotsDll Condition="'$(CoopBotsDll)' == ''"></CoopBotsDll>
+    <EnableKernelTests Condition="'$(EnableKernelTests)' == ''">false</EnableKernelTests>
+    <DefineConstants Condition="'$(EnableKernelTests)' == 'true'">$(DefineConstants);KERNEL_TESTS</DefineConstants>
+  </PropertyGroup>
+  <Import Project="../../src/CoopBots.Kernel/KernelDependencies.props" />
+  <ItemGroup Condition="'$(CoopBotsDll)' == ''">
+    <ProjectReference Include="../../src/CoopBots/CoopBots.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(CoopBotsDll)' != ''">
+    <Reference Include="CoopBots" HintPath="$(CoopBotsDll)" Private="true" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- CoopBots' public API (CombatMove) exposes kernel types, so the kernel
+         reference is required by every test run, not only the kernel scenarios. -->
+    <ProjectReference Include="../../src/CoopBots.Kernel/CoopBots.Kernel.csproj" />
+    <Reference Include="STS2-RitsuLib" HintPath="$(RitsuLibDir)/STS2-RitsuLib.dll" Private="true" />
+    <Compile Remove="KernelEngineScenarios.cs" Condition="'$(EnableKernelTests)' != 'true'" />
+    <Compile Remove="KernelRoundScenarios.cs" Condition="'$(EnableKernelTests)' != 'true'" />
+    <Reference Include="System.IO.Hashing" HintPath="$(STS2DataDir)/System.IO.Hashing.dll" Private="true" />
+    <Reference Include="sts2" HintPath="$(STS2DataDir)/sts2.dll" Private="true" />
+    <Reference Include="GodotSharp" HintPath="$(STS2DataDir)/GodotSharp.dll" Private="true" />
+    <Reference Include="0Harmony" HintPath="$(STS2DataDir)/0Harmony.dll" Private="true" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,9 @@
+<Project>
+  <PropertyGroup>
+    <RitsuLibDir Condition="'$(RitsuLibDir)' == ''">$(STS2DataDir)/../../../workshop/content/2868840/3747602295/lib/0.111.0</RitsuLibDir>
+  </PropertyGroup>
+  <Target Name="CheckKernelDependency" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(RitsuLibDir)/STS2-RitsuLib.dll')"
+      Text="Kernel development requires STS2-RitsuLib. Pass -p:RitsuLibDir=the directory containing STS2-RitsuLib.dll for game 0.111.0." />
+  </Target>
+</Project>

@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>CoopBots</AssemblyName>
+    <RootNamespace>CoopBots</RootNamespace>
+    <DebugType>portable</DebugType>
+    <Deterministic>true</Deterministic>
+    <STS2DataDir Condition="'$(STS2DataDir)' == ''">/Users/xiwa/Library/Application Support/Steam/steamapps/common/Slay the Spire 2/SlayTheSpire2.app/Contents/Resources/data_sts2_macos_arm64</STS2DataDir>
+    <STS2ReferenceVersion Condition="'$(STS2ReferenceVersion)' == ''"></STS2ReferenceVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../CoopBots.Kernel/CoopBots.Kernel.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>PatchSmoke</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <ItemGroup Condition="'$(STS2ReferenceVersion)' == ''">
+    <Reference Include="sts2">
+      <HintPath>$(STS2DataDir)/sts2.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="GodotSharp">
+      <HintPath>$(STS2DataDir)/GodotSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(STS2DataDir)/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(STS2ReferenceVersion)' != ''">
+    <PackageReference Include="BSchneppe.Sts2.ReferenceAssemblies" Version="$(STS2ReferenceVersion)" PrivateAssets="All" />
+  </ItemGroup>
+</Project>

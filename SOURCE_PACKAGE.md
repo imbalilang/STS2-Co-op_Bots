@@ -1,0 +1,29 @@
+# CoopBots 源码包说明
+
+本源码包对应 `CoopBots 0.4.0-preview.64`，只包含继续开发、构建和测试所需的文本源码与配置。
+
+## 包含内容
+
+- `src/CoopBots/`：MOD C# 源码、项目文件和 Mod 清单。
+- `src/CoopBots.Kernel/`：接入 CombatSolver 的模拟内核实验项目；`Vendor/` 为上游导入源码，来源见 `UPSTREAM.json` 与 `INTEGRATION.md`。
+- `tests/PatchSmoke/`：补丁挂载与多人协作回归测试源码。
+- `scripts/`：macOS/Linux 与 Windows 构建脚本、CombatSolver 内核导入器。
+- `CombatSolver-0.33.9/`：用于算法研究的参考项目源码、测试、文档、开发约束与第三方声明。
+- `README.md`、`.gitignore` 和本说明。
+
+## 已排除内容
+
+- 所有 `bin/`、`obj/`、仓库根发行包目录和 `.git/` 目录；作为开发文档的 `docs/releases/` 会保留。
+- `work/` 中的本地 .NET SDK、反编译工具、缓存和重复解压目录。
+- `outputs/` 中的 DLL、历史安装包和其他发行物。
+- 所有 DLL、PDB、EXE、ZIP、RAR、DYLIB、SO 和系统元数据文件。
+
+## 构建环境
+
+- .NET 9 SDK。
+- 《杀戮尖塔 2》v0.111.0 的本地游戏程序集。
+- RitsuLib 0.5.20+ 的 0.111.0 变体程序集（`STS2-RitsuLib.dll`），内核编译期引用；默认从 `$(STS2DataDir)/../../../workshop/content/2868840/3747602295/lib/0.111.0` 解析，可用 `-p:RitsuLibDir=...` 覆盖。
+- macOS/Linux：`./scripts/build.sh`。
+- Windows：`scripts/build.ps1`，必要时传入 `-GameData` 和 `-Dotnet`。
+
+游戏程序集、RitsuLib 和 .NET SDK 不随源码包分发。发布包声明 RitsuLib 为运行依赖但不内含其二进制。`CombatSolver-0.33.9` 没有覆盖整个仓库的统一软件许可证；其来源关系和 Random Foreseer 许可条件以随包保留的 `THIRD_PARTY_NOTICES.md` 为准。
