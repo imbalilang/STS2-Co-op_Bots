@@ -109,6 +109,13 @@ internal sealed class KernelCombatEvaluation
             var p = party[i]; var creature = p.Creature;
             var health = state.Hp(creature);
             var incoming = victory || state.EnemyPhaseCompleted ? 0 : attacks.Sum(a => state.IntentHit(a.Enemy, creature, a.Raw) * a.Repeats);
+            // Held cards that charge Damage are ordinary damage: the Aeonglass
+            // boss's Wither lands at end of turn but still has to get through
+            // block, so it joins the incoming total and is priced against the same
+            // block as an enemy attack. Only the HpLoss shape (Beckon) bypasses
+            // block; that part is charged to cost further down.
+            var held = victory || state.EnemyPhaseCompleted ? default : HeldPenaltySplit(state, p);
+            incoming += held.Blockable;
             // Cross-turn awareness: what the enemy will do over the coming rounds,
             // evaluated against this branch's powers, so setup (kill/Weak) that
             // prevents a big future hit is preferred over greed now. Later rounds
@@ -141,7 +148,7 @@ internal sealed class KernelCombatEvaluation
             // keeping them costs. Charged while the turn is still open, and
             // skipped once the phase has settled because the simulation has then
             // already applied the real effect.
-            if (!victory && !state.EnemyPhaseCompleted) cost += HeldPenalty(state, p);
+            cost += held.Unblockable;
             var block = state.Block(creature) + endBlock[i];
             var forced = !victory && !state.EnemyPhaseCompleted && state.SandpitDeath(creature);
             var dead = health <= 0 || forced || incoming - block >= health;
@@ -198,23 +205,22 @@ internal sealed class KernelCombatEvaluation
         return new(score, weightedDeaths, loss, softFinish);
     }
 
-    // Unblockable damage this player will take at end of turn for the cards they
-    // are still holding. Zero for a hand with nothing that punishes holding.
-    private static double HeldPenalty(KernelSession state, Player player)
+    // Damage this player will take at end of turn for the cards they are still
+    // holding, split by whether block can absorb it. Zero for a hand with nothing
+    // that punishes holding.
+    private static (double Unblockable, double Blockable) HeldPenaltySplit(KernelSession state, Player player)
     {
-        var total = 0.0;
+        double unblockable = 0, blockable = 0;
         foreach (var card in state.Hand(player))
         {
-            try
-            {
-                if (!card.HasTurnEndInHandEffect) continue;
-                total += card.DynamicVars.Values
-                    .Where(variable => variable.GetType().Name == "HpLossVar")
-                    .Sum(variable => (double)variable.BaseValue);
-            }
-            catch { /* an unreadable card simply charges nothing */ }
+            // One implementation, shared with the individual scorer: the two used
+            // to be copies, which is how the Damage-shaped cards (Wither) ended up
+            // missing from both.
+            GeniusCombatStrategy.HeldPenaltySplit(card, out var life, out var damage);
+            unblockable += life;
+            blockable += damage;
         }
-        return total;
+        return (unblockable, blockable);
     }
 
     // Per-turn Strength this enemy gains (Ritual-like scaling). Zero for the

@@ -58,33 +58,50 @@ internal static class BotCooperation
         }
         if (_panel is null || !GodotObject.IsInstanceValid(_panel))
         {
-            _panel = new PanelContainer { Name = "CoopBotsCombatControls", ZIndex = 100,
-                AnchorLeft = 1, AnchorRight = 1, OffsetLeft = -460, OffsetRight = -20,
-                OffsetTop = 105, OffsetBottom = 200, MouseFilter = Control.MouseFilterEnum.Stop };
+            var chinese = BotUiTheme.Chinese();
+            _panel = BotUiTheme.Panel("CoopBotsCombatControls");
+            _panel.ZIndex = 100;
+            _panel.AnchorLeft = 1; _panel.AnchorRight = 1;
+            _panel.OffsetLeft = -460; _panel.OffsetRight = -20;
+            _panel.OffsetTop = 105; _panel.OffsetBottom = 105;
+            _panel.GrowHorizontal = Control.GrowDirection.Begin;
+            _panel.Theme = run.Theme;
+            var margin = BotUiTheme.Margin(12);
             var column = new VBoxContainer();
-            // The callout asks the player for a specific hit, so it must be the
-            // first thing seen rather than a line inside the status block: its
-            // own larger, coloured label above everything else.
-            _callout = new Label { Name = "CoopBotsCallout", Visible = false,
-                AutowrapMode = TextServer.AutowrapMode.WordSmart,
-                CustomMinimumSize = new Vector2(420, 0), MouseFilter = Control.MouseFilterEnum.Ignore };
-            _callout.AddThemeColorOverride("font_color", new Color(1f, 0.78f, 0.20f));
-            _callout.AddThemeFontSizeOverride("font_size", 19);
+            column.AddThemeConstantOverride("separation", 8);
+            margin.AddChild(column);
+            // The callout asks the player for a specific hit, so it is the first
+            // thing seen rather than a line inside the status block.
+            _callout = BotUiTheme.Text(string.Empty, 15, BotUiTheme.Accent);
+            _callout.Name = "CoopBotsCallout";
+            _callout.Visible = false;
+            _callout.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            _callout.CustomMinimumSize = new Vector2(420, 0);
+            _callout.MouseFilter = Control.MouseFilterEnum.Ignore;
             column.AddChild(_callout);
-            _status = new Label { Text = "Co-op Bots", AutowrapMode = TextServer.AutowrapMode.WordSmart,
-                CustomMinimumSize = new Vector2(420, 45) };
-            column.AddChild(_status);
+            var header = new HBoxContainer();
+            header.AddThemeConstantOverride("separation", 10);
+            header.AddChild(BotUiTheme.Text("Co-op Bots", 13, BotUiTheme.Muted));
+            _status = BotUiTheme.Text(string.Empty, 13, BotUiTheme.Ink);
+            _status.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            _status.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+            header.AddChild(_status);
+            column.AddChild(header);
             var buttons = new HBoxContainer();
-            _pause = new Button { Text = "暂停" };
+            buttons.AddThemeConstantOverride("separation", 8);
+            _pause = new Button { Text = chinese ? "暂停" : "Pause", SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
             _pause.Pressed += () => { Gate.TogglePause(); if (!Gate.Paused) BotRuntime.ResumeAfterPause(); };
-            buttons.AddChild(_pause); column.AddChild(buttons);
-            _focus = new OptionButton();
+            buttons.AddChild(_pause);
+            column.AddChild(buttons);
+            _focus = new OptionButton { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
             _focus.ItemSelected += index => FocusTarget = index >= 0 && index < _focusIds.Count ? _focusIds[(int)index] : null;
             column.AddChild(_focus);
-            _advice = new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart,
-                CustomMinimumSize = new Vector2(420, 65), MouseFilter = Control.MouseFilterEnum.Ignore };
+            _advice = BotUiTheme.Text(string.Empty, 12, BotUiTheme.Muted);
+            _advice.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            _advice.MouseFilter = Control.MouseFilterEnum.Ignore;
             column.AddChild(_advice);
-            _panel.AddChild(column); run.AddChild(_panel);
+            _panel.AddChild(margin);
+            run.AddChild(_panel);
         }
         var active = combat is not null && CombatManager.Instance.IsInProgress;
         if (_callout is not null && GodotObject.IsInstanceValid(_callout))
@@ -97,6 +114,11 @@ internal static class BotCooperation
         _panel.Visible = active && !mapOpen || HumanAdviceUi.Enabled && (mapOpen || relics is not null);
         _advice!.Visible = HumanAdviceUi.Enabled;
         _pause!.Visible = _focus!.Visible = active && !mapOpen && isHost;
+        // The button is the state: a static "暂停" label said nothing about
+        // whether the team was already paused.
+        _pause.Text = Gate.Paused
+            ? (BotUiTheme.Chinese() ? "继续" : "Resume")
+            : (BotUiTheme.Chinese() ? "暂停" : "Pause");
         if (HumanAdviceUi.Enabled && _panel.Visible && DateTime.UtcNow >= _nextAdviceAt && RunManager.Instance.ActionExecutor.CurrentlyRunningAction is null
             && RunManager.Instance.ActionQueueSet.IsEmpty)
         {
@@ -148,15 +170,37 @@ internal static class BotCooperation
             if (selected < 0) { FocusTarget = null; selected = 0; }
             _focus.Select(selected);
         }
-        _pause!.Text = Gate.Paused ? "继续" : "暂停";
-        _status!.Text = Gate.Paused ? "已暂停：不再提交新的 Bot 行动"
-            : (humansFinished ? "快速收尾：全队每 0.2 秒一次行动" : "协作节奏：全队每秒一次行动") +
-                (string.IsNullOrEmpty(LastAction) ? "" : "\n" + LastAction);
+        var zh = BotUiTheme.Chinese();
+        _pause!.Text = Gate.Paused ? (zh ? "继续" : "Resume") : (zh ? "暂停" : "Pause");
+        // With every human dead the team plays the fight out alone; a deep search
+        // can take seconds, so say what the silence is instead of looking frozen.
+        _status!.Text = Gate.Paused
+            ? (zh ? "已暂停：不再提交新的 Bot 行动" : "Paused: no new bot actions")
+            : (SoloThinking
+                ? (zh ? "机器人思考中……" : "Bots are thinking…")
+                : humansFinished
+                    ? (zh ? "快速收尾：全队连续行动" : "Wrapping up: the team acts back to back")
+                    : (zh ? "协作节奏：等待真人决策" : "Co-op pace: waiting for the humans"))
+              + (string.IsNullOrEmpty(LastAction) ? "" : "\n" + LastAction);
     }
 
     internal static bool HumansFinished(RunState state) => MultiHumanCooperation.HumansReady(state.Players,
         CombatManager.Instance.IsPlayerReadyToEndTurn);
 
-    internal static void Reset() { Gate.Reset(); LastAction = ""; FocusTarget = null; _enemySignature = ""; _nextAdviceAt = DateTime.MinValue; Callout = ""; _calloutUntilMs = 0; }
+    /// <summary>
+    /// Every human is dead, so the rest of this fight belongs to the team alone:
+    /// nothing can change under a search and nobody is waiting on it. The planner
+    /// uses this to spend its deep budget on every plan, not just the first.
+    /// </summary>
+    internal static bool AllHumansDown(IRunState state)
+        => state.Players.Where(p => !BotRegistry.IsBot(p.NetId)).All(p => !p.Creature.IsAlive);
+
+    /// <summary>True while the team is deliberating alone, so the panel can say so.</summary>
+    internal static bool SoloThinking { get; set; }
+
+    /// <summary>True while the stored script is being played out.</summary>
+    internal static bool SoloExecuting { get; set; }
+
+    internal static void Reset() { Gate.Reset(); LastAction = ""; SoloThinking = false; SoloExecuting = false; FocusTarget = null; _enemySignature = ""; _nextAdviceAt = DateTime.MinValue; Callout = ""; _calloutUntilMs = 0; }
 }
 

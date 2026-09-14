@@ -100,6 +100,10 @@ public static class BotRuntime
                 || manager.ActionQueueSynchronizer.CombatState != MegaCrit.Sts2.Core.Entities.Multiplayer.ActionSynchronizerCombatState.PlayPhase
                 || BotCooperation.Gate.Paused) { KernelPlanner.Reset(); _planStartedAt = 0; return; }
             var humansFinished = BotCooperation.HumansFinished(state);
+            var allHumansDown = BotCooperation.AllHumansDown(state);
+            // The panel shows this while the team thinks a fight through alone.
+            BotCooperation.SoloThinking = allHumansDown && KernelPlanner.IsSearching;
+            BotCooperation.SoloExecuting = allHumansDown && KernelPlanner.HasPendingPlan;
             var teamDifficulty = TeamDifficulty(state);
             if (combatIdentity is not MegaCrit.Sts2.Core.Combat.CombatState combat) return;
             Pacing.Observe(combat, combat.RoundNumber, ClockMs);
@@ -111,6 +115,40 @@ public static class BotRuntime
             if (eligible.Count == 0) { KernelPlanner.Reset(); _planStartedAt = 0; return; }
             var candidates = new List<(MegaCrit.Sts2.Core.Entities.Players.Player Player, BotBrain.CombatMove Move)>();
             var botsIdle = NoPlayableCard(eligible);
+            // Play out the plan the team already computed, one step per tick, with
+            // no search in between. Solo takeover is the case this exists for: a
+            // single very long think resolves the whole fight and the rest of it
+            // is executed — end-turn steps included — without thinking again.
+            // The interval must not delay a queued script, so this runs first.
+            if (KernelPlanner.HasPendingPlan && KernelPlanner.TryTakeNext(humansFinished, out var step))
+            {
+                if (step.EndTurn)
+                {
+                    EnqueueAs.Invoke(manager.ActionQueueSynchronizer,
+                        new object[] { new EndPlayerTurnAction(step.Player, step.Player.PlayerCombatState!.TurnNumber), step.Player.NetId });
+                    BotCooperation.LastAction = $"{BotRegistry.DisplayName(step.Player.NetId)}：按计划结束回合";
+                    Log.Info($"CoopBots team: {step.Player.NetId} ends the turn; plan-step");
+                }
+                else
+                {
+                    var stepCard = step.Card!;
+                    if (step.Choices is { Count: > 0 }
+                        && !BotChoicePlanSync.Prepare(new(step.Player, new(stepCard, step.Target, 0, "plan-step", step.Choices), 1), combat)) return;
+                    EnqueueAs.Invoke(manager.ActionQueueSynchronizer,
+                        new object[] { new PlayCardAction(stepCard, step.Target), step.Player.NetId });
+                    TeamFocus.ObserveSubmitted(combat, new(stepCard, step.Target, 0), BotCooperation.FocusTarget);
+                    BotCooperation.LastAction = $"按计划：{BotRegistry.DisplayName(step.Player.NetId)} — {stepCard.Title}";
+                    Log.Info($"CoopBots team: {step.Player.NetId} plays {stepCard.Id.Entry} on {step.Target?.LogName}; plan-step");
+                    var stepTurn = step.Player.PlayerCombatState!.TurnNumber;
+                    if (!TurnState.TryGetValue(step.Player.NetId, out var stepProgress) || stepProgress.Turn != stepTurn)
+                        TurnState[step.Player.NetId] = stepProgress = (stepTurn, 0);
+                    TurnState[step.Player.NetId] = (stepTurn, stepProgress.Actions + 1);
+                }
+                _lastProgressAt = ClockMs;
+                _idleLast = false;
+                Pacing.MarkAction(ClockMs, 0);
+                return;
+            }
             // The interval throttles only the idle re-check, never the action
             // itself: an in-flight search keeps its frames, and a team with a
             // playable card acts as soon as the plan is ready. Waiting the whole
@@ -119,26 +157,6 @@ public static class BotRuntime
             if ((botsIdle || _idleLast) && !KernelPlanner.IsSearching
                 && !Pacing.IsDue(ClockMs, humansFinished, BotCooperation.Gate.Paused,
                     teamDifficulty.CardIntervalMs())) { _planStartedAt = 0; return; }
-            // Reuse the tail of the last plan: the team already thought once this
-            // turn, so submit the next card it chose without searching again. This
-            // is what turns "one long think" into "then play it out"; each step is
-            // re-validated against the live board inside TryTakeNextCard.
-            if (!botsIdle && KernelPlanner.TryTakeNextCard(out var reuse))
-            {
-                var reuseCard = reuse.Card!;
-                EnqueueAs.Invoke(manager.ActionQueueSynchronizer,
-                    new object[] { new PlayCardAction(reuseCard, reuse.Target), reuse.Player.NetId });
-                var reuseTurn = reuse.Player.PlayerCombatState!.TurnNumber;
-                if (!TurnState.TryGetValue(reuse.Player.NetId, out var reuseProgress) || reuseProgress.Turn != reuseTurn)
-                    TurnState[reuse.Player.NetId] = reuseProgress = (reuseTurn, 0);
-                TurnState[reuse.Player.NetId] = (reuseTurn, reuseProgress.Actions + 1);
-                BotCooperation.LastAction = $"续用计划：{BotRegistry.DisplayName(reuse.Player.NetId)} — {reuseCard.Title}";
-                Log.Info($"CoopBots team: {reuse.Player.NetId} plays {reuseCard.Id.Entry} on {reuse.Target?.LogName}; reused-plan");
-                _lastProgressAt = ClockMs;
-                _idleLast = false;
-                Pacing.MarkAction(ClockMs, 0);
-                return;
-            }
             // Stamp the start of this plan once: the search spans several frames,
             // and the next wait is shortened by how long it actually took.
             if (_planStartedAt == 0) _planStartedAt = ClockMs;
@@ -185,7 +203,7 @@ public static class BotRuntime
                 else if (BotChoicePlanSync.Resume(combat, out joint))
                     kernelStatus = joint is null ? KernelCombatPlanner.Status.Pending : KernelCombatPlanner.Status.Ready;
                 else kernelStatus = KernelPlanner.Poll(combat, eligible, manager.ActionQueueSet.NextActionId,
-                    BotCooperation.FocusTarget, humansFinished, teamDifficulty, out joint);
+                    BotCooperation.FocusTarget, humansFinished, teamDifficulty, out joint, allHumansDown);
             }
             catch (Exception error)
             {
@@ -199,7 +217,11 @@ public static class BotRuntime
             // Free potion actions are taken before card planning: a rescue potion
             // wins; otherwise a kernel-confirmed proactive potion (e.g. buff then
             // burst) is used now and the cards are replanned against real state.
-            var earlyPotion = BotPotionPlanner.Choose(eligible, state.Players);
+            // Defensive bottles are judged last: until every bot is out of cards a
+            // card may still cover the hit, which would make the "full dose" partly
+            // wasted. Lethal ones are judged now, so the throw lands before the
+            // team commits its plays to an enemy the potion removes outright.
+            var earlyPotion = BotPotionPlanner.Choose(eligible, state.Players, NoPlayableCards(eligible));
             if (earlyPotion is null && joint is null && KernelPlanner.ConfirmedPotion is { } proactivePotion)
             {
                 proactivePotion.Potion.EnqueueManualUse(proactivePotion.Target);
@@ -287,7 +309,7 @@ public static class BotRuntime
             if (potion is not null)
             {
                 potion.Potion.EnqueueManualUse(potion.Target);
-                BotCooperation.LastAction = "使用救援药水：" + potion.Potion.Id.Entry;
+                BotCooperation.LastAction = $"{decision.Branch}：{potion.Potion.Id.Entry}";
                 Log.Info($"CoopBots potion: {potion.Potion.Id.Entry}; {potion.Reason}");
                 _lastProgressAt = ClockMs;
                 Pacing.MarkAction(ClockMs, _planStartedAt);
@@ -323,7 +345,20 @@ public static class BotRuntime
                 BotCooperation.LastAction = $"{decision.Branch}：{BotRegistry.DisplayName(best.Player.NetId)} — {chosen.Title}";
                 if (joint is not null && joint.HpSaved > 0)
                     BotCooperation.LastAction += $"\n计划预计减少全队战损 {joint.HpSaved:F0} 点";
-                Log.Info($"CoopBots team: {best.Player.NetId} plays {chosen.Id.Entry} on {best.Move.Target?.LogName}; score={best.Move.Score:F1}; {best.Move.Reason}");
+                // The review could count "40 of 61 plays came from the legacy
+                // planner" but not say why the kernel abstained. Naming the
+                // fallback kind on the move that followed is what makes the
+                // difference between "out of cards" and "found nothing better".
+                var viaKernel = kernelStatus == KernelCombatPlanner.Status.Ready && joint is not null;
+                var attribution = viaKernel ? "kernel" : KernelPlanner.LastNoAction switch
+                {
+                    KernelCombatPlanner.NoActionKind.Idle => "legacy:kernel-idle",
+                    KernelCombatPlanner.NoActionKind.Tie => "legacy:kernel-tie",
+                    KernelCombatPlanner.NoActionKind.Boundary => "legacy:kernel-boundary",
+                    _ => "legacy",
+                };
+                Log.Info($"CoopBots team: {best.Player.NetId} plays {chosen.Id.Entry} on {best.Move.Target?.LogName}; "
+                    + $"score={best.Move.Score:F1}; via={attribution}; {best.Move.Reason}");
                 _lastProgressAt = ClockMs;
                 _idleLast = false;
                 Pacing.MarkAction(ClockMs, _planStartedAt);

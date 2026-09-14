@@ -30,6 +30,17 @@ internal static class BuildValue
     // Thinning a starter card out of a real deck is worth this much before any
     // comparison against the rest of the deck.
     private const double StarterRemovalBaseline = 55;
+    // Thinning is worth more the more dead draws the deck still carries: the
+    // first removal takes one Strike out of fifteen, the eighth takes one out of
+    // eight that are left. A flat baseline could never outbid the shop's growing
+    // price — 55 x 2.2 = 121 gold against a 150-gold second removal — so the
+    // decks that most needed thinning were exactly the ones that could not buy
+    // it, and every run ended with ten starters still in the deck.
+    private static double StarterPressure(IReadOnlyList<CardModel> deck)
+    {
+        var starters = deck.Count(card => card.Rarity == CardRarity.Basic && !card.IsUpgraded);
+        return Math.Min(2.5, 1 + 0.35 * Math.Max(0, starters - 1));
+    }
     // Draws per turn a hand represents, used to price the dilution a new card
     // imposes on the cards already in the deck.
     private const double HandSize = 5;
@@ -81,7 +92,7 @@ internal static class BuildValue
         var scaling = facts.Scaling * ScalingWeight + (facts.Poison + facts.Doom) * DoomWeight;
         if (scaling > 0)
         {
-            if (UnsupportedScaling(card, deck))
+            if (UnsupportedScaling(card, deck) && !DefenceAlreadySupported(facts, deck))
             {
                 // The card's mined partners exist and none are in the deck: it is
                 // a payoff whose enabler is missing. Rupture (Strength when you
@@ -163,8 +174,24 @@ internal static class BuildValue
         // declined — because it is not closer to the target build, rather than
         // because it is weak. A card that advances the recognised route pays much
         // less of it, which is how a plan-advancing card still gets in.
-        var route = Archetypes.Bonus(CardProfile.Of(card), card, deck, player);
-        var pressure = Oversize(deck.Count) * (route > 0 ? OnPlanRelief : 1.0);
+        //
+        // "On plan" has two sources and needs both. The recognised route is one;
+        // the mined card-to-card affinity is the other, and leaving it out skipped
+        // cards the mining says belong with this deck — a Deadly Poison was
+        // declined from a poison deck because the route happened to be detected
+        // from a different cluster that does not list it as a signature.
+        var facts = CardProfile.Of(card);
+        var route = Archetypes.Bonus(facts, card, deck, player);
+        // Filling a function the deck is short of also earns the relief. Without
+        // it a bloated deck could be shown `needs-block` in the same breath as a
+        // 40-point penalty for being big, which is how a deck that could not
+        // block stayed that way.
+        var onPlan = route > 0.01 || Affinity(card, deck) > 0.01 || GapBonus(facts, deck, null) > 0.01;
+        // A card nothing asked for is worse later in the run: the shops that
+        // could have removed it are behind the party, and once no shop is left
+        // the dilution is permanent. Plan cards keep their relief, so a route
+        // can still be finished in the last act.
+        var pressure = Oversize(deck.Count) * (onPlan ? OnPlanRelief : RunDepth.BloatFactor(player));
         var total = own.Total - dilution - pressure;
         var reason = own.Reason
             + (dilution > 0.5 ? $",dilutes:{dilution:F1}" : "")
@@ -179,9 +206,16 @@ internal static class BuildValue
     // must still be taken.
     private const int FormingSize = 15;
     private const double SizePressure = 5.0;
+    // The pressure saturates. Unbounded, it reached 40-45 points in the 23-24
+    // card decks the reviewed run actually had, which is more than any card's own
+    // contribution: the log shows Blood Wall declined at -37.8 from a deck whose
+    // own reason line said `needs-block`. Past a point, "this deck is big" is the
+    // dilution term's job, and dilution is already charged separately.
+    private const double SizePressureCap = 30;
     // A card the recognised route asked for justifies most of the extra size.
     private const double OnPlanRelief = 0.4;
-    private static double Oversize(int size) => Math.Max(0, size - FormingSize) * SizePressure;
+    private static double Oversize(int size)
+        => Math.Min(SizePressureCap, Math.Max(0, size - FormingSize) * SizePressure);
 
     /// <summary>
     /// Removing a card is worth the value it was contributing, plus the draws it
@@ -199,7 +233,7 @@ internal static class BuildValue
         // baseline even when the rest of the deck is no better. Without this a
         // uniformly poor deck looks like it has nothing worth removing.
         var starter = card.Rarity == CardRarity.Basic && !card.IsUpgraded && deck.Count >= 12
-            ? StarterRemovalBaseline
+            ? StarterRemovalBaseline * StarterPressure(deck)
             : double.NegativeInfinity;
         // The last copy of a role the deck depends on is not a preference that a
         // score can outweigh: removing it would leave the deck unable to block,
@@ -346,6 +380,26 @@ internal static class BuildValue
             && partners.Any(partner => string.Equals(partner.Card, existing.Id.Entry, StringComparison.Ordinal)));
     }
 
+    // Dexterity is not a promise that needs a partner card: it multiplies every
+    // block card the deck already plays. The mined table only records which cards
+    // were drafted together, so a block deck without Footwork's mined partners
+    // read as an unsupported payoff and the card lost 60% of its scaling — the
+    // reviewed Silent had Footwork flagged `scaling-unsupported` in a deck whose
+    // existing block cards were exactly what the Dexterity was for.
+    //
+    // Only Dexterity is exempt, and the coverage test is what makes that safe.
+    // Strength looks identical from the outside but is not: Rupture reads as a
+    // Strength payoff too, and its Strength only arrives when the deck loses HP.
+    // Nothing the profile exposes separates "multiplies the attacks you have"
+    // from "waits for a trigger", so the deck's attack count would clear the
+    // warning on a card with no enabler at all. Focus is the same problem for a
+    // different reason: no role describes an orb card, so there is no coverage to
+    // measure. Both keep the mined prior until a conditional-Strength signal
+    // exists.
+    private static bool DefenceAlreadySupported(CardProfile.Facts facts, IReadOnlyList<CardModel> deck)
+        => facts.Roles.Contains("dexterity")
+            && deck.Count(existing => RolesOf(existing).Contains("block")) >= 3;
+
     private static double Affinity(CardModel card, IReadOnlyList<CardModel> deck)
     {
         if (deck.Count == 0) return 0;
@@ -362,22 +416,33 @@ internal static class BuildValue
     }
 
     // Filling a role the deck has none of is worth more than a second copy of a
-    // role it already covers.
+    // role it already covers. The same test decides the size relief, so a card
+    // cannot be told it fills a gap and then charged the full penalty for being
+    // another card.
     private static double NeedBonus(CardModel card, CardProfile.Facts facts, IReadOnlyList<CardModel> deck, List<string> reasons)
+        => GapBonus(facts, deck, reasons);
+
+    private static double GapBonus(CardProfile.Facts facts, IReadOnlyList<CardModel> deck, List<string>? reasons)
     {
         var bonus = 0.0;
+        void Add(double worth, string label, bool needed)
+        {
+            if (!needed) return;
+            bonus += worth;
+            reasons?.Add(label);
+        }
         var attacks = deck.Count(existing => RolesOf(existing).Contains("damage"));
         var blocks = deck.Count(existing => RolesOf(existing).Contains("block"));
-        if (facts.Roles.Contains("block") && blocks < Math.Max(3, attacks / 2)) { bonus += 14; reasons.Add("needs-block"); }
-        if (facts.Roles.Contains("damage") && attacks < 5) { bonus += 10; reasons.Add("needs-damage"); }
-        if (facts.Roles.Contains("power") && deck.Count(existing => RolesOf(existing).Contains("power")) < 3)
-        { bonus += 12; reasons.Add("needs-power"); }
-        if (facts.Roles.Contains("aoe") && !deck.Any(existing => RolesOf(existing).Contains("aoe")))
-        { bonus += 8; reasons.Add("needs-aoe"); }
-        if (facts.Roles.Contains("draw") && !deck.Any(existing => RolesOf(existing).Contains("draw")))
-        { bonus += 6; reasons.Add("needs-draw"); }
-        if (facts.Roles.Contains("energy") && !deck.Any(existing => RolesOf(existing).Contains("energy")))
-        { bonus += 6; reasons.Add("needs-energy"); }
+        Add(14, "needs-block", facts.Roles.Contains("block") && blocks < Math.Max(3, attacks / 2));
+        Add(10, "needs-damage", facts.Roles.Contains("damage") && attacks < 5);
+        Add(12, "needs-power",
+            facts.Roles.Contains("power") && deck.Count(existing => RolesOf(existing).Contains("power")) < 3);
+        Add(8, "needs-aoe",
+            facts.Roles.Contains("aoe") && !deck.Any(existing => RolesOf(existing).Contains("aoe")));
+        Add(6, "needs-draw",
+            facts.Roles.Contains("draw") && !deck.Any(existing => RolesOf(existing).Contains("draw")));
+        Add(6, "needs-energy",
+            facts.Roles.Contains("energy") && !deck.Any(existing => RolesOf(existing).Contains("energy")));
         return bonus;
     }
 

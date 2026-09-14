@@ -1,0 +1,25 @@
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Events;
+using MegaCrit.Sts2.Core.HoverTips;
+using MegaCrit.Sts2.Core.Models.Events;
+using MegaCrit.Sts2.Core.Runs;
+using CoopBots.Kernel.Vendor.RandomForeseer.Common.HoverTips;
+
+namespace CoopBots.Kernel.Vendor.RandomForeseer.OutOfCombat.Events;
+
+internal static class RoomFullOfCheesePrediction
+{
+    public static IReadOnlyList<IHoverTip> GetHoverTips(RoomFullOfCheese roomFullOfCheese, EventOption option)
+    {
+        if (option.TextKey != "ROOM_FULL_OF_CHEESE.pages.INITIAL.options.GORGE")
+        {
+            return [];
+        }
+
+        var player = roomFullOfCheese.Owner!;
+        var options = CardCreationOptions
+            .ForNonCombatWithUniformOdds([player.Character.CardPool], card => card.Rarity == CardRarity.Common)
+            .WithFlags(CardCreationFlags.NoRarityModification);
+        return [.. CardRewardPrediction.PredictCards(player, 8, options).ToPredictionHoverTips()];
+    }
+}

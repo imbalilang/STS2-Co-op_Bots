@@ -120,8 +120,13 @@ public static class BotEventDriver
                 score += 6;
             if (key.Contains("gold"))
                 score += 4;
-            if (key.Contains("damage") || key.Contains("lose") || key.Contains("curse"))
+            if (key.Contains("damage") || key.Contains("lose"))
                 score -= 9;
+            // A curse accepted now is one the deck may never be rid of, so its
+            // cost rises with the run exactly as a filler card's does — more so
+            // once no shop is left to buy a removal at.
+            if (key.Contains("curse"))
+                score -= 9 * RunDepth.BloatFactor(player);
             // The key only says what the option is called; the game states what
             // it actually gives. Read that instead of inferring magnitude from
             // text: a key like LOST_WISP...CLAIM never mentions the Decay curse
@@ -134,8 +139,9 @@ public static class BotEventDriver
                 if (tip.CanonicalModel is not CardModel granted) continue;
                 score += granted.Type switch
                 {
-                    // A curse or status is a permanent deck cost, not a reward.
-                    CardType.Curse or CardType.Status => -14,
+                    // A curse or status is a permanent deck cost, not a reward —
+                    // and a dearer one the later it is accepted.
+                    CardType.Curse or CardType.Status => -14 * RunDepth.BloatFactor(player),
                     CardType.Power => 6,
                     _ => 0,
                 };

@@ -414,6 +414,31 @@ internal static class GeniusCombatStrategy
                 var allyAttacks = target.Player?.PlayerCombatState?.Hand.Cards.Count(candidate => candidate.Type == CardType.Attack) ?? 0;
                 score += allyAttacks * 5.0;
             }
+            // Timing decides whether an aimed buff is worth anything. A one-turn
+            // buff handed to someone who has already ended is thrown away, and a
+            // human still deciding only spends it with a discount because we
+            // cannot make them act — the team is the reliable recipient. Permanent
+            // buffs keep their value either way and are not touched.
+            var recipient = target.Player!;
+            if (CombatAssessment.TemporaryBuff(card))
+            {
+                if (!CombatAssessment.CanStillAct(recipient))
+                {
+                    score -= 120.0;
+                    reasons.Add("buff-after-end");
+                }
+                else if (!BotRegistry.IsBot(recipient.NetId))
+                {
+                    score *= 0.7;
+                    reasons.Add("prefer-team-buff");
+                }
+            }
+            // Energy handed to someone who cannot act this turn is just as wasted.
+            if (facts.ImmediateEnergy > 0 && !CombatAssessment.CanStillAct(recipient))
+            {
+                score -= 120.0;
+                reasons.Add("energy-after-end");
+            }
             reasons.Add("ally-fit");
         }
 
@@ -428,6 +453,19 @@ internal static class GeniusCombatStrategy
             facts.Vulnerable <= 0 && facts.Weak <= 0 && facts.StrengthDown <= 0 && facts.Poison <= 0 && facts.Doom <= 0 &&
             facts.Strength <= 0 && facts.Dexterity <= 0 && facts.Focus <= 0 && card.Type != CardType.Power)
             score += 2.0 - cost * 6.0;
+
+        // Playing one more card can cost more than the card itself. The kernel
+        // simulates play-count mechanics; this scorer prices cards one at a time
+        // and saw only the card, so a last-stand turn would happily spend the
+        // whole hand into an Aeonglass counter and then die to the Withers it had
+        // just created. Charge the end-of-turn cost of the status this play is
+        // about to hand the player.
+        var triggered = StatusTriggerPenalty(player);
+        if (triggered > 0)
+        {
+            score -= triggered;
+            reasons.Add($"status-trigger:{triggered:F0}");
+        }
 
         return move with
         {
@@ -621,14 +659,55 @@ internal static class GeniusCombatStrategy
     /// </summary>
     internal static double HeldPenalty(CardModel card)
     {
+        HeldPenaltySplit(card, out var unblockable, out var blockable);
+        return unblockable + blockable;
+    }
+
+    /// <summary>
+    /// The same cost, split by whether block can absorb it. Beckon charges HpLoss
+    /// — life loss, which no amount of block stops. The Aeonglass boss's Wither
+    /// charges Damage, which is ordinary damage and must be priced against the
+    /// block the player still has; treating both as unblockable made the fast
+    /// paths overstate Wither and defend against it harder than the game does.
+    /// </summary>
+    internal static void HeldPenaltySplit(CardModel card, out double unblockable, out double blockable)
+    {
+        unblockable = blockable = 0;
         try
         {
-            if (!card.HasTurnEndInHandEffect) return 0;
-            return card.DynamicVars.Values
+            if (!card.HasTurnEndInHandEffect) return;
+            // Read the variable the end-of-turn mirror actually charges. Beckon
+            // and friends use HpLoss; the Aeonglass boss's Wither uses Damage, so
+            // looking only for HpLoss left it invisible to every scorer that uses
+            // this — and a bot died in its own end-turn phase holding one.
+            unblockable = card.DynamicVars.Values
                 .Where(variable => variable.GetType().Name == "HpLossVar")
                 .Sum(variable => (double)variable.BaseValue);
+            if (unblockable <= 0)
+                blockable = card.DynamicVars.Values
+                    .Where(variable => variable.GetType().Name == "DamageVar")
+                    .Sum(variable => (double)variable.BaseValue);
         }
-        catch { return 0; }
+        catch { unblockable = blockable = 0; }
+    }
+
+    /// <summary>
+    /// End-of-turn cost of the status card that playing one more card now creates.
+    /// Zero unless an enemy counts the party's plays and this play is the one that
+    /// trips the counter. The mechanic itself lives in the kernel, which is where
+    /// the counter's bookkeeping is modeled; this only prices the result.
+    /// </summary>
+    private static double StatusTriggerPenalty(Player player)
+    {
+        try
+        {
+            return Kernel.KernelSession.PendingHeldStatus(player) is { } status ? HeldPenalty(status) : 0;
+        }
+        catch
+        {
+            // A mechanic we cannot read must not change the score at all.
+            return 0;
+        }
     }
 
     internal static double UsefulBlockForTest(double incoming, double currentBlock, double cardBlock)

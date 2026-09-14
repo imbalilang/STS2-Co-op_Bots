@@ -1,0 +1,44 @@
+using MegaCrit.Sts2.Core.Events;
+using MegaCrit.Sts2.Core.HoverTips;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Cards;
+using MegaCrit.Sts2.Core.Models.Events;
+using MegaCrit.Sts2.Core.Runs;
+using CoopBots.Kernel.Vendor.RandomForeseer.Common;
+using CoopBots.Kernel.Vendor.RandomForeseer.Common.HoverTips;
+
+namespace CoopBots.Kernel.Vendor.RandomForeseer.OutOfCombat.Events;
+
+internal static class TrialPrediction
+{
+    public static IReadOnlyList<IHoverTip> GetHoverTips(Trial trial, EventOption option)
+    {
+        var player = trial.Owner!;
+        return option.TextKey switch
+        {
+            "TRIAL.pages.MERCHANT.options.GUILTY" =>
+                OutOfCombatPredictionUtils.RelicTipsWithPickup(player, OutOfCombatPredictionUtils.PredictRelicRewards(player, 2)),
+            "TRIAL.pages.NONDESCRIPT.options.GUILTY" =>
+                [.. OutOfCombatPredictionUtils.PredictCardRewardBundles(
+                    player,
+                    2,
+                    3,
+                    () => CardCreationOptions.ForNonCombatWithDefaultOdds([player.Character.CardPool])).ToPredictionCardBundleHoverTips()],
+            "TRIAL.pages.NONDESCRIPT.options.INNOCENT" =>
+                [.. PredictNondescriptInnocent(trial).ToPredictionCardBundleHoverTips(PredictionCardBundleKind.Transform)],
+            _ => []
+        };
+    }
+
+    private static IReadOnlyList<IReadOnlyList<CardModel>> PredictNondescriptInnocent(Trial trial)
+    {
+        var player = trial.Owner!;
+        // The real event adds Doubt to the deck before opening the transform selector.
+        var addedCurse = PredictionUtils.CreateCard(ModelDb.Card<Doubt>(), player);
+        return OutOfCombatPredictionUtils.PredictDistinctDeckTransformResultBundles(
+            player,
+            trial.Rng,
+            transformCount: 2,
+            extraTransformableCards: [addedCurse]);
+    }
+}

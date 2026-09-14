@@ -121,7 +121,13 @@ internal static class BotRelicSelectPatch
     {
         if (!BotRegistry.IsBot(player.NetId))
             return true;
-        var selected = relics.Count == 0 ? null : relics[0];
+        // Boss relics are not interchangeable: the chain in RelicValue prices a
+        // Brimstone by its team-wide downside, and a capsule or Astrolabe by what
+        // it will hand over. Taking relics[0] made the choice a formality.
+        var selected = relics
+            .OrderByDescending(relic => HumanCoopAdvisor.RelicValue(relic, player).Score)
+            .ThenBy(relic => relic.Id.Entry, StringComparer.Ordinal)
+            .FirstOrDefault();
         __result = Task.FromResult(selected);
         return false;
     }

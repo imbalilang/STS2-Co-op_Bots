@@ -24,6 +24,9 @@ STS2-AiTeammate-main/
 STS2MCP-main/
 sts2-advisor-main/
 StsCompanion/
+# The Random Foreseer reference copy the out-of-combat predictions were ported
+# from. Only the ported logic ships (src/CoopBots.Kernel/Vendor/OutOfCombat).
+StS2.RandomForeseer-0.13.14/
 
 
 # Python bytecode from the bake/import scripts.

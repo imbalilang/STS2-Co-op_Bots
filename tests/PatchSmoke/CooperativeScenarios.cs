@@ -312,6 +312,7 @@ internal static class CooperativeScenarios
         TabletEventScenarios.Run();
         ShopScenarios.Run();
         LastStandScenarios.Run();
+        PotionValueScenarios.Run();
         StrengthScenarios.Run();
         FocusScenarios.Run();
         ResourceScenarios.Run();
@@ -320,6 +321,7 @@ internal static class CooperativeScenarios
         ImportedCardRelicScenarios.Run();
 #if KERNEL_TESTS
         KernelEngineScenarios.Run();
+        ForeseerScenarios.Run();
 #endif
         PlannerPerformanceScenarios.Run();
     }

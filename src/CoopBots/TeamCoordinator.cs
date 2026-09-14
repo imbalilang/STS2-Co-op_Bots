@@ -14,9 +14,12 @@ internal static class TeamCoordinator
     internal static Decision Select(TeamCombatPlanner.Decision? team, BotPotionPlanner.Choice? potion,
         IReadOnlyList<(Player Player, BotBrain.CombatMove Move)> fallback, bool planningFailed = false)
     {
-        if (potion is not null && (team is null || potion.SavedLives > team.DeathsPrevented
+        // A preemptive bottle is one the cards cannot replace (a kill nothing else
+        // on the board can make), so a card plan must not bury it: throwing it
+        // first is worth more than any single play.
+        if (potion is not null && (team is null || potion.Preemptive || potion.SavedLives > team.DeathsPrevented
             || (team.DeathsPrevented <= 0 && potion.SavedLives == 0)))
-            return new(null, null, potion, "救援药水");
+            return new(null, null, potion, potion.Preemptive ? "主动用药" : "救援药水");
         if (team is not null) return new(team.Player, team.Move, null, "团队规划");
         var best = fallback.Where(c => c.Move.Score > 0 && (planningFailed || TeamCombatPlanner.NeedsEffectFallback(c.Move.Card)))
             .OrderByDescending(c => c.Move.Score).ThenBy(c => c.Player.NetId).FirstOrDefault();

@@ -28,7 +28,12 @@ internal static class Archetypes
     [
         new("strength-multihit", "multihit", ["strength"], 2),
         new("strength-damage", "damage", ["strength"], 4),
-        new("block-retain", "block", ["retain", "dexterity"], 4),
+        // Dexterity turns existing block into more block; the Retain keyword does
+        // not. No card in the pool both retains and blocks, so listing `retain`
+        // here labelled any deck with a retained skill as a block build — a
+        // retained attack justified a block payoff. The Defence route is the
+        // real one: the cards that raise Dexterity, in a deck that blocks.
+        new("block-dexterity", "block", ["dexterity"], 4),
         new("poison", "poison", ["poison", "weak"], 2),
         new("doom", "doom", ["doom", "strengthdown"], 2),
         new("force-focus", "focus", ["focus"], 2),

@@ -1,3 +1,4 @@
+using System.Reflection;
 using CoopBots;
 using CoopBots.Building;
 using MegaCrit.Sts2.Core.Combat;
@@ -165,6 +166,112 @@ internal static class BuildValueScenarios
             throw new Exception($"Rupture must be worth more once its mined enabler is in the deck: "
                 + $"{ruptureWithEnabler.Total:F1} vs {ruptureAlone.Total:F1}");
         Console.WriteLine("PASS: a scaling payoff without its mined enabler is flagged and valued lower.");
+
+        // "On plan" must include the mined affinity, not only the recognised
+        // route. Both decks are the same size, so the raw size pressure is the
+        // same; only the partner card differs, and it is the mined data (not the
+        // route table) that says a Deadly Poison belongs with it. At 21 cards the
+        // raw pressure is (21-15)*5 = 30 and an on-plan card pays 40% = 12.
+        Clear(); Give<StrikeSilent>(5); Give<DefendSilent>(15); Give<Outbreak>(1);
+        var withAffinity = BuildValue.Add(combat.CreateCard<DeadlyPoison>(bot), bot);
+        if (!withAffinity.Reason.Contains("size:12.0"))
+            throw new Exception($"A card with mined affinity must pay the reduced size pressure: {withAffinity.Reason}");
+        Clear(); Give<StrikeSilent>(5); Give<DefendSilent>(16);
+        var withoutAffinity = BuildValue.Add(combat.CreateCard<DeadlyPoison>(bot), bot);
+        if (!withoutAffinity.Reason.Contains("size:30.0"))
+            throw new Exception($"A card with no partner must pay the full size pressure: {withoutAffinity.Reason}");
+        if (!(withAffinity.Total > withoutAffinity.Total))
+            throw new Exception($"Mined affinity must be worth real value: {withAffinity.Total:F1} vs {withoutAffinity.Total:F1}");
+        Console.WriteLine("PASS: mined affinity counts as on-plan, so a partner card still earns the size relief.");
+
+        // Thinning must get more valuable as dead draws accumulate, or the shop's
+        // growing price (a second removal costs 150) can never be paid: a flat
+        // 55 x 2.2 = 121 left every run with ten starters still in the deck.
+        const double GoldPerDeckValue = 2.2;  // mirrors BotShopPlanner.GoldPerDeckValue
+        Clear(); Give<StrikeIronclad>(5); Give<DefendIronclad>(5);
+        for (var i = 0; i < 13; i++) Give<PommelStrike>(1);
+        var heavyTarget = bot.Deck.Cards.First(card => card.Id.Entry == "STRIKE_IRONCLAD");
+        var heavyRemoval = BotShopPlanner.RemovalValue(heavyTarget, bot);
+        if (!(heavyRemoval > 150 / GoldPerDeckValue))
+            throw new Exception($"Ten starters must make a 150-gold removal affordable, got {heavyRemoval:F1}.");
+        Clear(); Give<StrikeIronclad>(2); Give<DefendIronclad>(2);
+        for (var i = 0; i < 19; i++) Give<PommelStrike>(1);
+        var leanTarget = bot.Deck.Cards.First(card => card.Id.Entry == "STRIKE_IRONCLAD");
+        var leanRemoval = BotShopPlanner.RemovalValue(leanTarget, bot);
+        if (!(heavyRemoval > leanRemoval))
+            throw new Exception($"Removal value must rise with the number of dead draws ({heavyRemoval:F1} vs {leanRemoval:F1}).");
+        Console.WriteLine($"PASS: starter removal scales with dead draws ({leanRemoval:F1} -> {heavyRemoval:F1}), so a 150-gold removal is payable.");
+
+        // The reviewed Ironclad declined Blood Wall at -37.8 from a 23-card deck
+        // whose own reason line said `needs-block`: the size penalty alone was
+        // worth more than the card. A card that fills a function the deck is short
+        // of must survive the size of the deck it is joining.
+        ClearOutsider();
+        GiveOutsider<StrikeIronclad>(9); GiveOutsider<DefendIronclad>(2); GiveOutsider<PommelStrike>(12);
+        var bloodWall = BuildValue.Add(routeCombat.CreateCard<BloodWall>(outsider), outsider);
+        if (!bloodWall.Reason.Contains("needs-block"))
+            throw new Exception($"A deck with two block cards must be shown as short of block: {bloodWall.Reason}");
+        if (bloodWall.Total <= 0)
+            throw new Exception($"A block card the deck needs must beat skipping even at 23 cards: "
+                + $"{bloodWall.Total:F1} ({bloodWall.Reason}).");
+        Console.WriteLine($"PASS: a needed block card still gets in past the size pressure ({bloodWall.Total:F1}, {bloodWall.Reason}).");
+
+        // A card nothing asked for costs more the later it is taken, and most
+        // once no shop is left to remove it at — that dilution can never be
+        // undone. Plan cards keep their relief, so a route can still be finished
+        // in the last act rather than being taxed for arriving late.
+        if (!(RunDepth.BloatFactor(2, shopAhead: false) > RunDepth.BloatFactor(2, shopAhead: true)
+            && RunDepth.BloatFactor(2, shopAhead: true) > RunDepth.BloatFactor(0, shopAhead: true)))
+            throw new Exception("The bloat factor must rise with the act and again once no shop is left ahead.");
+        if (RunDepth.BloatFactor(0, shopAhead: true) != 1.0)
+            throw new Exception("An act-1 deck with shops ahead must be priced exactly as before.");
+        void SetAct(int act) => typeof(RunState)
+            .GetField("_currentActIndex", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(bot.RunState, act);
+        Clear(); Give<StrikeIronclad>(9); Give<DefendIronclad>(9);
+        SetAct(0); var earlyFiller = BuildValue.Add(combat.CreateCard<TwinStrike>(bot), bot);
+        SetAct(2); var lateFiller = BuildValue.Add(combat.CreateCard<TwinStrike>(bot), bot);
+        if (!(lateFiller.Total < earlyFiller.Total))
+            throw new Exception($"The same filler must be worth less in the last act: "
+                + $"{lateFiller.Total:F1} vs {earlyFiller.Total:F1}.");
+        if (!lateFiller.Reason.Contains("size:22.5"))
+            throw new Exception($"An act-3 filler must pay the depth-weighted size pressure: {lateFiller.Reason}");
+        Clear(); Give<StrikeIronclad>(18);
+        SetAct(0); var earlyNeeded = BuildValue.Add(combat.CreateCard<BloodWall>(bot), bot);
+        SetAct(2); var lateNeeded = BuildValue.Add(combat.CreateCard<BloodWall>(bot), bot);
+        SetAct(0);
+        if (Math.Abs(lateNeeded.Total - earlyNeeded.Total) > 0.01)
+            throw new Exception($"A card the deck needs must not get dearer with depth: "
+                + $"{lateNeeded.Total:F1} vs {earlyNeeded.Total:F1}.");
+        if (!lateNeeded.Reason.Contains("size:6.0"))
+            throw new Exception($"A needed card keeps its relief in the last act: {lateNeeded.Reason}");
+        Console.WriteLine($"PASS: filler gets dearer with depth ({earlyFiller.Total:F1} -> {lateFiller.Total:F1}, "
+            + $"{lateFiller.Reason}) while a card the deck needs does not.");
+
+        // The reviewed Silent's Footwork was flagged `scaling-unsupported` in a
+        // deck with plenty of block. Dexterity multiplies the block already
+        // there, so it is not waiting on a mined partner.
+        Clear(); Give<StrikeSilent>(5); Give<DefendSilent>(8);
+        var footwork = BuildValue.Marginal(combat.CreateCard<Footwork>(bot), bot);
+        if (footwork.Reason.Contains("scaling-unsupported"))
+            throw new Exception($"Dexterity in a deck with eight block cards is supported, not a missing enabler: {footwork.Reason}");
+        Clear(); Give<StrikeSilent>(8); Give<DefendSilent>(1);
+        var footworkAlone = BuildValue.Marginal(combat.CreateCard<Footwork>(bot), bot);
+        if (!(footwork.Total > footworkAlone.Total))
+            throw new Exception($"Dexterity must be worth more with block to multiply: {footwork.Total:F1} vs {footworkAlone.Total:F1}");
+        Console.WriteLine($"PASS: Dexterity scaling is valued against the block the deck already has ({footworkAlone.Total:F1} -> {footwork.Total:F1}).");
+
+        // No card in the pool both retains and blocks, so a retained skill must
+        // not read as a block build. The route is the Dexterity one.
+        Clear(); Give<DefendSilent>(4); Give<StrikeSilent>(2); Give<Snakebite>(1);
+        var retainNames = Archetypes.Detect(bot.Deck.Cards.ToList()).Select(match => match.Name).ToArray();
+        if (retainNames.Contains("block-retain"))
+            throw new Exception($"A deck whose only Retain card is an attack must not read as block-retain: {string.Join(",", retainNames)}");
+        Clear(); Give<DefendSilent>(4); Give<StrikeSilent>(2); Give<Fade>(1);
+        var dexterityNames = Archetypes.Detect(bot.Deck.Cards.ToList()).Select(match => match.Name).ToArray();
+        if (!dexterityNames.Contains("block-dexterity"))
+            throw new Exception($"A block deck with a Dexterity card must read as block-dexterity: {string.Join(",", dexterityNames)}");
+        Console.WriteLine("PASS: the block route is driven by Dexterity, not by the Retain keyword.");
 
         // No recognised route must leave the valuation exactly as it was: this is
         // the guarantee that an unknown or modded deck cannot be made worse.

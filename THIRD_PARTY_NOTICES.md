@@ -57,6 +57,10 @@ Random Foreseer: https://github.com/hotwords123/StS2.RandomForeseer
 
 The released preview.21 embeds the upstream simulation source under the CoopBots.Kernel.Vendor namespace, without the original mod startup, UI or automation. It is a selective source port into CoopBots' multiplayer projection. Neither port loads CombatSolver / Random Foreseer assemblies. Ported behavior, source locations, adaptations and limitations are documented in outputs/port-preview20.md and src/CoopBots.Kernel/INTEGRATION.md in the source workspace.
 
+0.36.0 additionally ports Random Foreseer's **out-of-combat** prediction layer (source tree `RandomForeseerCode/OutOfCombat`, `.../Common`, version 0.13.14) into `src/CoopBots.Kernel/Vendor/OutOfCombat`, under the same namespace scheme and for the same reason: an AI teammate can only act on a random outcome it can name. The port keeps the prediction logic and the data-only hover-tip model wrappers, and discards the upstream UI layer entirely (Harmony patches, Godot nodes and scenes, settings pages, localization tables and telemetry), replacing them with small stubs in `Data/`, `Telemetry/`, `Utils/` and `Localization/`. Two local adaptations exist: the hover-tip factory records the predicted relic/potion model in a side table (upstream nulls `CanonicalModel` to avoid marking models as discovered, which also discards the identity), and the event entry point takes the `EventModel` as a parameter instead of resolving it through a UI patch. The upstream fairness gate is deliberately not reproduced — a bot has no save to reload — which is recorded in the stub and in outputs/randomforeseer-out-of-combat-plan.md.
+
+Version note: the 0.13.14 checkout used for this port carries an MIT License (Copyright (c) 2026 hotwords123). That is later than the 2026-08-28 permission recorded below, which states that no public license existed at the time. Nothing here is legal advice; both records are kept so the history is not silently rewritten.
+
 The original CombatSolver notice follows unchanged. Its permission grant refers to Combat Solver; the CoopBots port proceeds on the separately confirmed permission above.
 
 ---

@@ -25,6 +25,31 @@ public static class BotDifficultyNames
         _ => "专业",
     };
 
+    public static string English(this BotDifficulty difficulty) => difficulty switch
+    {
+        BotDifficulty.Flash => "Flash",
+        BotDifficulty.Pro => "Pro",
+        BotDifficulty.Cheated => "Cheated",
+        _ => "Pro",
+    };
+
+    /// <summary>One-line explanation of what the tier changes, for the lobby panel.</summary>
+    public static string Describe(this BotDifficulty difficulty) => difficulty switch
+    {
+        BotDifficulty.Flash => "0.5 秒/张 · 思考预算 ×0.5 · 出牌最快",
+        BotDifficulty.Pro => "1.5 秒/张 · 思考预算 ×1.5 · 默认",
+        BotDifficulty.Cheated => "与 Pro 同节奏 · 额外 3 倍金币",
+        _ => "",
+    };
+
+    public static string DescribeEnglish(this BotDifficulty difficulty) => difficulty switch
+    {
+        BotDifficulty.Flash => "0.5 s per card · thinking x0.5 · fastest",
+        BotDifficulty.Pro => "1.5 s per card · thinking x1.5 · default",
+        BotDifficulty.Cheated => "Pro pacing · 3x gold",
+        _ => "",
+    };
+
     /// <summary>Milliseconds between two card plays for this tier.</summary>
     public static int CardIntervalMs(this BotDifficulty difficulty) => difficulty switch
     {

@@ -28,6 +28,29 @@ public static class LobbyBotService
     public static IReadOnlyList<ulong> BotIds(StartRunLobby lobby)
         => Players(lobby).Cast<object>().Select(Id).Where(BotRegistry.IsBot).ToList();
 
+    /// <summary>The bots in the lobby with the character they will play, for the
+    /// roster list. Kept here because it reads the lobby player struct by
+    /// reflection, which the UI should not know about.</summary>
+    public static IReadOnlyList<(ulong Id, string Character)> Bots(StartRunLobby lobby)
+    {
+        var roster = new List<(ulong, string)>();
+        foreach (var player in Players(lobby).Cast<object>())
+        {
+            var id = Id(player);
+            if (!BotRegistry.IsBot(id)) continue;
+            var title = "?";
+            try
+            {
+                if (player.GetType().GetField("character", BindingFlags.Instance | BindingFlags.Public)
+                        ?.GetValue(player) is CharacterModel character)
+                    title = character.Title.GetFormattedText();
+            }
+            catch { /* a lobby we cannot read still lists the bot by tier */ }
+            roster.Add((id, title));
+        }
+        return roster;
+    }
+
     public static void ValidateRuntimeSchema()
     {
         if (!typeof(IList).IsAssignableFrom(PlayersProperty.PropertyType))

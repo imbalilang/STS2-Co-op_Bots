@@ -1,7 +1,10 @@
+using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.MonsterMoves.Intents;
 using MegaCrit.Sts2.Core.ValueProps;
@@ -52,4 +55,55 @@ internal static class CombatAssessment
     internal static bool InDanger(Creature target) => target.IsAlive
         && (MonsterHazards.Imminent(target) || Uncovered(target) >= target.CurrentHp);
     internal static double HumanWeight(Creature target) => target.Player is { } p && !BotRegistry.IsBot(p.NetId) ? 1.5 : 1;
+
+    // A buff handed to someone who can no longer act is wasted. A bot always
+    // spends what it is given; a human only while still deciding, and even then
+    // with a discount, because we cannot make them use it. This is what keeps a
+    // multiplayer card pointed at the team rather than at a spectator.
+    internal static double RecipientConfidence(Creature target)
+    {
+        if (target.Player is not { } player) return 0;
+        if (BotRegistry.IsBot(player.NetId)) return 1.0;
+        return CanStillAct(player) ? 0.7 : 0.15;
+    }
+
+    internal static bool CanStillAct(Player player)
+    {
+        try
+        {
+            return player.Creature.IsAlive && player.PlayerCombatState?.Phase == PlayerTurnPhase.Play
+                && !CombatManager.Instance.IsPlayerReadyToEndTurn(player);
+        }
+        catch { return false; }
+    }
+
+    // Cards whose buff expires with the current turn. Two sources, because
+    // neither alone is complete: a declared Temporary* power var is readable
+    // directly, but the multiplayer timing cards do not declare one — Coordinate
+    // declares a plain PowerVar<StrengthPower> and only applies its one-turn
+    // power at play time. This list is about coordination timing, not effect
+    // modelling, so it is curated and short by design; extend it when a new
+    // one-turn buff appears.
+    private static readonly HashSet<string> ThisTurnBuffCards = new(StringComparer.Ordinal)
+    {
+        "COORDINATE", "FADE",
+    };
+
+    internal static bool TemporaryBuff(CardModel card)
+    {
+        try
+        {
+            if (ThisTurnBuffCards.Contains(card.Id.Entry)) return true;
+            foreach (var variable in card.DynamicVars.Values)
+            {
+                var type = variable.GetType();
+                if (!type.IsGenericType) continue;
+                foreach (var argument in type.GetGenericArguments())
+                    if (typeof(TemporaryStrengthPower).IsAssignableFrom(argument)
+                        || argument.Name.StartsWith("Temporary", StringComparison.Ordinal)) return true;
+            }
+        }
+        catch { /* an unreadable card counts as permanent */ }
+        return false;
+    }
 }

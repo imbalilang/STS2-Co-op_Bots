@@ -1,0 +1,63 @@
+using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Events;
+using MegaCrit.Sts2.Core.Factories;
+using MegaCrit.Sts2.Core.HoverTips;
+using MegaCrit.Sts2.Core.Models.Events;
+using CoopBots.Kernel.Vendor.RandomForeseer.Common.HoverTips;
+using CoopBots.Kernel.Vendor.RandomForeseer.Data;
+
+namespace CoopBots.Kernel.Vendor.RandomForeseer.OutOfCombat.Events;
+
+internal static class PunchOffPrediction
+{
+    public static IReadOnlyList<IHoverTip> GetHoverTips(PunchOff punchOff, EventOption option)
+    {
+        var player = punchOff.Owner!;
+        return option.TextKey switch
+        {
+            "PUNCH_OFF.pages.INITIAL.options.NAB" =>
+                OutOfCombatPredictionUtils.RelicTipsWithPickup(
+                    player,
+                    OutOfCombatPredictionUtils.PredictRelicRewards(player, 1)),
+            "PUNCH_OFF.pages.INITIAL.options.I_CAN_TAKE_THEM" =>
+                PredictFightRewards(player),
+            "PUNCH_OFF.pages.I_CAN_TAKE_THEM.options.FIGHT" => PredictFightRewards(player),
+            _ => []
+        };
+    }
+
+    private static IReadOnlyList<IHoverTip> PredictFightRewards(Player player)
+    {
+        if (!ModData.Settings.Allows(PredictionFairness.UnfairInAllModes))
+        {
+            return [];
+        }
+
+        var context = new RunPredictionContext(player);
+
+        // Punch Off is a combat-layout event, so its monsters and unique HP Niche rolls
+        // are already generated when the event room opens. Choosing Fight reuses that
+        // internal combat state and does not consume another monster HP roll here.
+        CombatEndEffectPrediction.FastForwardMonsterRoomCombatEndHooks(context);
+
+        foreach (var runPlayer in context.RunState.Players)
+        {
+            // CombatRoom.OfferRoomEndRewards still generates normal combat rewards for every
+            // player in run order. StS2 v0.108.0 changed Punch Off's extra relic + potion to
+            // owner-only rewards, so those are predicted after this owner's normal CardReward.
+            OutOfCombatPredictionUtils.FastForwardMonsterRoomRewards(context.ForPlayer(runPlayer));
+
+            if (runPlayer == context.Player)
+            {
+                break;
+            }
+        }
+
+        var relics = OutOfCombatPredictionUtils.PredictRelicRewards(context, 1);
+        var potion = PotionFactory.CreateRandomPotionOutOfCombat(player, context.Rng.Rewards);
+
+        var tips = OutOfCombatPredictionUtils.RelicTipsWithPickup(player, relics).ToList();
+        tips.Add(PredictionHoverTipFactory.Potion(potion));
+        return tips;
+    }
+}

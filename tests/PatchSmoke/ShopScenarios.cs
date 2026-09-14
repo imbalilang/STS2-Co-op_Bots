@@ -165,5 +165,60 @@ internal static class ShopScenarios
         Check(Value(ModelDb.Relic<RedMask>()) > 0 && Value(ModelDb.Relic<MassiveScroll>()) > 0,
             "Shared Weak and multiplayer card reward relics must not default to zero.");
         Console.WriteLine("PASS: real shop card/potion/relic/removal purchases, independent peer replay, owner-only gold, stale-state/replay rejection, full slots, removal inflation, membership repricing and team relic value.");
+
+        // Gold that cannot be spent is worth nothing, so the last act buys a
+        // break-even item it would have saved past earlier in the run. The
+        // reviewed party reached the act-3 boss holding 646 gold it never used.
+        // The public setter clamps to the act list a test run actually built, so
+        // the backing field is what has to move.
+        void SetAct(RunState run, int act) => typeof(RunState)
+            .GetField("_currentActIndex", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(run, act);
+        var lateBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 7, 1));
+        var lateRun = RunState.CreateForTest(new[] { lateBot }, seed: "SHOP-LATE");
+        var lateRoom = new MerchantRoom(); lateRun.PushRoom(lateRoom);
+        var lateInventory = new MerchantInventory(lateBot); lateRoom.Inventories.Add(lateInventory);
+        lateBot.ResetCombatState();
+        lateBot.Creature.SetMaxHpInternal(80); lateBot.Creature.SetCurrentHpInternal(80);
+        lateBot.Gold = 500;
+        foreach (var make in new Func<CardModel>[]
+                 {
+                     () => lateRun.CreateCard<Bash>(lateBot), () => lateRun.CreateCard<Anger>(lateBot),
+                     () => lateRun.CreateCard<Inflame>(lateBot), () => lateRun.CreateCard<PommelStrike>(lateBot),
+                     () => lateRun.CreateCard<TwinStrike>(lateBot), () => lateRun.CreateCard<Uppercut>(lateBot),
+                 })
+            lateBot.Deck.AddInternal(make());
+        object? ChooseLate() => planner.GetMethod("Choose", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, new object[] { lateInventory });
+        var lateCard = lateRun.CreateCard<ShrugItOff>(lateBot);
+        var lateEntry = new MerchantCardEntry(lateBot, lateInventory, Array.Empty<CardModel>(), CardType.Attack);
+        typeof(MerchantCardEntry).GetProperty("CreationResult")!.SetValue(lateEntry, new CardCreationResult(lateCard));
+        // Priced just above break-even: inside the last-act discount, outside the
+        // ordinary margin, so exactly one of the two acts buys it.
+        var worth = Math.Max(0, CoopBots.Building.BuildValue.Add(lateCard, lateBot).Total) * 2.2;
+        var lateCost = (int)Math.Ceiling(worth / 0.9);
+        typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(lateEntry, lateCost);
+        ((List<MerchantCardEntry>)lateInventory.CharacterCardEntries).Add(lateEntry);
+        if (worth <= 0) throw new Exception("The late-act shop probe needs a card worth buying.");
+        SetAct(lateRun, 0);
+        Check(ChooseLate() is null, "An act-1 shop must still save past a break-even item.");
+        SetAct(lateRun, 2);
+        Check(Index(ChooseLate()) == 0, "The last act must spend gold it can no longer use on a break-even item.");
+        Console.WriteLine("PASS: endgame gold is priced as terminal: the last act buys a break-even item the early act saves past.");
+
+        // Depth is not just the act index: a shop with another shop still ahead
+        // is not the last one, and only the last one has to empty the purse. The
+        // ordering is pinned here because the map walk that decides it cannot be
+        // built in a test run.
+        var lastShop = CoopBots.RunDepth.ShopThresholdFactor(2, lastShopBeforeBoss: true);
+        var lateShop = CoopBots.RunDepth.ShopThresholdFactor(2, lastShopBeforeBoss: false);
+        var earlyShop = CoopBots.RunDepth.ShopThresholdFactor(0, lastShopBeforeBoss: false);
+        if (!(lastShop < lateShop && lateShop < earlyShop))
+            throw new Exception($"The buying bar must fall with the run and drop hardest at the last shop: "
+                + $"last={lastShop:F2}, act3={lateShop:F2}, act1={earlyShop:F2}.");
+        if (earlyShop != 1.0)
+            throw new Exception($"An act-1 shop with shops ahead must keep the ordinary bar, got {earlyShop:F2}.");
+        Console.WriteLine($"PASS: the shop bar falls by depth and collapses at the last shop "
+            + $"({earlyShop:F2} -> {lateShop:F2} -> {lastShop:F2}).");
     }
 }

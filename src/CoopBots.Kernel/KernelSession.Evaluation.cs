@@ -82,6 +82,29 @@ public sealed partial class KernelSession
     }
 
     public int Power<T>(Creature target) where T : PowerModel => Combat.GetAmount<T>(target);
+    /// <summary>
+    /// Full visible-state text of this branch for one player: HP, block, energy,
+    /// stars, gold, hands with upgrades, orbs and orb slots, potions, relics and
+    /// powers. Finer than the planner's own view, which is why it is the check for
+    /// "did this action change anything" — a hand upgrade or an extra orb slot is
+    /// real in the branch yet invisible in the HP and pile counters.
+    /// </summary>
+    public string StateText(Player player)
+    {
+        var pcs = player.PlayerCombatState ?? throw new InvalidOperationException("Player has no combat state.");
+        IntentForecast forecast;
+        try { forecast = IntentForecaster.Build(liveRoot ?? throw new InvalidOperationException(), 1); }
+        catch
+        {
+            forecast = new IntentForecast
+            {
+                Rounds = [], HasUnsupportedIntent = true, IsExactForModeledDamage = false,
+                UnsupportedDetails = [], ApproximationDetails = [], MonsterAiCountersByRound = [],
+            };
+        }
+        return ContinuationStamp.CapturePredicted(
+            player, simulator, pcs.TurnNumber, forecast, pcs.TurnNumber).StateText;
+    }
     public bool SandpitDeath(Creature target) => Combat.EffectivePowers().OfType<SandpitPower>()
         .Any(p => p.Target == target && p.Amount <= 1 && Hp(p.Owner) > 0);
     public int? SandpitTurnsRemaining(Creature target) => Combat.EffectivePowers().OfType<SandpitPower>()

@@ -169,9 +169,16 @@ internal static class KernelEngineScenarios
         AuditEnemyScaling();
         AuditPlannerLiveness();
         AuditPartialPlanAndForecast();
+        AuditInertMonsterMove();
+        AuditPotionCoverage();
+        AuditPotionMirrorsDoSomething();
+        AuditTeamPotionMirrors();
         AuditProactivePotion();
         AuditJointPotionSequence();
         AuditRedundantPotionDeclined();
+        AuditPotionOnlyWhenCardsCannotFinisher();
+        AuditSoloTakeover();
+        AuditBotStampIgnoresHumanEndTurn();
         AuditBossReactiveMechanics();
         AuditScalingThreatFocus();
         AuditCrossTurn();
@@ -180,10 +187,12 @@ internal static class KernelEngineScenarios
         AuditTurnStrengthDown();
         AuditStructuralFallback();
         AuditHeldStatusPenalty();
+        AuditHeldPenaltyBlockSplit();
         AuditOutrage();
         AuditMultiplayerBatchA();
         AuditFlankingKnockdown();
         AuditPlanReuse();
+        AuditCoopBuffTiming();
         AuditCardCoverage();
 
         Console.WriteLine("PASS: kernel team beam reorders actors, shares Vulnerable, discovers draw chains, enforces owner-only exhaust/NoDraw, rejects invalid targets and discards stale/cancelled plans with bounded nodes.");
@@ -619,6 +628,175 @@ internal static class KernelEngineScenarios
         if (Math.Abs(heavyDelta + 25) > 1.0)
             throw new Exception($"One future round of 100 raw damage must cost 0.25*100=25, got {-heavyDelta:F2}.");
         Console.WriteLine("PASS: first future round is discounted exactly once (0.25).");
+    }
+
+    // Which potions the kernel can simulate, by name. This is the list the
+    // optimization plan orders potion work by, instead of guessing which bottle
+    // in the log was the missed one.
+    private static void AuditPotionCoverage()
+    {
+        // ModelDb only exposes a generic Potion<T>(), so the coverage sweep has to
+        // instantiate each potion type through it by reflection.
+        var factory = typeof(ModelDb).GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Single(method => method.Name == "Potion" && method.IsGenericMethodDefinition && method.GetParameters().Length == 0);
+        var all = typeof(PotionModel).Assembly.GetTypes()
+            .Where(t => !t.IsAbstract && typeof(PotionModel).IsAssignableFrom(t))
+            .Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+        var missing = all.Where(name =>
+        {
+            var type = typeof(PotionModel).Assembly.GetType("MegaCrit.Sts2.Core.Models.Potions." + name);
+            if (type is null) return false;
+            var potion = ((PotionModel)factory.MakeGenericMethod(type).Invoke(null, null)!).ToMutable();
+            return !KernelSession.CanModelPotion(potion);
+        }).ToArray();
+        Console.WriteLine($"POTION COVERAGE: {all.Length - missing.Length}/{all.Length} simulated; missing="
+            + (missing.Length == 0 ? "none" : string.Join(",", missing)));
+        // The three bottles the last A10 defeat ended holding must be simulatable,
+        // otherwise the search cannot even offer them.
+        foreach (var required in new[] { "SpeedPotion", "GigantificationPotion", "ShipInABottle" })
+            if (missing.Contains(required))
+                throw new Exception($"{required} must be simulatable by the kernel.");
+    }
+
+    // A monster move that only sleeps, stuns or hides is the enemy doing nothing,
+    // and must not fail the whole enemy phase closed. Rocket's RECHARGE_MOVE did
+    // exactly that: thirty `enemy-move-unmodeled:ROCKET/RECHARGE_MOVE` boundaries
+    // in one fight meant no end-turn branch could ever be simulated.
+    private static void AuditInertMonsterMove()
+    {
+        var type = typeof(MonsterModel).Assembly.GetTypes()
+            .Single(t => t.Name == "Rocket" && typeof(MonsterModel).IsAssignableFrom(t));
+        var factory = typeof(ModelDb).GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Single(m => m.Name == "Monster" && m.IsGenericMethodDefinition && m.GetParameters().Length == 0);
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
+        var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "ROCKET"));
+        bot.ResetCombatState(); combat.AddPlayer(bot);
+        bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
+        bot.PlayerCombatState!.Phase = PlayerTurnPhase.Play; bot.PlayerCombatState.GainEnergy(3);
+        var monster = ((MonsterModel)factory.MakeGenericMethod(type).Invoke(null, null)!).ToMutable();
+        var enemy = combat.CreateCreature(monster, CombatSide.Enemy, "rocket");
+        combat.AddCreature(enemy); monster.SetUpForCombat();
+        enemy.SetMaxHpInternal(120); enemy.SetCurrentHpInternal(120);
+        var recharge = monster.MoveStateMachine!.States.Values.OfType<MoveState>().Single(move => move.Id == "RECHARGE_MOVE");
+        if (recharge.Intents.Any(intent => intent.IntentType is not IntentType.Sleep))
+            throw new Exception("RECHARGE_MOVE is expected to be a sleep-intent move; the rule needs reviewing.");
+        monster.SetMoveImmediate(recharge, true);
+        var before = KernelSession.Capture(combat);
+        var branch = before.Fork();
+        if (!branch.EndTurn(bot, 1, out var boundary))
+            throw new Exception("A sleep-intent monster move must not fail the enemy phase: " + boundary);
+        if (branch.Power<StrengthPower>(enemy) != 0)
+            throw new Exception("RECHARGE_MOVE must not change combat numbers, but Strength moved to "
+                + branch.Power<StrengthPower>(enemy) + ".");
+        Console.WriteLine("PASS: a sleep-intent monster move (Rocket RECHARGE) is simulated instead of bounding the round.");
+    }
+
+    // Every potion the kernel claims to model must actually do something when it
+    // is used. A mirror that resolves to nothing is worse than a missing one: the
+    // search sees a free action, spends the bottle and changes no state.
+    private static void AuditPotionMirrorsDoSomething()
+    {
+        var factory = typeof(ModelDb).GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Single(method => method.Name == "Potion" && method.IsGenericMethodDefinition && method.GetParameters().Length == 0);
+        var failed = new List<string>();
+        foreach (var type in typeof(PotionModel).Assembly.GetTypes()
+            .Where(t => !t.IsAbstract && typeof(PotionModel).IsAssignableFrom(t))
+            .OrderBy(t => t.Name, StringComparer.Ordinal))
+        {
+            var template = ((PotionModel)factory.MakeGenericMethod(type).Invoke(null, null)!).ToMutable();
+            if (!KernelSession.CanModelPotion(template)) continue;
+
+            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
+            var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "MIRROR-" + type.Name));
+            bot.ResetCombatState(); combat.AddPlayer(bot);
+            // Board set up so every potion has something to act on: a wounded
+            // player (heals), existing block (Fortifier), an upgradable hand
+            // (Blessing of the Forge), an empty slot (Entropic Brew) and a foe.
+            bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(50);
+            bot.PlayerCombatState!.Phase = PlayerTurnPhase.Play; bot.PlayerCombatState.GainEnergy(3);
+            bot.PlayerCombatState.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
+            bot.PlayerCombatState.Hand.AddInternal(combat.CreateCard<DefendIronclad>(bot));
+            for (var i = 0; i < 3; i++)
+                bot.PlayerCombatState.DrawPile.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
+            var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "mirror");
+            combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+            foe.SetMaxHpInternal(60); foe.SetCurrentHpInternal(60);
+            foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(4)), true);
+            bot.AddPotionInternal(((PotionModel)factory.MakeGenericMethod(type).Invoke(null, null)!).ToMutable());
+
+            var potion = bot.Potions.Single();
+            var root = KernelSession.Capture(combat);
+            var before = root.StateText(bot);
+            var outcome = "no-target";
+            foreach (var target in root.PotionTargets(potion))
+            {
+                var branch = root.Fork();
+                if (!branch.UsePotion(potion, target, out var boundary))
+                { outcome = "refused:" + boundary; continue; }
+                outcome = branch.StateText(bot) == before ? "NO CHANGE"
+                    : $"changed ({(boundary.Length == 0 ? "ok" : boundary)})";
+                break;
+            }
+            Console.WriteLine($"POTION USE {type.Name}: {outcome}");
+            // Only the four card-generation potions may refuse: their result is a
+            // card choice the single-step model cannot take. Any other refusal
+            // means a bottle that was silently unusable again.
+            if (outcome.StartsWith("refused:", StringComparison.Ordinal)
+                && type.Name is not ("AttackPotion" or "SkillPotion" or "PowerPotion" or "ColorlessPotion"))
+                failed.Add(type.Name + ":" + outcome);
+            else if (outcome is "NO CHANGE" or "no-target") failed.Add(type.Name + ":" + outcome);
+        }
+        if (failed.Count > 0)
+            throw new Exception("Modeled potions that simulate as a no-op: " + string.Join(", ", failed));
+        Console.WriteLine("PASS: every potion the kernel claims to model changes the simulated board.");
+    }
+
+    // Every potion the team planner can hold must actually resolve inside the
+    // kernel. A potion with no mirror was silently simulated as a free no-op, so
+    // the search never picked it and the slot stayed full for the whole run.
+    private static void AuditTeamPotionMirrors()
+    {
+        KernelSession ForkWithPotion<T>(out Player bot, out PotionModel potion) where T : PotionModel
+        {
+            bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
+            var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "MIRROR-" + typeof(T).Name));
+            bot.ResetCombatState(); combat.AddPlayer(bot);
+            bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
+            bot.PlayerCombatState!.Phase = PlayerTurnPhase.Play; bot.PlayerCombatState.GainEnergy(3);
+            var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "mirror");
+            combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+            foe.SetMaxHpInternal(60); foe.SetCurrentHpInternal(60);
+            foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(4)), true);
+            bot.AddPotionInternal(ModelDb.Potion<T>().ToMutable());
+            potion = bot.Potions.Single();
+            return KernelSession.Capture(combat).Fork();
+        }
+
+        var speed = ForkWithPotion<SpeedPotion>(out var speedBot, out var speedPotion);
+        if (!speed.UsePotion(speedPotion, speedBot.Creature, out var speedBoundary))
+            throw new Exception("Speed Potion use failed: " + speedBoundary);
+        // 5 Dexterity now, and the same 5 as the temporary power that is paid back
+        // at end of turn (SpeedPotionPower derives from TemporaryDexterityPower).
+        if (speed.Power<DexterityPower>(speedBot.Creature) != 5
+            || speed.Power<SpeedPotionPower>(speedBot.Creature) != 5)
+            throw new Exception($"Speed Potion must grant 5 Dexterity and 5 temporary: "
+                + $"dex={speed.Power<DexterityPower>(speedBot.Creature)}, temp={speed.Power<SpeedPotionPower>(speedBot.Creature)}");
+        Console.WriteLine("PASS: kernel simulates a Speed Potion as 5 Dexterity plus its end-of-turn temporary pair.");
+
+        var giant = ForkWithPotion<GigantificationPotion>(out var giantBot, out var giantPotion);
+        if (!giant.UsePotion(giantPotion, giantBot.Creature, out var giantBoundary))
+            throw new Exception("Gigantification Potion use failed: " + giantBoundary);
+        if (giant.Power<GigantificationPower>(giantBot.Creature) != 1)
+            throw new Exception($"Gigantification Potion must apply one stack, got {giant.Power<GigantificationPower>(giantBot.Creature)}.");
+        Console.WriteLine("PASS: kernel simulates a Gigantification Potion.");
+
+        var ship = ForkWithPotion<ShipInABottle>(out var shipBot, out var shipPotion);
+        if (!ship.UsePotion(shipPotion, shipBot.Creature, out var shipBoundary))
+            throw new Exception("Ship in a Bottle use failed: " + shipBoundary);
+        if (ship.Block(shipBot.Creature) != 10 || ship.Power<BlockNextTurnPower>(shipBot.Creature) != 10)
+            throw new Exception($"Ship in a Bottle must grant 10 Block and 10 next turn: "
+                + $"block={ship.Block(shipBot.Creature)}, next={ship.Power<BlockNextTurnPower>(shipBot.Creature)}");
+        Console.WriteLine("PASS: kernel simulates a Ship in a Bottle as 10 block now plus 10 next turn.");
     }
 
     // A buff potion that turns a non-lethal turn into a confirmed kill must be
@@ -1150,6 +1328,92 @@ internal static class KernelEngineScenarios
         if (move?.Card.Id.Entry != "BECKON")
             throw new Exception($"A held-penalty status must be played, chose {move?.Card.Id.Entry ?? "nothing"}.");
         Console.WriteLine($"PASS: a status that costs {held:F0} HP to hold is played instead of refused.");
+
+        // The same rule must cover a held card that charges DamageVar instead of
+        // HpLossVar: the Aeonglass boss's Wither costs damage at end of turn, and
+        // looking only for HpLoss made it invisible — a bot died in its own
+        // end-turn phase holding one.
+        var wither = combat.CreateCard<Wither>(bot);
+        var witherHeld = GeniusCombatStrategy.HeldPenalty(wither);
+        if (witherHeld <= 0)
+            throw new Exception("Wither must be recognised as a held penalty, not only HpLoss-shaped cards.");
+        Console.WriteLine($"PASS: a held card charging Damage ({witherHeld:F0}) is priced like an HpLoss one.");
+
+        // Knowing what a Wither costs is not enough: the legacy scorer prices one
+        // card at a time, so it also has to know that the *next* play is the one
+        // that hands the player one. The reviewed run's last stand spent its whole
+        // hand into the Aeonglass counter and then died to the Withers it made.
+        var presence = (WitheringPresencePower)ModelDb.Power<WitheringPresencePower>().ToMutable();
+        presence.ApplyInternal(foe, 1, true);
+        presence.Target = bot.Creature;
+        var counter = presence.DynamicVars.Values.Single(variable => variable.Name == "CardsLeft");
+        counter.BaseValue = 2;
+        if (KernelSession.PendingHeldStatus(bot) is not null)
+            throw new Exception("Two plays left on the counter must not read as a pending status.");
+        counter.BaseValue = 1;
+        var pending = KernelSession.PendingHeldStatus(bot);
+        if (pending is null || pending.Id.Entry != "WITHER")
+            throw new Exception($"The play that trips the counter must report the status it creates, got {pending?.Id.Entry ?? "none"}.");
+        presence.Target = null;
+        if (KernelSession.PendingHeldStatus(bot) is not null)
+            throw new Exception("A player the power does not target must not be charged for another's counter.");
+        Console.WriteLine("PASS: the play that trips the Aeonglass counter is charged the status it creates.");
+    }
+
+    // A held card's end-of-turn damage must be charged against block when it is
+    // ordinary damage. Beckon charges HpLoss — no amount of block stops it — while
+    // the Aeonglass boss's Wither charges Damage, which block absorbs like any
+    // other hit. Both used to land in the same unblockable bucket, so the fast
+    // path defended against Wither harder than the game requires.
+    private static void AuditHeldPenaltyBlockSplit()
+    {
+        double ScoreWith<T>(int block, bool upgraded) where T : CardModel
+        {
+            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 31, 1));
+            var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "HELD-BLOCK"));
+            bot.ResetCombatState(); combat.AddPlayer(bot);
+            bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
+            bot.PlayerCombatState!.Phase = PlayerTurnPhase.Play; bot.PlayerCombatState.GainEnergy(3);
+            var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "held");
+            combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+            foe.SetMaxHpInternal(200); foe.SetCurrentHpInternal(200);
+            foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(6)), true);
+            var card = combat.CreateCard<T>(bot);
+            if (upgraded) card.UpgradeInternal();
+            bot.PlayerCombatState.Hand.AddInternal(card);
+            if (block > 0) bot.Creature.GainBlockInternal(block);
+            var evaluation = new KernelCombatEvaluation(combat, [bot], null);
+            return evaluation.Evaluate(KernelSession.Capture(combat)).Score;
+        }
+
+        // How much the same 50 block is worth with an empty hand: it soaks the
+        // enemy's 6. Everything below is measured against that baseline.
+        var enemyDelta = ScoreWith<StrikeIronclad>(50, false) - ScoreWith<StrikeIronclad>(0, false);
+        if (enemyDelta <= 0)
+            throw new Exception($"Block must be worth something against the enemy attack, got {enemyDelta:F1}.");
+        var witherDelta = ScoreWith<Wither>(50, false) - ScoreWith<Wither>(0, false);
+        if (!(witherDelta > enemyDelta + 1))
+            throw new Exception($"Block must also absorb a held Wither: {witherDelta:F1} vs enemy-only {enemyDelta:F1}.");
+        var beckonDelta = ScoreWith<Beckon>(50, false) - ScoreWith<Beckon>(0, false);
+        if (Math.Abs(beckonDelta - enemyDelta) > 0.01)
+            throw new Exception($"Block must not absorb Beckon's HpLoss: {beckonDelta:F1} vs enemy-only {enemyDelta:F1}.");
+        Console.WriteLine($"PASS: held Damage is blockable while HpLoss is not ({enemyDelta:F1} enemy, "
+            + $"{witherDelta:F1} with a Wither, {beckonDelta:F1} with Beckon).");
+
+        // The Aeonglass fight upgrades the Withers it generates (the mirror calls
+        // FakeUpgrade, which is how the real card scales past its printed max), so
+        // the price has to follow the upgraded damage rather than the printed one.
+        var upgradeBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 32, 1));
+        var upgradeCombat = new CombatState(runState: RunState.CreateForTest(new[] { upgradeBot }, seed: "HELD-UPGRADE"));
+        upgradeBot.ResetCombatState(); upgradeCombat.AddPlayer(upgradeBot);
+        var plainWither = upgradeCombat.CreateCard<Wither>(upgradeBot);
+        var upgradedWither = upgradeCombat.CreateCard<Wither>(upgradeBot);
+        upgradedWither.FakeUpgrade();
+        var plainHeld = GeniusCombatStrategy.HeldPenalty(plainWither);
+        var upgradedHeld = GeniusCombatStrategy.HeldPenalty(upgradedWither);
+        if (!(upgradedHeld > plainHeld))
+            throw new Exception($"An upgraded Wither must cost more than a base one: {upgradedHeld:F1} vs {plainHeld:F1}.");
+        Console.WriteLine($"PASS: an upgraded Wither is priced above the base one ({plainHeld:F1} -> {upgradedHeld:F1}).");
     }
 
     // OUTRAGE: damage plus a copy into EVERY player's discard pile. The copy is
@@ -1391,18 +1655,185 @@ internal static class KernelEngineScenarios
         }
 
         var planner = Plan(out var second, out var owner);
-        if (!planner.TryTakeNextCard(out var reused) || !ReferenceEquals(reused.Card, second))
+        if (!planner.TryTakeNext(false, out var reused) || !ReferenceEquals(reused.Card, second))
             throw new Exception("The remaining card of the plan must be reusable without another search.");
-        if (planner.TryTakeNextCard(out _))
+        if (planner.TryTakeNext(false, out _))
             throw new Exception("A consumed plan tail must not yield more actions.");
 
         // If the live board no longer matches the plan, the tail is dropped so a
         // stale assumption can never be played.
         var stale = Plan(out var gone, out var staleOwner);
         staleOwner.PlayerCombatState!.Hand.RemoveInternal(gone);
-        if (stale.TryTakeNextCard(out _))
+        if (stale.TryTakeNext(false, out _))
             throw new Exception("A plan whose card left the hand must not be replayed.");
         Console.WriteLine("PASS: the tail of a plan is replayed without a new search, and dropped when the board moved.");
+    }
+
+    // Handing a one-turn buff to a player who has already ended throws it away,
+    // and a bot teammate spends what it is given with certainty. This is the
+    // coop rule: aim timed support at the team, and only at a human while they
+    // can still act on it.
+    private static void AuditCoopBuffTiming()
+    {
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 47, 1));
+        var mate = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 47, 2));
+        var human = Player.CreateForNewRun<Deprived>(UnlockState.all, (ulong)471);
+        var party = new[] { bot, mate, human };
+        var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "COOP-TIMING"));
+        foreach (var p in party)
+        {
+            p.ResetCombatState(); combat.AddPlayer(p);
+            p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80);
+            p.PlayerCombatState!.Phase = PlayerTurnPhase.Play; p.PlayerCombatState.GainEnergy(3);
+        }
+        var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "timing");
+        combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+        foe.SetMaxHpInternal(60); foe.SetCurrentHpInternal(60);
+        foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(5)), true);
+        // Both candidates would use it; only the human has already ended.
+        mate.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<TwinStrike>(mate));
+        human.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<TwinStrike>(human));
+        human.PlayerCombatState.Phase = PlayerTurnPhase.End;
+        bot.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<Coordinate>(bot));
+
+        var scored = GeniusCombatStrategy.ScoreLegalMoves(bot,
+            BotBrain.PlanningCombatMoves(bot).Where(m => m.Card is Coordinate).ToList(), 0);
+        var toMate = scored.FirstOrDefault(m => ReferenceEquals(m.Target, mate.Creature));
+        var toHuman = scored.FirstOrDefault(m => ReferenceEquals(m.Target, human.Creature));
+        if (toMate.Card is null || toHuman.Card is null)
+            throw new Exception("COORDINATE must offer both teammates as targets.");
+        if (!(toMate.Score > toHuman.Score))
+            throw new Exception($"A one-turn buff must prefer the teammate who still acts "
+                + $"({toMate.Score:F1} vs the ended human {toHuman.Score:F1}).");
+        Console.WriteLine("PASS: timed support is aimed at a teammate who can still act, never at an ended player.");
+    }
+
+    // A damage potion must not be thrown at an enemy the team's own cards can
+    // already kill. The reported fight: the enemy sat at 9 HP after poison, the
+    // turn was ended, and the next turn opened with an explosive potion.
+    private static void AuditPotionOnlyWhenCardsCannotFinisher()
+    {
+        BotPotionPlanner.Choice? Evaluate(bool giveAttacks)
+        {
+            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 48, 1));
+            var mate = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 48, 2));
+            var party = new[] { bot, mate };
+            var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "POTION-FINISH"));
+            foreach (var p in party)
+            {
+                p.ResetCombatState(); combat.AddPlayer(p);
+                p.Creature.SetMaxHpInternal(60); p.Creature.SetCurrentHpInternal(30);
+                p.PlayerCombatState!.Phase = PlayerTurnPhase.Play; p.PlayerCombatState.GainEnergy(3);
+            }
+            var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "finish");
+            combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+            foe.SetMaxHpInternal(6); foe.SetCurrentHpInternal(6);
+            // A lethal incoming attack, so the potion's rescue branch is reachable.
+            foe.Monster.SetMoveImmediate(new MoveState("SMASH", _ => Task.CompletedTask, new SingleAttackIntent(200)), true);
+            if (giveAttacks)
+            {
+                bot.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
+                bot.PlayerCombatState.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
+            }
+            bot.AddPotionInternal(ModelDb.Potion<ExplosiveAmpoule>().ToMutable());
+            return BotPotionPlanner.Evaluate(new[] { bot }, party);
+        }
+
+        if (Evaluate(giveAttacks: true) is { } wasted)
+            throw new Exception($"A damage potion must be kept when the hand already kills the target "
+                + $"(chose {wasted.Reason}).");
+        if (Evaluate(giveAttacks: false) is null)
+            throw new Exception("The potion must still be thrown when no card can finish the enemy.");
+        Console.WriteLine("PASS: a damage potion is kept while the hand can already finish the target.");
+
+        // Past the last shop a bottle has no future, so the final encounter may
+        // spend one on a measured gain instead of waiting for a rescue. The
+        // reviewed party met the act-3 boss holding six and never drank them.
+        BotPotionPlanner.Choice? Final(bool noFuture, bool giveAttacks)
+        {
+            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 49, 1));
+            var mate = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 49, 2));
+            var party = new[] { bot, mate };
+            var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "POTION-FINAL"));
+            foreach (var p in party)
+            {
+                p.ResetCombatState(); combat.AddPlayer(p);
+                // Nobody is in danger: the rescue branch cannot fire at all.
+                p.Creature.SetMaxHpInternal(60); p.Creature.SetCurrentHpInternal(60);
+                p.PlayerCombatState!.Phase = PlayerTurnPhase.Play; p.PlayerCombatState.GainEnergy(3);
+            }
+            var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "final");
+            combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+            foe.SetMaxHpInternal(6); foe.SetCurrentHpInternal(6);
+            foe.Monster.SetMoveImmediate(new MoveState("TAP", _ => Task.CompletedTask, new SingleAttackIntent(2)), true);
+            if (giveAttacks)
+                bot.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
+            bot.AddPotionInternal(ModelDb.Potion<ExplosiveAmpoule>().ToMutable());
+            return BotPotionPlanner.EvaluateWithFuture(new[] { bot }, party, noFuture);
+        }
+
+        if (Final(noFuture: false, giveAttacks: false) is not null)
+            throw new Exception("Outside the final encounter a bottle must be kept when nobody is in danger.");
+        var last = Final(noFuture: true, giveAttacks: false);
+        if (last is null || last.Reason != "final-encounter-no-future")
+            throw new Exception($"The final encounter must spend a bottle on a kill the cards cannot get, got {last?.Reason ?? "nothing"}.");
+        if (Final(noFuture: true, giveAttacks: true) is not null)
+            throw new Exception("0.34.1 still holds: a kill the hand already has must not be bought with a potion.");
+        // Without a map there is no final encounter to detect, which is also what
+        // keeps this from firing in an ordinary act-3 fight.
+        var mapBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 49, 3));
+        mapBot.ResetCombatState();
+        if (BotPotionPlanner.NoFutureForPotion(mapBot))
+            throw new Exception("A player with no readable map position must not be treated as the final encounter.");
+        Console.WriteLine("PASS: the final encounter spends a bottle on a kill the cards cannot get, and only there.");
+    }
+
+    // Once every human is dead the team owns the fight: nothing can change under
+    // a search and nobody is waiting, so the planner spends its deep budget on
+    // every plan and the panel says it is thinking.
+    private static void AuditSoloTakeover()
+    {
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 49, 1));
+        var human = Player.CreateForNewRun<Deprived>(UnlockState.all, (ulong)491);
+        var party = new[] { bot, human };
+        var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "SOLO"));
+        foreach (var p in party)
+        {
+            p.ResetCombatState(); combat.AddPlayer(p);
+            p.Creature.SetMaxHpInternal(50); p.Creature.SetCurrentHpInternal(50);
+        }
+        if (BotCooperation.AllHumansDown(combat.RunState))
+            throw new Exception("A living human means the team is not alone in the fight.");
+        human.Creature.SetCurrentHpInternal(0);
+        if (!BotCooperation.AllHumansDown(combat.RunState))
+            throw new Exception("With every human dead the team must own the rest of the fight.");
+        Console.WriteLine("PASS: the solo-takeover state is detected exactly when no human is left alive.");
+    }
+
+    // A human merely ending their turn changes nothing the team can see: same
+    // hands, same energy, same intents. The "nothing to play" verdict from before
+    // that therefore still holds, which is why the planner keys it on a stamp
+    // built from the acting players only.
+    private static void AuditBotStampIgnoresHumanEndTurn()
+    {
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 50, 1));
+        var human = Player.CreateForNewRun<Deprived>(UnlockState.all, (ulong)501);
+        var party = new[] { bot, human };
+        var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "BOTSTAMP"));
+        foreach (var p in party)
+        {
+            p.ResetCombatState(); combat.AddPlayer(p);
+            p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80);
+            p.PlayerCombatState!.Phase = PlayerTurnPhase.Play;
+        }
+        var botBefore = KernelSession.CaptureBotStamp(combat, new[] { bot });
+        var liveBefore = KernelSession.CaptureLiveStamp(combat);
+        human.PlayerCombatState!.Phase = PlayerTurnPhase.End;
+        if (KernelSession.CaptureBotStamp(combat, new[] { bot }) != botBefore)
+            throw new Exception("A human ending their turn must not change the board the team can see.");
+        if (KernelSession.CaptureLiveStamp(combat) == liveBefore)
+            throw new Exception("The full stamp should still notice the human's phase change.");
+        Console.WriteLine("PASS: a human ending their turn leaves the bot-visible stamp intact while the full stamp moves.");
     }
 
     // Authoritative coverage probe: ask the kernel, per card, whether it can

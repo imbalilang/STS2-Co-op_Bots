@@ -22,6 +22,9 @@ internal static class BotShopPlanner
     // so could never beat the 75 gold a first removal costs.
     private const double GoldPerDeckValue = 2.2;
     private static double GoldFor(double deckValue) => Math.Max(0, deckValue) * GoldPerDeckValue;
+    // Act index at which the run's remaining shops stop being worth saving for.
+    // Shared with the potion policy: past this line nothing is worth holding for.
+    internal const int FinalAct = 2;
 
     // What removing this card is worth to the deck, using the same valuation as
     // reward picks and upgrades. A card that has outlived its purpose scores as
@@ -32,8 +35,10 @@ internal static class BotShopPlanner
         if (!card.IsRemovable) return 0;
         var value = Building.BuildValue.Remove(card, player).Total;
         // A curse is always worth paying to remove, even in a deck so poor that
-        // nothing looks below average.
-        if (card.Type == CardType.Curse) value = Math.Max(value, 155);
+        // nothing looks below average — and more so later, when the next chance
+        // to remove one may be the one being offered right now.
+        if (card.Type == CardType.Curse)
+            value = Math.Max(value, 155 * RunDepth.BloatFactor(player));
         return value;
     }
 
@@ -61,8 +66,15 @@ internal static class BotShopPlanner
             };
             // Spending switches off MawBank; retain a modest allowance for lost future income.
             if (entry.Cost > 0 && player.Relics.Any(r => r.GetType().Name == "MawBank" && !r.IsUsedUp)) value -= 24;
-            if (player.Gold - entry.Cost < 25 && value < entry.Cost * 1.6) continue;
-            if (value > entry.Cost) candidates.Add(new(index, entry is MerchantCardRemovalEntry ? removal.index : -1, value, entry.Cost));
+            var finalAct = player.RunState.CurrentActIndex >= FinalAct;
+            // Keeping a reserve only pays off if another shop is coming. In the
+            // last act it just ends up in the save file.
+            if (!finalAct && player.Gold - entry.Cost < 25 && value < entry.Cost * 1.6) continue;
+            // The bar falls with the run: in the last act gold is nearly dead,
+            // and at the last shop that can be reached before the boss it is dead
+            // outright, so anything that does not make the deck worse is bought.
+            if (value > entry.Cost * RunDepth.ShopThresholdFactor(player))
+                candidates.Add(new(index, entry is MerchantCardRemovalEntry ? removal.index : -1, value, entry.Cost));
         }
         // Compare net benefit in gold-equivalent units, rather than buying the first affordable item.
         return candidates.OrderByDescending(c => c.Value - c.Cost).ThenBy(c => c.Cost).ThenBy(c => c.Index).FirstOrDefault();

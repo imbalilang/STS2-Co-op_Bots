@@ -200,7 +200,7 @@ public sealed partial class KernelSession
                 }
                 else
                 {
-                    if (!MonsterMoveEffects.Supports(enemy.Monster!, move.Move.Id))
+                    if (!MonsterMoveEffects.Supports(enemy.Monster!, move.Move.Id) && !IsInert(move.Move))
                     {
                         if (move.Move.Intents.Any(i => i is not AttackIntent))
                         {
@@ -230,4 +230,14 @@ public sealed partial class KernelSession
         // Stop at a complete enemy boundary. Next-turn draw/search is P1-2.
         return !Combat.HasPendingChoice;
     }
+
+    // A monster move whose only intents are Sleep, Stun or Hidden is the enemy
+    // doing nothing on its own turn, which needs no per-monster entry — it is the
+    // same rule the intent forecaster already applies. Without this, Rocket's
+    // RECHARGE_MOVE (a Sleep-intent breather that changes no combat number) was
+    // recorded as `enemy-move-unmodeled:ROCKET/RECHARGE_MOVE` thirty times in one
+    // fight and **failed every end-turn branch closed**, so the kernel could not
+    // look past the current turn at all while that enemy was in play.
+    private static bool IsInert(MoveState move) => move.Intents.Count > 0
+        && move.Intents.All(intent => intent.IntentType is IntentType.Sleep or IntentType.Stun or IntentType.Hidden);
 }

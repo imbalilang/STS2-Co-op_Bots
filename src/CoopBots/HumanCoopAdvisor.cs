@@ -1,3 +1,4 @@
+using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
@@ -205,7 +206,7 @@ internal static class HumanCoopAdvisor
         if (relic.GetType().Name == "OldCoin") return (40, "金币可用于购买和删牌，不等同于即时战斗能力");
         var shareBlock = player.Deck.Cards.Any(c => c.GetType().Name is "BeaconOfHope" or "DemonicShield")
             || party.Any(p => p != player && p.Deck.Cards.Any(c => c.GetType().Name == "Mimic"));
-        return relic.GetType().Name switch
+        var (knownScore, knownReason) = relic.GetType().Name switch
         {
             "Anchor" => (player.Creature.CurrentHp < player.Creature.MaxHp * .6 ? 35 : 22, "首回合格挡，降低启动时的生存压力"),
             "BagOfPreparation" => (25, "首回合额外手牌，增加团队铺垫选择"),
@@ -214,9 +215,67 @@ internal static class HumanCoopAdvisor
             "Lantern" => (23, "首回合额外能量，减少铺垫和输出争抢费用"),
             "BloodVial" => (player.Creature.CurrentHp < player.Creature.MaxHp * .6 ? 26 : 12, "每场战斗首回合恢复生命，减轻持续战损"),
             "HornCleat" => (24, "第二回合获得格挡，缓解启动压力"),
-            _ => (0, "尚无可靠的专属估值，请比较遗物描述与构筑")
+            _ => (0.0, "尚无可靠的专属估值，请比较遗物描述与构筑")
         };
+        if (knownScore != 0) return (knownScore, knownReason);
+        // The chain above only knows relics whose worth is printed on them. A
+        // Whetstone, an Orrery or a capsule is worth whatever it hands over, and
+        // that is a roll — so ask the ported Random Foreseer predictor what this
+        // one will actually do for THIS deck. Without this the chest assignment
+        // had nothing to compare and every such relic scored zero.
+        var predicted = PredictedEffectValue(relic, player, depth: 0);
+        return predicted > 0.5
+            ? (predicted, $"预测拾取效果：{predicted:F0}")
+            : (0, "尚无可靠的专属估值，请比较遗物描述与构筑");
     }
+
+    // Relics whose pickup is a random upgrade of cards already in the deck. Their
+    // value is the sum of the real upgrade deltas, so the seat that owns the best
+    // Attack is the seat that wants the Whetstone.
+    private static readonly HashSet<string> UpgradeRelics =
+        ["Whetstone", "WarPaint", "SandCastle", "FragrantMushroom"];
+
+    // What the relic will do beyond its printed text, in the same score unit as
+    // the hand-written entries above.
+    private static double PredictedEffectValue(RelicModel relic, Player player, int depth)
+    {
+        var effect = OutOfCombatPredictions.RelicPickup(player, relic);
+        if (effect.IsEmpty) return 0;
+        if (UpgradeRelics.Contains(relic.GetType().Name))
+        {
+            var upgraded = 0.0;
+            var claimed = new HashSet<CardModel>();
+            foreach (var result in effect.Cards)
+            {
+                // The prediction returns upgraded clones; price the deck card
+                // they came from, because that is the card that changes.
+                var source = player.Deck.Cards.FirstOrDefault(card => !claimed.Contains(card)
+                    && !card.IsUpgraded && card.Id.Entry == result.Id.Entry);
+                if (source is null) continue;
+                claimed.Add(source);
+                upgraded += Math.Max(0, UpgradeValue(source, player));
+            }
+            return upgraded;
+        }
+        var total = 0.0;
+        foreach (var bundle in effect.Bundles)
+        {
+            // A transform result replaces a card rather than adding one, so it is
+            // not priced yet: summing it as a gain would make Astrolabe look like
+            // three free cards. See outputs/randomforeseer-out-of-combat-plan.md.
+            if (bundle.Kind == OutOfCombatPredictions.BundleKind.Transform) continue;
+            // A choice is worth its best member; anything else is granted whole.
+            total += bundle.Cards.Select(card => AddedValue(card, player)).DefaultIfEmpty(0).Max();
+        }
+        foreach (var card in effect.Cards) total += AddedValue(card, player);
+        if (depth < 1)
+            foreach (var granted in effect.Relics) total += Math.Max(0, RelicValue(granted, player).Score);
+        foreach (var _ in effect.Potions) total += 10;
+        return total;
+    }
+
+    private static double AddedValue(CardModel card, Player player)
+        => Math.Max(0, Building.BuildValue.Add(card, player).Total);
 
     // Kept as the shared, context-free view of a room's worth; the full-act
     // planner adds act/deck context on top of the same numbers.

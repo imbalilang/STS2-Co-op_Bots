@@ -4,8 +4,11 @@ using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Entities.Potions;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Cards;
+using MegaCrit.Sts2.Core.Models.Powers;
 using CoopBots.Kernel.Vendor;
 using CoopBots.Kernel.Vendor.Engine.Common;
+using CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Potions.OnUse;
 using CoopBots.Kernel.Vendor.Engine.InCombat.Simulation;
 
 namespace CoopBots.Kernel;
@@ -16,6 +19,16 @@ public sealed partial class KernelSession
     public static string CaptureLiveStamp(CombatState state) => $"{state.RoundNumber}/{state.CurrentSide}\n" +
         string.Join("\n", state.Players.Select(p => $"{p.NetId}/{p.PlayerCombatState?.Phase}:" +
             ContinuationStamp.CaptureLive(state, p).StateText));
+
+    /// <summary>
+    /// The same fingerprint, but only over the players that will act. A human
+    /// merely ending their turn changes their own phase and nothing the team can
+    /// see — same hands, same energy, same intents — so a verdict reached before
+    /// that still holds afterwards; the full stamp would hide that.
+    /// </summary>
+    public static string CaptureBotStamp(CombatState state, IEnumerable<Player> actors) =>
+        $"{state.RoundNumber}/{state.CurrentSide}\n" +
+        string.Join("\n", actors.Select(p => $"{p.NetId}:" + ContinuationStamp.CaptureLive(state, p).StateText));
     /// <summary>
     /// True when the last action resolved with at least one uncompensated
     /// environmental risk (an enemy power or relic hook we do not model). The
@@ -30,9 +43,13 @@ public sealed partial class KernelSession
     private string? failedBoundary;
     private readonly CombatPredictionSimulator simulator;
     private readonly HashSet<uint> processedDeaths;
+    // The live state this branch descends from. Only the diagnostic state-text
+    // fingerprint needs it: the intent forecast is built once from the root, the
+    // same way the vendored solver builds it for every branch.
+    private readonly CombatState? liveRoot;
     private SimulatedCombatState Combat => (SimulatedCombatState)simulator.State.CombatState;
-    private KernelSession(CombatPredictionSimulator simulator, HashSet<uint> deaths)
-    { this.simulator = simulator; processedDeaths = deaths; }
+    private KernelSession(CombatPredictionSimulator simulator, HashSet<uint> deaths, CombatState? liveRoot = null)
+    { this.simulator = simulator; processedDeaths = deaths; this.liveRoot = liveRoot; }
 
     // Capture is invoked by the host on the game thread; every branch owns the
     // complete party, shared monsters, card piles, relics, powers and RNG streams.
@@ -42,7 +59,7 @@ public sealed partial class KernelSession
         using var isolation = SimulationNotificationIsolation.Enter();
         PowerDynamicVarWarmup.EnsureMaterialized(live);
         CardDynamicVarWarmup.EnsureMaterialized(live);
-        return new(new CombatPredictionSimulator(new SimulatedCombatState(live, live.IterateHookListeners().ToArray())), new())
+        return new(new CombatPredictionSimulator(new SimulatedCombatState(live, live.IterateHookListeners().ToArray())), new(), live)
         {
             ready = live.Players.Where(CombatManager.Instance.IsPlayerReadyToEndTurn).Select(p => p.NetId).ToHashSet(),
             capturedExtraTurn = CombatManager.Instance.PlayersTakingExtraTurn.Count > 0
@@ -52,7 +69,7 @@ public sealed partial class KernelSession
     {
         if (failedBoundary is not null) throw new InvalidOperationException("Cannot fork incomplete action: " + failedBoundary);
         using var isolation = SimulationNotificationIsolation.Enter();
-        return new(simulator.Fork(), new(processedDeaths)) { ready = new(ready), capturedExtraTurn = capturedExtraTurn,
+        return new(simulator.Fork(), new(processedDeaths), liveRoot) { ready = new(ready), capturedExtraTurn = capturedExtraTurn,
             EnemyPhaseCompleted = EnemyPhaseCompleted, LastActionHadEnvironmentalRisk = LastActionHadEnvironmentalRisk,
             RoundsAdvanced = RoundsAdvanced };
     }
@@ -115,6 +132,40 @@ public sealed partial class KernelSession
         .Where(p => !p.IsQueued && !p.HasBeenRemovedFromState && p.PassesCustomUsabilityCheck
             && p.Usage is PotionUsage.CombatOnly or PotionUsage.AnyTime)
         .ToArray();
+    /// <summary>
+    /// Whether the kernel can simulate this potion at all. A potion with no
+    /// mirrored OnUse is rejected by every branch, so the search can never pick
+    /// it; the planner reports these by name instead of leaving a full slot
+    /// unexplained in the log.
+    /// </summary>
+    public static bool CanModelPotion(PotionModel potion) => PotionOnUseMirrors.CanMirror(potion);
+
+    /// <summary>
+    /// The status card the player's next play would hand them, or null when no
+    /// enemy counts their plays or the counter is not yet at its last step. Only
+    /// Aeonglass's Withering Presence does this today, and the legacy scorer
+    /// prices one card at a time, so it could not see that playing one more card
+    /// was about to cost end-of-turn damage.
+    /// </summary>
+    public static CardModel? PendingHeldStatus(Player player)
+    {
+        try
+        {
+            foreach (var enemy in player.Creature.CombatState?.Enemies ?? [])
+                foreach (var power in enemy.Powers)
+                {
+                    if (power is not WitheringPresencePower presence || power.Amount <= 0) continue;
+                    if (presence.Target?.Player != player) continue;
+                    if (!presence.DynamicVars.TryGetValue(WitheringPresencePower._cardsLeftKey, out var left)) continue;
+                    if (left.IntValue == 1) return ModelDb.Card<Wither>().ToMutable();
+                }
+        }
+        catch
+        {
+            // A mechanic we cannot read must not invent a cost.
+        }
+        return null;
+    }
     public IReadOnlyList<Creature?> PotionTargets(PotionModel potion)
     {
         switch (potion.TargetType)

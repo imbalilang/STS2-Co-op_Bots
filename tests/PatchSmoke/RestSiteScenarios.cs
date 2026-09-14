@@ -93,9 +93,9 @@ internal static class RestSiteScenarios
                 + $"(add={addMore:F1}, upgrade={upgradeOne:F1}).");
         Console.WriteLine("PASS: another duplicate is refused while upgrading an existing copy is worth it.");
 
-        // Healing is only worth a permanent upgrade near death. Above half HP a
-        // teammate needs no care at all, and the per-HP rate is low enough that
-        // an ordinary wound is left alone so the bot upgrades its deck instead.
+        // Healing is worth a camp when the wound is big enough that the coming
+        // fight could still kill; an ordinary scratch is still left alone so the
+        // bot upgrades its deck instead.
         var reset = typeof(BotBrain).Assembly.GetType("CoopBots.BotRestSitePatch")!
             .GetMethod("ResetPlanning", BindingFlags.Static | BindingFlags.NonPublic)!;
         var healer = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 4, 1));
@@ -111,30 +111,142 @@ internal static class RestSiteScenarios
         patient.ResetCombatState();
         patient.Creature.SetMaxHpInternal(73);
 
-        // 20/73 is the reported case: one mend is fine, but the party must not
-        // stack mends onto the same target. One bot mends, the next bot smiths.
+        // With no tent a healthy bot never mends: it hands its own camp away and its
+        // deck does not grow. The reviewed run took that trade at every one of its
+        // fifteen bot camp slots, and its decks were the ones that never grew. Only
+        // a teammate who would not survive the next fight is worth the cost.
+        healRun.CurrentActIndex = 0;
         reset.Invoke(null, null);
-        patient.Creature.SetCurrentHpInternal(20);
+        patient.Creature.SetCurrentHpInternal(45);
+        if (Pick(healer, new SmithRestSiteOption(healer), new MendRestSiteOption(healer)) != 0)
+            throw new Exception("Without a tent a healthy bot must smith, not top up a teammate (45/73).");
+        reset.Invoke(null, null);
+        patient.Creature.SetCurrentHpInternal(15);
         if (Pick(healer, new SmithRestSiteOption(healer), new MendRestSiteOption(healer)) != 1)
-            throw new Exception("A teammate well below half HP must still be mended once.");
+            throw new Exception("A teammate near death must still be mended without a tent (15/73).");
+        Console.WriteLine("PASS: rest-site MEND is refused without a tent, except to save a dying teammate.");
+
+        // A MiniatureTent is what makes mending free: its owner keeps every option
+        // at the camp, so the smith and the mend are not competing for the same
+        // pick. What the party must still not do is stack two mends onto one target.
+        healer.AddRelicInternal(ModelDb.Relic<MiniatureTent>().ToMutable());
+        helper.AddRelicInternal(ModelDb.Relic<MiniatureTent>().ToMutable());
+        reset.Invoke(null, null);
+        patient.Creature.SetCurrentHpInternal(45);
+        if (Pick(healer, new MendRestSiteOption(healer)) != 0)
+            throw new Exception("A tent owner must be able to mend.");
         if (Pick(helper, new SmithRestSiteOption(helper), new MendRestSiteOption(helper)) != 0)
             throw new Exception("A second bot must not stack another mend onto an already-healed teammate.");
         Console.WriteLine("PASS: rest-site mends do not stack; the second bot upgrades instead of overhealing.");
 
-        // Above half HP nobody needs care: the heal must score zero so the bot
-        // takes the permanent upgrade.
+        // Acts 1-2 are the greedy acts: 25% HP is the line, and above it the camp
+        // goes to the deck even with most of the bar gone.
         reset.Invoke(null, null);
-        patient.Creature.SetCurrentHpInternal(41);
-        if (Pick(healer, new SmithRestSiteOption(healer), new MendRestSiteOption(healer)) != 0)
-            throw new Exception("A teammate above half HP must not pull a bot off Smith.");
-        Console.WriteLine("PASS: rest-site healing is declined above half HP so the bot upgrades its deck.");
+        healer.Creature.SetCurrentHpInternal(21);
+        if (Pick(healer, new SmithRestSiteOption(healer), new HealRestSiteOption(healer)) != 0)
+            throw new Exception("Act 1 must smith at 26% HP.");
+        healer.Creature.SetCurrentHpInternal(19);
+        if (Pick(healer, new SmithRestSiteOption(healer), new HealRestSiteOption(healer)) != 1)
+            throw new Exception("Act 1 must rest below 25% HP.");
+        healer.Creature.SetCurrentHpInternal(80);
+        Console.WriteLine("PASS: acts 1-2 smith above 25% HP and rest below it.");
 
-        // A teammate near death must still be saved.
+        // The last act is the reverse: the deck stops buying camps once the boss is
+        // close. Its final camp asks for more still, and is pinned through the floor
+        // rather than through a choice, because a fabricated map is not worth
+        // trusting over the number itself.
+        healRun.CurrentActIndex = 2;
+        reset.Invoke(null, null);
+        healer.Creature.SetCurrentHpInternal(49);
+        if (Pick(healer, new SmithRestSiteOption(healer), new HealRestSiteOption(healer)) != 0)
+            throw new Exception("Act 3 must still smith at 61% HP away from the boss camp.");
+        healer.Creature.SetCurrentHpInternal(43);
+        if (Pick(healer, new SmithRestSiteOption(healer), new HealRestSiteOption(healer)) != 1)
+            throw new Exception("Act 3 must rest at 54% HP.");
+        healer.Creature.SetCurrentHpInternal(80);
+        Console.WriteLine("PASS: act 3 turns survival-first at 55% HP.");
+
+        // The line itself, pinned free of the map the way RiskFor is: acts 1-2 are
+        // greedy and the last act asks for more HP, most of all at its final camp.
+        var floorOf = typeof(BotBrain).Assembly.GetType("CoopBots.BotRestSitePatch")!
+            .GetMethod("SmithHpFloor", BindingFlags.Static | BindingFlags.NonPublic)!;
+        double Floor(int act, bool lastCamp)
+            => (double)floorOf.Invoke(null, new object[] { act, lastCamp })!;
+        if (Floor(0, false) != 0.25 || Floor(1, false) != 0.25)
+            throw new Exception($"Acts 1-2 must share the greedy 25% line: "
+                + $"{Floor(0, false):F2}, {Floor(1, false):F2}.");
+        if (Floor(0, true) != Floor(0, false))
+            throw new Exception("An early act must stay greedy even at its last camp.");
+        if (!(Floor(2, false) > Floor(1, false) && Floor(2, true) > Floor(2, false)))
+            throw new Exception($"The last act must ask for more HP, and its final camp for the most: "
+                + $"{Floor(2, false):F2}, {Floor(2, true):F2}.");
+        Console.WriteLine($"PASS: rest-site smith line is {Floor(0, false):.0%} in acts 1-2, "
+            + $"{Floor(2, false):.0%} in act 3 and {Floor(2, true):.0%} at the final camp.");
+
+        // The camp is worth what comes after it. The reported wipe walked into the
+        // act boss at 43-61% because the heal value asked "how hurt are you" with
+        // no idea whether the next room was the boss or a shop. The multiplier is
+        // pinned directly: the decision itself only differs when a map is present,
+        // and a fabricated map is not worth trusting over this.
+        var risk = typeof(BotBrain).Assembly.GetType("CoopBots.BotRestSitePatch")!
+            .GetMethod("RiskFor", BindingFlags.Static | BindingFlags.NonPublic)!;
+        double Risk(MegaCrit.Sts2.Core.Map.MapPointType type, int act)
+            => (double)risk.Invoke(null, new object[] { type, act })!;
+        var beforeBoss = Risk(MegaCrit.Sts2.Core.Map.MapPointType.Boss, 2);
+        var beforeShop = Risk(MegaCrit.Sts2.Core.Map.MapPointType.Shop, 2);
+        var beforeMonster = Risk(MegaCrit.Sts2.Core.Map.MapPointType.Monster, 1);
+        if (!(beforeBoss > beforeMonster && beforeMonster > beforeShop))
+            throw new Exception($"Risk must fall from boss to monster to shop: "
+                + $"boss={beforeBoss:F2}, monster={beforeMonster:F2}, shop={beforeShop:F2}.");
+        if (Risk(MegaCrit.Sts2.Core.Map.MapPointType.Elite, 2) <= Risk(MegaCrit.Sts2.Core.Map.MapPointType.Elite, 0))
+            throw new Exception("A late-act elite must be riskier than an act-1 elite.");
+        // The same boss wound is worth more in the last act, and the last camp
+        // before the boss is the last chance to heal at all — the case the
+        // reviewed party lost: three bots upgraded instead of resting there.
+        var finalBoss = Risk(MegaCrit.Sts2.Core.Map.MapPointType.Boss, 2);
+        var earlyBoss = Risk(MegaCrit.Sts2.Core.Map.MapPointType.Boss, 0);
+        if (!(finalBoss > earlyBoss))
+            throw new Exception($"The last act's boss must outweigh an earlier one: {finalBoss:F2} vs {earlyBoss:F2}.");
+        // The last camp before a boss is priced as that act's boss camp, not as one
+        // flat number for the whole run. A flat floor made an act-1 boss camp as
+        // urgent as the act-3 one, which is exactly backwards for a deck that still
+        // has two acts to grow into.
+        var camp = typeof(BotBrain).Assembly.GetType("CoopBots.BotRestSitePatch")!
+            .GetMethod("RiskForCamp", BindingFlags.Static | BindingFlags.NonPublic)!;
+        double CampRisk(int act, MegaCrit.Sts2.Core.Map.MapPointType? next, bool last)
+            => (double)camp.Invoke(null, new object?[] { act, next, last })!;
+        const MegaCrit.Sts2.Core.Map.MapPointType monsterNext = MegaCrit.Sts2.Core.Map.MapPointType.Monster;
+        if (CampRisk(0, monsterNext, true) != Risk(MegaCrit.Sts2.Core.Map.MapPointType.Boss, 0))
+            throw new Exception("An act-1 boss camp must be priced as the act-1 boss, not the last act's.");
+        if (!(CampRisk(2, monsterNext, true) > CampRisk(0, monsterNext, true)))
+            throw new Exception("The final act's boss camp must still be the most urgent.");
+        if (CampRisk(0, monsterNext, false) != Risk(MegaCrit.Sts2.Core.Map.MapPointType.Monster, 0))
+            throw new Exception("A camp that is not the last must be priced by the room after it alone.");
+        Console.WriteLine("PASS: the last camp is priced by its own act's boss risk.");
+        // The point of the multiplier: the same wound that loses to an upgrade on a
+        // quiet road must beat it when the boss is next. 55/73 was the pinned case
+        // that "still loses to an upgrade"; the human mend weight is 0.4 * 1.2.
+        var patch = typeof(BotBrain).Assembly.GetType("CoopBots.BotRestSitePatch")!;
+        var healValue = patch.GetMethod("HealValue", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var mendAmount = (decimal)patch.GetMethod("HealAmount", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, new object[] { patient, false })!;
+        double Wounded(double risk)
+            => (double)healValue.Invoke(null, new object[] { mendAmount, 55m, 73m, 0.4 * 1.2 * risk })!;
+        var quiet = Wounded(beforeShop);
+        var bossRoom = Wounded(beforeBoss);
+        if (!(quiet < 16 && bossRoom > 16))
+            throw new Exception($"The next room must decide the same wound: quiet={quiet:F1}, boss={bossRoom:F1}, upgrade=16.");
+        Console.WriteLine($"PASS: rest-site healing is scaled by what comes next "
+            + $"({quiet:F1} before a shop, {bossRoom:F1} before the boss).");
+
+        // Greed is not recklessness: a teammate near death must still be saved,
+        // and this runs in act 1 — the greediest act — precisely because that is
+        // where the rule has to hold hardest.
         reset.Invoke(null, null);
         patient.Creature.SetCurrentHpInternal(7);
         if (Pick(healer, new SmithRestSiteOption(healer), new MendRestSiteOption(healer),
             new HealRestSiteOption(healer)) != 1)
             throw new Exception("A nearly dead teammate must be mended over Smith.");
-        Console.WriteLine("PASS: rest-site Mend still rescues a nearly dead teammate.");
+        Console.WriteLine("PASS: rest-site Mend still rescues a nearly dead teammate, even in act 1.");
     }
 }

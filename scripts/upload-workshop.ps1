@@ -37,6 +37,15 @@ if (-not $PublishedFileId -and (Test-Path $idFile)) {
 }
 $current = (Get-Content $vdf -Raw -Encoding UTF8)
 
+# A raw ASCII quote inside a KeyValues value ends the string there, and steamcmd
+# silently drops the rest: the Workshop page once stopped at "构筑按" because the
+# description used straight quotes around a phrase. Full-width quotes are safe.
+$description = [regex]::Match($current, '"description"\s+"(.*?)"\s+"changenote"', 'Singleline').Groups[1].Value
+$strayQuotes = [regex]::Matches($description, '"').Count
+if ($strayQuotes -gt 0) {
+    throw "The Workshop description contains $strayQuotes raw quote character(s); steamcmd would truncate the page at the first one. Use full-width quotes."
+}
+
 if (-not $PublishedFileId) {
     $match = [regex]::Match($current, '"publishedfileid"\s+"(\d+)"')
     if ($match.Success -and $match.Groups[1].Value -ne '0') { $PublishedFileId = $match.Groups[1].Value }
