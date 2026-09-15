@@ -145,6 +145,36 @@ internal static class PotionValueScenarios
         Check(Value(false, false, true) is null,
             "an ordinary fight must not burn it.");
 
+        // A potion confirmation is only valid for the tick that produced it. The
+        // runtime skips the kernel poll entirely when no bot can play a card, and
+        // that path used to leave the previous confirmation standing: the reviewed
+        // act-1 boss re-enqueued an already-drunk bottle once every two seconds and
+        // never ended its turn. Reset() cannot clear it — Poll stores a plan and
+        // only then resets the search — so dropping it is a separate, explicit act.
+        var kernelPlanner = typeof(BotBrain).Assembly.GetType("CoopBots.KernelCombatPlanner")!;
+        var kernel = Activator.CreateInstance(kernelPlanner)!;
+        var planType = kernelPlanner.GetNestedType("PotionPlan", BindingFlags.Public | BindingFlags.NonPublic)!;
+        var confirmed = kernelPlanner.GetProperty("ConfirmedPotion", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var setPlan = confirmed.GetSetMethod(nonPublic: true)!;
+        var discard = kernelPlanner.GetMethod("DiscardConfirmation", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var reset = kernelPlanner.GetMethod("Reset", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!;
+        setPlan.Invoke(kernel, new[] { Activator.CreateInstance(planType, Add<BlockPotion>(first), null, "test") });
+        reset.Invoke(kernel, new object[] { false });
+        Check(confirmed.GetValue(kernel) is not null,
+            "Reset() must keep a plan the runtime has not read yet.");
+        discard.Invoke(kernel, null);
+        Check(confirmed.GetValue(kernel) is null,
+            "DiscardConfirmation() must drop it, which is what the idle-poll path needs.");
+
+        // And a bottle the belt no longer holds has to be refused rather than
+        // thrown: the throw is what aborted the tick before it could end the turn.
+        var tryUse = typeof(BotRuntime).GetMethod("TryUsePotion", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var stale = Add<FirePotion>(second);
+        second.DiscardPotionInternal(stale, silent: true);
+        Check(!(bool)tryUse.Invoke(null, new object?[] { stale, null })!,
+            "A potion the owner no longer holds must be refused instead of throwing.");
+        Console.WriteLine("PASS: a stale potion plan is dropped instead of aborting the tick.");
+
         // With the rule off, every case above collapses back to rescue-only.
         Reset(14);
         Add<BlockPotion>(first);

@@ -20,22 +20,7 @@ internal static class CooperativeScenarios
 {
     internal static void Run()
     {
-        TestMode.IsOn = true;
-        typeof(MegaCrit.Sts2.Core.Modding.ModManager).GetProperty("State")!.SetValue(null,
-            MegaCrit.Sts2.Core.Modding.ModManagerState.Skipped);
-        // Test process has no Godot native host. Stub only the editor detection,
-        // keeping all combat models, hooks and decision code unchanged.
-        var harness = new HarmonyLib.Harmony("coopbots.test.console");
-        harness.Patch(HarmonyLib.AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Saves.SaveManager), "Instance"),
-            prefix: new HarmonyLib.HarmonyMethod(typeof(CooperativeScenarios), nameof(NoSaveAccess)));
-        harness.Patch(HarmonyLib.AccessTools.PropertyGetter(typeof(CombatManager), "IsInProgress"),
-            prefix: new HarmonyLib.HarmonyMethod(typeof(CooperativeScenarios), nameof(CombatInProgress)));
-        harness.Patch(HarmonyLib.AccessTools.Method(typeof(MegaCrit.Sts2.Core.Logging.ConsoleLogPrinter), "Print"),
-            prefix: new HarmonyLib.HarmonyMethod(typeof(CooperativeScenarios), nameof(SuppressNativePrint)));
-        harness.Patch(HarmonyLib.AccessTools.Method(typeof(MegaCrit.Sts2.Core.Logging.Logger), "GetIsRunningFromGodotEditor"),
-            prefix: new HarmonyLib.HarmonyMethod(typeof(CooperativeScenarios), nameof(ConsoleHost)));
-        MegaCrit.Sts2.Core.Modding.AssemblyInfo.Init();
-        ModelDb.Init(typeof(AbstractModel).Assembly.GetTypes().Where(t => !t.IsAbstract && t.IsSubclassOf(typeof(AbstractModel)) && t.GetConstructor(Type.EmptyTypes) is not null).ToArray()); MegaCrit.Sts2.Core.Multiplayer.Serialization.ModelIdSerializationCache.Init(); ModelDb.InitIds();
+        TestEnvironment.Ensure();
         var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
         var attacker = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
         var support = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 2));
@@ -353,10 +338,6 @@ internal static class CooperativeScenarios
             "A team-wide relic (RedMask) must gain value with more members.");
         Console.WriteLine("PASS: relic valuation is team-aware: enemy-buff relics lose value as the party grows, team-wide relics gain.");
     }
-    private static bool ConsoleHost(ref bool __result) { __result = false; return false; }
-    private static bool SuppressNativePrint() => false;
-    private static bool NoSaveAccess(ref MegaCrit.Sts2.Core.Saves.SaveManager? __result) { __result = null; return false; }
-    private static bool CombatInProgress(ref bool __result) { __result = true; return false; }
 }
 
 

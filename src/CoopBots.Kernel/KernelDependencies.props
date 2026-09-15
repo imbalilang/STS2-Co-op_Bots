@@ -1,9 +1,20 @@
 <Project>
+  <!-- RitsuLib 0.6.x split its runtime into several assemblies: the game-version
+       specific ones (STS2-RitsuLib, STS2-RitsuLib.Runtime) live under
+       compat/<game version>/, the version-independent ones (Shared, Ui, Settings)
+       under shared/. RitsuLibDir still means "the directory holding the
+       STS2-RitsuLib.dll built for the target game version", and
+       RitsuLibSharedDir is derived from it. -->
   <PropertyGroup>
-    <RitsuLibDir Condition="'$(RitsuLibDir)' == ''">$(STS2DataDir)/../../../workshop/content/2868840/3747602295/lib/0.111.0</RitsuLibDir>
+    <RitsuLibDir Condition="'$(RitsuLibDir)' == ''">$(STS2DataDir)/../../../workshop/content/2868840/3747602295/compat/0.111.0</RitsuLibDir>
+    <!-- Normalised: ResolveAssemblyReference silently drops a HintPath that still
+         contains ".." segments. -->
+    <RitsuLibSharedDir Condition="'$(RitsuLibSharedDir)' == ''">$([System.IO.Path]::GetFullPath('$(RitsuLibDir)/../../shared'))</RitsuLibSharedDir>
   </PropertyGroup>
   <Target Name="CheckKernelDependency" BeforeTargets="ResolveAssemblyReferences">
     <Error Condition="!Exists('$(RitsuLibDir)/STS2-RitsuLib.dll')"
       Text="Kernel development requires STS2-RitsuLib. Pass -p:RitsuLibDir=the directory containing STS2-RitsuLib.dll for game 0.111.0." />
+    <Error Condition="!Exists('$(RitsuLibDir)/STS2-RitsuLib.Runtime.dll')"
+      Text="RitsuLib 0.6.x is required: $(RitsuLibDir) has no STS2-RitsuLib.Runtime.dll. RitsuLibDir must point at the compat/&lt;game version&gt; folder of the RitsuLib Workshop item (2868840/3747602295)." />
   </Target>
 </Project>

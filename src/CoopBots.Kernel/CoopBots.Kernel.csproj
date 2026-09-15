@@ -12,7 +12,11 @@
     <Reference Include="sts2" HintPath="$(STS2DataDir)/sts2.dll" Private="false" />
     <Reference Include="0Harmony" HintPath="$(STS2DataDir)/0Harmony.dll" Private="false" />
     <Reference Include="GodotSharp" HintPath="$(STS2DataDir)/GodotSharp.dll" Private="false" />
+    <!-- RitsuLib 0.6.x: STS2-RitsuLib forwards to Runtime, which holds the types
+         the vendored simulation actually calls, so it has to be referenced too. -->
     <Reference Include="STS2-RitsuLib" HintPath="$(RitsuLibDir)/STS2-RitsuLib.dll" Private="false" />
+    <Reference Include="STS2-RitsuLib.Runtime" HintPath="$(RitsuLibDir)/STS2-RitsuLib.Runtime.dll" Private="false" />
+    <Reference Include="STS2-RitsuLib.Shared" HintPath="$(RitsuLibSharedDir)/STS2-RitsuLib.Shared.dll" Private="false" />
     <Compile Include="Vendor/**/*.cs" /><Compile Include="*.cs" />
     <Compile Remove="Vendor/Runtime/CombatReplayOutcome.cs" />
     <None Include="../../THIRD_PARTY_NOTICES.md" CopyToOutputDirectory="PreserveNewest" />

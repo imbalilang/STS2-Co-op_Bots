@@ -20,7 +20,9 @@ internal static class BotShopPlanner
     // once here so every shop entry is compared in the same unit — including
     // removals, which previously compared raw deck value against a gold price and
     // so could never beat the 75 gold a first removal costs.
-    private const double GoldPerDeckValue = 2.2;
+    // Read by the draft pipeline (tests/PatchSmoke/DraftSim) so the simulated shop
+    // and the live shop cannot disagree about what a deck improvement is worth in gold.
+    internal const double GoldPerDeckValue = 2.2;
     private static double GoldFor(double deckValue) => Math.Max(0, deckValue) * GoldPerDeckValue;
     // Act index at which the run's remaining shops stop being worth saving for.
     // Shared with the potion policy: past this line nothing is worth holding for.

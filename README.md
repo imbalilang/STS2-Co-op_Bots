@@ -14,7 +14,7 @@ Bot 注入真实联机大厅：每个 Bot 是真实玩家槽位，行为通过�
 
 ## 构建 / Build
 
-需要 .NET 9 SDK、已安装的游戏、以及 RitsuLib 0.5.20+ 的程序集（编译期引用）。
+需要 .NET 9 SDK、已安装的游戏、以及 RitsuLib 0.6.2+ 的程序集（编译期引用）。
 
 ```powershell
 # Windows：构建 Release、跑两套回归、打包并输出哈希
@@ -42,7 +42,19 @@ powershell -ExecutionPolicy Bypass -File scripts/build.ps1 -GameData "<...>\data
 
 ---
 
-# 当前开发版本：0.36.0
+# 当前开发版本：0.36.1
+
+**修复一幕 Boss 的卡死：Bot 不出牌也不结束回合**。安装包：`outputs/CoopBots-v0.36.1.zip`；游戏v0.111.0，所有真人一起更新。**运行依赖：RitsuLib 0.6.2 及以上（Steam 创意工坊 id 3747602295）。** 玩家建议保持关闭。
+
+- **症状**：人类结束回合后，Bot 长时间既不出牌也不结束回合，战斗整个停住。
+- **根因**：内核把某个药水定为计划首步并成功喝掉后，如果该 Bot 随即没牌可打，`BotRuntime` 会走「无牌可打就跳过内核轮询」的分支；而药水确认 `ConfirmedPotion` 只在 `Poll()` 开头清空，`Reset()` 又**必须**保留它（`Poll` 是「先存计划、再重置搜索」，在那里清掉就把刚做出的决定毁了）。于是那条**已经执行过的**药水计划被反复读出来，`EnqueueManualUse` 因药水已不在主人的腰带上抛异常，异常从 `Tick` 抛出，结束回合的代码永远走不到——外层 catch 只是每 2 秒重试一次，于是永久停住。
+- **日志特征**：`Potion … has owner , but the owner's potion list does not contain it!` 每约 2 秒重复一次。其中 owner 显示为空是**假线索**：报错发生在 `UsePotionAction` 的构造函数里，`Player` 属性此时尚未赋值。
+- **修复**：新增 `KernelCombatPlanner.DiscardConfirmation()`，在跳过轮询的分支显式丢弃上一 tick 的确认；再加两道兜底——用药前先按游戏自己的规则校验药水仍属于该玩家，并把入队包进 try/catch。现在任何一次用药失败只会导致「这一瓶不喝」，而不会再吞掉整个回合。
+- **回归**：新增断言钉住该不变量——`Reset()` 必须保留尚未被读取的计划、`DiscardConfirmation()` 必须清掉它、已不在腰带上的药水必须被拒绝而不是抛异常。
+- **依赖基线提高到 RitsuLib 0.6.2**：RitsuLib 0.6.2 把运行时拆成了多个程序集（游戏版本相关的 `STS2-RitsuLib` / `STS2-RitsuLib.Runtime` 放在 `compat/<游戏版本>/`，与版本无关的 Shared / Ui / Settings 放在 `shared/`），旧版工坊项里的 `lib/0.111.0` 目录已不存在。内核引用的 `HarmonyIl`、`IComputedDynamicVar` 等类型现在位于 `STS2-RitsuLib.Runtime`，因此本版按 0.6.2 重新接线编译，`mod_manifest` 的 `min_version` 与创意工坊说明同步改为 **0.6.2**——仍停在 0.5.20 的玩家必须先更新 RitsuLib，否则 Mod 会因缺少 `STS2-RitsuLib.Runtime` 而加载失败。
+- **发布状态**：已出本地包 `outputs/CoopBots-v0.36.1.zip`；GitHub `imbalilang/STS2-Co-op_Bots` 与创意工坊（id 3800805592，好友可见）已同步。
+
+## 0.36.0
 
 **复盘计划续：A3 药水覆盖、B1 营火回血、B2 终局金币、B3 构筑评分、C1 搜索回退分类与机制风险、D1 持有伤害按可格挡性计价、D2 营火按下一场加权、D3 终局药水不再留底、E1 爬塔深度感知**。安装包：`outputs/CoopBots-v0.36.0.zip`；游戏v0.111.0，所有真人一起更新。**运行依赖：RitsuLib 0.5.20 及以上（Steam 创意工坊 id 3747602295）。** 玩家建议保持关闭。（本版包含 preview.50 起的全部改动。）
 

@@ -20,7 +20,13 @@
     <!-- CoopBots' public API (CombatMove) exposes kernel types, so the kernel
          reference is required by every test run, not only the kernel scenarios. -->
     <ProjectReference Include="../../src/CoopBots.Kernel/CoopBots.Kernel.csproj" />
+    <!-- RitsuLib 0.6.x splits its runtime across several assemblies; the test
+         process has no mod loader to resolve them, so all of them are copied. -->
     <Reference Include="STS2-RitsuLib" HintPath="$(RitsuLibDir)/STS2-RitsuLib.dll" Private="true" />
+    <Reference Include="STS2-RitsuLib.Runtime" HintPath="$(RitsuLibDir)/STS2-RitsuLib.Runtime.dll" Private="true" />
+    <Reference Include="STS2-RitsuLib.Shared" HintPath="$(RitsuLibSharedDir)/STS2-RitsuLib.Shared.dll" Private="true" />
+    <Reference Include="STS2-RitsuLib.Ui" HintPath="$(RitsuLibSharedDir)/STS2-RitsuLib.Ui.dll" Private="true" />
+    <Reference Include="STS2-RitsuLib.Settings" HintPath="$(RitsuLibSharedDir)/STS2-RitsuLib.Settings.dll" Private="true" />
     <Compile Remove="KernelEngineScenarios.cs" Condition="'$(EnableKernelTests)' != 'true'" />
     <Compile Remove="KernelRoundScenarios.cs" Condition="'$(EnableKernelTests)' != 'true'" />
     <Reference Include="System.IO.Hashing" HintPath="$(STS2DataDir)/System.IO.Hashing.dll" Private="true" />

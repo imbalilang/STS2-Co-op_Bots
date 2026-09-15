@@ -197,6 +197,12 @@ public static class BotRuntime
                 {
                     if (++_idleSkips % 40 == 0) ReportIdleIdle();
                     KernelPlanner.Reset();
+                    // No poll this tick, so nothing else will clear the last
+                    // decision, and the paths below would read it as if it were
+                    // still current. The reviewed boss fight hung on exactly that:
+                    // the confirmed bottle had already been drunk, and re-enqueuing
+                    // it threw once every two seconds instead of ending the turn.
+                    KernelPlanner.DiscardConfirmation();
                     kernelStatus = KernelCombatPlanner.Status.Fallback;
                     joint = null;
                 }
@@ -224,13 +230,19 @@ public static class BotRuntime
             var earlyPotion = BotPotionPlanner.Choose(eligible, state.Players, NoPlayableCards(eligible));
             if (earlyPotion is null && joint is null && KernelPlanner.ConfirmedPotion is { } proactivePotion)
             {
-                proactivePotion.Potion.EnqueueManualUse(proactivePotion.Target);
-                BotCooperation.LastAction = "主动用药：" + proactivePotion.Potion.Id.Entry;
-                Log.Info($"CoopBots proactive potion: {proactivePotion.Potion.Id.Entry}; {proactivePotion.Reason}");
-                _lastProgressAt = ClockMs;
-                _idleLast = false;
-                Pacing.MarkAction(ClockMs, _planStartedAt);
-                return;
+                if (TryUsePotion(proactivePotion.Potion, proactivePotion.Target))
+                {
+                    BotCooperation.LastAction = "主动用药：" + proactivePotion.Potion.Id.Entry;
+                    Log.Info($"CoopBots proactive potion: {proactivePotion.Potion.Id.Entry}; {proactivePotion.Reason}");
+                    _lastProgressAt = ClockMs;
+                    _idleLast = false;
+                    Pacing.MarkAction(ClockMs, _planStartedAt);
+                    return;
+                }
+                // The game refused the bottle, so the confirmation is spent. Drop it
+                // and fall through: the rest of the tick still plays a card or ends
+                // the turn instead of retrying a plan that cannot be carried out.
+                KernelPlanner.DiscardConfirmation();
             }
             if (earlyPotion is null && joint is null && KernelPlanner.ConfirmedEndTurn is { } endingPlan
                 && humansFinished && eligible.Contains(endingPlan))
@@ -306,9 +318,12 @@ public static class BotRuntime
             }
             var best = (Player: decision.Player, Move: decision.Move.GetValueOrDefault());
             potion = decision.Potion;
-            if (potion is not null)
+            // A refusal here falls through to the end-turn path rather than
+            // returning: the planner picked this bottle from the live belt, so the
+            // only way it fails is the game rejecting the action, and letting that
+            // cost the team its turn is the failure this guards against.
+            if (potion is not null && TryUsePotion(potion.Potion, potion.Target))
             {
-                potion.Potion.EnqueueManualUse(potion.Target);
                 BotCooperation.LastAction = $"{decision.Branch}：{potion.Potion.Id.Entry}";
                 Log.Info($"CoopBots potion: {potion.Potion.Id.Entry}; {potion.Reason}");
                 _lastProgressAt = ClockMs;
@@ -467,6 +482,31 @@ public static class BotRuntime
         if (DateTime.UtcNow < _nextErrorAt) return;
         _nextErrorAt = DateTime.UtcNow.AddSeconds(10);
         Log.Error($"CoopBots runtime error (rate limited, not permanently suppressed): {error.GetBaseException()}");
+    }
+
+    // EnqueueManualUse validates the bottle against its owner's live potion slots
+    // and throws when it is not there, so the ownership test below is the same one
+    // the game makes — checked first so a stale reference costs a skipped action
+    // instead of an exception. A search can confirm a bottle that the belt no
+    // longer holds: the plan outlives the state it was computed from.
+    private static bool TryUsePotion(MegaCrit.Sts2.Core.Models.PotionModel potion,
+        MegaCrit.Sts2.Core.Entities.Creatures.Creature? target)
+    {
+        try
+        {
+            if (potion.Owner is not { } owner || !owner.Potions.Contains(potion))
+            {
+                Log.Warn($"CoopBots dropped a potion plan it no longer holds: {potion.Id.Entry}.");
+                return false;
+            }
+            potion.EnqueueManualUse(target);
+            return true;
+        }
+        catch (Exception error)
+        {
+            Report(error);
+            return false;
+        }
     }
 
     private static void Reset()

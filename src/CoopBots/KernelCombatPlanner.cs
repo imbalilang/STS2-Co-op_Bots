@@ -123,6 +123,20 @@ internal sealed class KernelCombatPlanner
                 if (!potion.HasBeenRemovedFromState && !KernelSession.CanModelPotion(potion))
                     unmodeledPotions.Add(potion.Id.Entry);
     }
+    /// <summary>
+    /// Drops a plan the runtime has not consumed yet. <see cref="Reset"/> keeps it
+    /// on purpose — <see cref="Poll"/> stores a plan and only then resets the
+    /// search, so clearing it there would destroy the very decision it just made —
+    /// which means the one caller that abandons the planner without asking it
+    /// again has to say so. A confirmation is only ever valid for the tick that
+    /// produced it.
+    /// </summary>
+    internal void DiscardConfirmation()
+    {
+        ConfirmedPotion = null;
+        ConfirmedEndTurn = null;
+    }
+
     internal void Reset(bool newCombat = false)
     {
         search?.Dispose(); search = null; rootSession = null;

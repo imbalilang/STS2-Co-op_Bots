@@ -9,6 +9,16 @@ var harmony = new Harmony("cn.xiwa.sts2.coopbots.smoke");
 LobbyBotService.ValidateRuntimeSchema();
 harmony.PatchAll(typeof(ModEntry).Assembly);
 
+// Tuning loop only: the patches above are what make the game models loadable
+// headlessly, so they are required, but the assertions below are not. This skips
+// straight to the deck tools.
+if (args.Contains("--deck-sim-only") || args.Contains("--deck-sim-validate"))
+{
+    DraftSimScenarios.Run(args);
+    CommunityValidationScenarios.Run(args);
+    return;
+}
+
 var patched = Harmony.GetAllPatchedMethods()
     .Where(method => Harmony.GetPatchInfo(method)?.Owners.Contains("cn.xiwa.sts2.coopbots.smoke") == true)
     .OrderBy(method => method.DeclaringType?.FullName)
@@ -146,6 +156,10 @@ BuildValueScenarios.Run();
 Console.WriteLine($"PASS: {patched.Count} Harmony patches applied; bot IDs and Genius tactical probes verified.");
 foreach (var method in patched)
     Console.WriteLine($"  {method.DeclaringType?.FullName}.{method.Name}");
+// Off by default: the deck tools are a tuning and validation loop, not a release
+// gate. See DraftSimScenarios and CommunityValidationScenarios for the flags.
+DraftSimScenarios.Run(args);
+CommunityValidationScenarios.Run(args);
 }
 catch (Exception error)
 {
