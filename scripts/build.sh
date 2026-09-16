@@ -37,6 +37,7 @@ mkdir -p "${release_dir}/CoopBots"
 cp "${baseline_output}/CoopBots.dll" "${release_dir}/CoopBots/"
 cp "${repo_dir}/src/CoopBots/mod_manifest.json" "${release_dir}/CoopBots/"
 cp "${repo_dir}/README.md" "${release_dir}/README.md"
+cp "${repo_dir}/CHANGELOG.md" "${release_dir}/CHANGELOG.md"
 
 rm -f "${release_dir}.zip"
 ditto -c -k --norsrc --keepParent "${release_dir}/CoopBots" "${release_dir}.zip"

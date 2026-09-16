@@ -9,7 +9,7 @@
 - `tests/PatchSmoke/`：补丁挂载与多人协作回归测试源码；`DraftSim/` 是本地调参与构筑校验用的模拟器测试线，**不属于 MOD 包体**，构建脚本也不会把它打进发布包。
 - `scripts/`：macOS/Linux 与 Windows 构建脚本、CombatSolver 内核导入器、Spire Codex 数据抓取脚本。
 - `CombatSolver-0.33.9/`：用于算法研究的参考项目源码、测试、文档、开发约束与第三方声明。
-- `README.md`、`.gitignore` 和本说明。
+- `README.md`（简介、构建与许可）、`CHANGELOG.md`（完整版本变更记录）、`.gitignore` 和本说明。
 
 ## 已排除内容
 

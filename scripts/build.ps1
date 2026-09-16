@@ -31,7 +31,8 @@ Copy-Item -LiteralPath (Join-Path $build 'CoopBots.dll') -Destination (Join-Path
 Copy-Item -LiteralPath (Join-Path $build 'CoopBots.Kernel.dll') -Destination (Join-Path $release 'CoopBots')
 Copy-Item -LiteralPath (Join-Path $repo 'src\CoopBots\mod_manifest.json') -Destination (Join-Path $release 'CoopBots')
 Copy-Item -LiteralPath (Join-Path $repo 'README.md') -Destination $release
+Copy-Item -LiteralPath (Join-Path $repo 'CHANGELOG.md') -Destination $release
 Copy-Item -LiteralPath (Join-Path $repo 'THIRD_PARTY_NOTICES.md') -Destination (Join-Path $release 'CoopBots')
-Compress-Archive -LiteralPath (Join-Path $release 'CoopBots'), (Join-Path $release 'README.md') -DestinationPath "$release.zip" -Force
+Compress-Archive -LiteralPath (Join-Path $release 'CoopBots'), (Join-Path $release 'README.md'), (Join-Path $release 'CHANGELOG.md') -DestinationPath "$release.zip" -Force
 Get-FileHash -LiteralPath (Join-Path $release 'CoopBots\CoopBots.dll')
 Write-Output "Package: $release.zip"
