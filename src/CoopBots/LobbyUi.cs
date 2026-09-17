@@ -46,8 +46,10 @@ public static class LobbyUi
         margin.AddChild(root);
         panel.AddChild(margin);
 
-        root.AddChild(BotUiTheme.Header(zh ? "联机机器人" : "Co-op Bots",
-            zh ? "官方多人房间的 AI 队友" : "AI teammates for the official lobby"));
+        var header = BotUiTheme.Header(zh ? "联机机器人" : "Co-op Bots",
+            zh ? "官方多人房间的 AI 队友" : "AI teammates for the official lobby");
+        root.AddChild(header);
+        DraggablePanel.Attach(panel, header);
         root.AddChild(new HSeparator());
 
         var characterSelect = new OptionButton { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };

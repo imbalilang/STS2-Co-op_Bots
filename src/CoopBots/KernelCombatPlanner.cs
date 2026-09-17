@@ -24,7 +24,7 @@ internal sealed class KernelCombatPlanner
     internal enum NoActionKind
     {
         None,
-        /// <summary>Nothing was playable at all: no energy, or an empty hand.</summary>
+        /// <summary>No playable card and no usable potion on the live board.</summary>
         Idle,
         /// <summary>Cards were simulated and none beat doing nothing.</summary>
         Tie,
@@ -54,24 +54,10 @@ internal sealed class KernelCombatPlanner
     private long revision;
     private int round;
     private uint? focus;
-    // Round whose first post-human plan already spent the deep budget.
-    private int deepRound = -1;
     // Bot-visible board fingerprint for the last completed search that found
     // nothing. Ending a human turn changes nothing the team can see, so the
     // verdict still holds and re-searching would only pay for it twice.
     private string noActionStamp = "";
-    // The tail of the last plan, replayed without another search. The team has
-    // already paid for the thinking once; paying again per card is what made a
-    // long think feel like it changed nothing.
-    private readonly Queue<KernelTeamSearch.Action> pending = new();
-    // Ceiling on the one deep plan the team gets per round once the humans have
-    // finished. Deliberately generous — the team usually has little left to
-    // consider by then — but bounded so the player never waits longer than this.
-    private const int MaxDeepWallMs = 5000;
-    // Solo takeover: every human is dead, so the team may think for as long as it
-    // needs before playing the plan out. Deliberately far above the human-facing
-    // ceiling — there is nobody left to keep waiting.
-    private const int MaxSoloWallMs = 30000;
     private long nextLog;
     private double computeMs;
     private int staleCount;
@@ -143,7 +129,7 @@ internal sealed class KernelCombatPlanner
         evaluation = null; rootMetrics = null; rootCombat = null;
         if (newCombat)
         {
-            disabledCombat = null; staleCount = 0; deepRound = -1; pending.Clear(); noActionStamp = "";
+            disabledCombat = null; staleCount = 0; noActionStamp = "";
             if (plans + fallbackBoundary + fallbackNoAction + fallbackStale + fallbackException
                 + potionDeclined + unmodeledPotions.Count > 0)
             {
@@ -177,8 +163,7 @@ internal sealed class KernelCombatPlanner
         }
     }
     internal Status Poll(CombatState combat, IReadOnlyList<Player> actors, uint actionVersion, uint? manualFocus,
-        bool humansFinished, BotDifficulty difficulty, out TeamCombatPlanner.Decision? decision,
-        bool noHumansAlive = false)
+        bool humansFinished, BotDifficulty difficulty, out TeamCombatPlanner.Decision? decision)
     {
         decision = null;
         ConfirmedPotion = null;
@@ -189,7 +174,7 @@ internal sealed class KernelCombatPlanner
         // Scope and a queued action: cheap, unambiguous reasons to abandon a
         // branch. `KernelSession.LiveRevision` deliberately is NOT part of this
         // check — it counts every combat-state notification, including ones a
-        // branch does not depend on, and discarding on those threw away deep
+        // branch does not depend on, and discarding on those threw away in-flight
         // searches that were still valid. A queued action is a real event and
         // still cancels here; anything subtler is caught by the authoritative
         // state-stamp comparison on the completion path before a plan is deployed.
@@ -217,7 +202,22 @@ internal sealed class KernelCombatPlanner
                     Report("no-action verdict reused: the visible board has not changed");
                     return Status.Fallback;
                 }
-                pending.Clear();
+                if (NoAvailableCombatAction(actors))
+                {
+                    // Nothing the team can do this tick. Capturing and searching
+                    // here cannot find anything, so answer immediately: the runtime
+                    // skips the poll in this state, and the tests drive the planner
+                    // directly, so the cheap guard lives here too. Zero energy is
+                    // NOT enough to conclude this — zero-cost and X-cost cards are
+                    // playable, and an energy/draw potion can unlock an unaffordable
+                    // hand, so both are checked on the live board.
+                    fallbackNoAction++;
+                    LastNoAction = NoActionKind.Idle;
+                    noActionKinds[LastNoAction] = noActionKinds.GetValueOrDefault(LastNoAction) + 1;
+                    noActionStamp = "";
+                    Report("no available combat action: no live playable card or usable potion");
+                    Reset(); return Status.Fallback;
+                }
                 var capture = Stopwatch.StartNew();
                 rootCombat = combat; round = combat.RoundNumber; focus = manualFocus; queueVersion = actionVersion;
                 actorIds = actors.Select(p => p.NetId).ToArray();
@@ -227,53 +227,26 @@ internal sealed class KernelCombatPlanner
                 var fresh = combatLabel.Length == 0;
                 ObserveCombat(combat, actors);
                 if (fresh) Log.Info($"CoopBots combat start: {combatLabel}; {partyState}");
-                // Two scheduling regimes: while humans are still deciding the
-                // battlefield keeps changing, so each card gets a short, turn-local
-                // search; once everyone has ended their turn the team can afford to
-                // project much further and plays its remaining cards out of that
-                // one plan. Only the first plan of the round gets the deep budget:
-                // charging it per remaining card made the team crawl out of its
-                // turn. Later plans in the same round reuse the live budget.
-                // With every human dead the team owns the fight outright: nothing
-                // can change under the search and nobody is waiting on it, so
-                // every plan gets the deep budget instead of only the first one
-                // of the round.
-                // With every human dead the team owns the fight outright: nothing
-                // can change under the search and nobody is waiting on it, so it
-                // gets one very long think and then plays the whole script out,
-                // turn boundaries included, without searching again.
-                var solo = noHumansAlive;
-                var deep = solo || (humansFinished && deepRound != round);
-                if (deep) deepRound = round;
-                // Rounds is how many turns each end-turn expansion simulates, and
-                // it dominates the tree size: at six the deep search could never
-                // exhaust its frontier, so every plan — including a zero-energy
-                // one with only free cards left — burned the full wall budget.
-                // Three keeps real cross-turn projection (the live phase uses two)
-                // while letting most searches terminate on their own well before
-                // the five-second ceiling, which is the point of that ceiling.
-                var (depth, width, nodes, budgetMs, wallMs, rounds) = solo
-                    ? (40, 16, 131072, 28000, MaxSoloWallMs, 16)
-                    : deep
-                        ? (24, 12, 12288, 4500, MaxDeepWallMs, 3)
-                        : (9, 8, 768, 200, 300, 2);
+                // One bounded search shape for every phase. The old post-human and
+                // solo escalation traded a predictable pause for a seconds-long one;
+                // removing it means humans finishing (or dying) no longer changes
+                // the budget. Bounded is not shallow: the same multi-card,
+                // cross-bot beam runs in every phase and the next action is always
+                // re-planned from the real board, never replayed from a stale tail.
+                // Rounds is how many turns each end-turn expansion simulates.
+                var (depth, width, nodes, budgetMs, wallMs, rounds) = (9, 8, 768, 200, 300, 2);
                 // Difficulty is a thinking-time knob, not a different algorithm:
                 // scale the node and time budgets, keep the search shape (depth
                 // and width) identical so a fast tier cuts the thinking short
-                // rather than planning something structurally worse.
+                // rather than planning something structurally worse. Pro's x1.5
+                // schedule tops the wall budget out at 450ms.
                 var thinking = difficulty.ThinkingScale();
                 nodes = Math.Max(64, (int)(nodes * thinking));
                 budgetMs = Math.Max(20, (int)(budgetMs * thinking));
                 wallMs = Math.Max(40, (int)(wallMs * thinking));
-                // Hard ceiling for the post-human deep plan. Pro's x1.5 scale would
-                // otherwise push the wall budget past this; Flash's x0.5 stays well
-                // under it, which is the tier behaving as intended.
-                // The deep ceiling is for a human-facing pause; the solo search has
-                // nobody waiting on it and its own, much larger ceiling.
-                if (deep) wallMs = Math.Min(wallMs, solo ? MaxSoloWallMs : MaxDeepWallMs);
                 timeBudgetMs = budgetMs;
-                // The CPU budget is spread over frames (4ms each), so it must be
-                // capped by wall clock too or a deep search could run for seconds.
+                // The CPU budget is spread over frames (4ms each), so it is also
+                // capped by wall clock.
                 wallBudgetMs = wallMs;
                 planningStartMs = Environment.TickCount64;
                 evaluation = new(combat, actors, manualFocus, null, rounds);
@@ -286,7 +259,7 @@ internal sealed class KernelCombatPlanner
                 computeMs = capture.Elapsed.TotalMilliseconds;
                 // Capture and JIT are not preemptible; never add an expansion slice
                 // to the same frame, and expose slow capture in diagnostics.
-                if (computeMs >= 40) Report($"capture={computeMs:F1}ms phase={(humansFinished ? "deep" : "live")}");
+                if (computeMs >= 40) Report($"capture={computeMs:F1}ms phase={(humansFinished ? "finished" : "live")}");
                 return Status.Pending;
             }
             var elapsed = Stopwatch.StartNew();
@@ -332,12 +305,8 @@ internal sealed class KernelCombatPlanner
                         || result.Boundaries.Count > 0) { Reset(); return Status.Fallback; }
                     noActionStamp = "";
                     ConfirmedEndTurn = first.Player;
-                    // The steps after this end-turn are the next turn's plan; a
-                    // fully modelled tail is kept so the team plays it out instead
-                    // of searching again.
-                    if (result.Actions.Count > 1)
-                        RememberSequence(result.Actions.Skip(1));
                     plans++;
+                    ReportSearch("end-turn", result, humansFinished);
                     Reset(); return Status.Ready;
                 }
                 // A potion-first plan (e.g. buff, then the burst) is deployed as a
@@ -376,10 +345,8 @@ internal sealed class KernelCombatPlanner
                     noActionStamp = "";
                     ConfirmedPotion = new PotionPlan(planned, first.Target,
                         $"kernel-plan:potion:{planned.Id.Entry},sequence:{result.Actions.Count},{result.StopReason}");
-                    Report($"planned potion first: {planned.Id.Entry} ({result.Actions.Count} actions)");
-                    if (result.Actions.Count > 1)
-                        RememberSequence(result.Actions.Skip(1));
                     plans++;
+                    ReportSearch("potion", result, humansFinished);
                     Reset(); return Status.Ready;
                 }
                 if (first.Card is not { } firstCard || !actors.Contains(first.Player)
@@ -402,19 +369,15 @@ internal sealed class KernelCombatPlanner
                     estimated ? 0 : Math.Max(0, rootMetrics!.WeightedDeaths - metrics.WeightedDeaths),
                     rootMetrics.HpLoss - metrics.HpLoss);
                 noActionStamp = "";
-                // Replay only a fully modelled tail: an estimated line must be
-                // re-derived against the real board rather than executed blind.
-                if (!estimated && result.Actions.Count > 1)
-                    RememberSequence(result.Actions.Skip(1));
-                // A speculative leaf is not a promise that bots have executed it.
-                // Current-board hints are verified independently after bot actions settle.
+                // Only the first action of the plan is submitted. There is no
+                // speculative tail: after this action resolves the next one is
+                // re-planned against the real board, so a stale assumption can
+                // never be played out.
                 plans++;
                 // A plan supersedes the last abstention: leaving it set would put a
                 // stale reason on a later legacy move that had nothing to do with it.
                 LastNoAction = NoActionKind.None;
-                if (computeMs >= 80)
-                    Report($"search={computeMs:F1}ms wall={Environment.TickCount64 - planningStartMs}ms; "
-                        + $"nodes={result.ExpandedNodes}; stop={result.StopReason}");
+                ReportSearch("card", result, humansFinished);
                 Reset(); return Status.Ready;
             }
             // Search finished but recommends nothing: let the legacy planner act
@@ -429,9 +392,9 @@ internal sealed class KernelCombatPlanner
             var rootState = rootSession ?? KernelSession.Capture(combat);
             LastNoAction = ClassifyNoAction(rootState, actors, result);
             noActionKinds[LastNoAction] = noActionKinds.GetValueOrDefault(LastNoAction) + 1;
-            if (computeMs >= 80)
-                Report($"search={computeMs:F1}ms; no-action/{LastNoAction}; stop={result.StopReason}; nodes={result.ExpandedNodes}; "
-                    + $"boundaries={result.Boundaries.Count}; root={rootMetrics?.Score:F0}; best={result.Score:F0}");
+            Report($"search-complete: action=none/{LastNoAction}, wall={Environment.TickCount64 - planningStartMs}ms, "
+                + $"compute={computeMs:F1}ms, mode={(humansFinished ? "finished" : "live")}, nodes={result.ExpandedNodes}, "
+                + $"stop={result.StopReason}, boundaries={result.Boundaries.Count}, root={rootMetrics?.Score:F0}, best={result.Score:F0}");
             Reset(); return Status.Fallback;
         }
         catch (Exception error)
@@ -484,62 +447,36 @@ internal sealed class KernelCombatPlanner
         catch { fallbackStaleRoot++; }
     }
 
-    private void RememberSequence(IEnumerable<KernelTeamSearch.Action> actions)
-    {
-        pending.Clear();
-        foreach (var action in actions) pending.Enqueue(action);
-    }
+    // Concise completion line so a slow turn can be attributed: the search wall
+    // is separate from the engine's animation and action-queue waits. Report
+    // rate-limits to one line per five seconds, so this cannot spam per frame.
+    private void ReportSearch(string action, KernelTeamSearch.Result result, bool humansFinished)
+        => Report($"search-complete: action={action}, wall={Environment.TickCount64 - planningStartMs}ms, "
+            + $"compute={computeMs:F1}ms, mode={(humansFinished ? "finished" : "live")}, "
+            + $"actions={result.Actions.Count}, nodes={result.ExpandedNodes}, stop={result.StopReason}");
 
-    /// <summary>True while a plan the team already computed is still waiting to be
-    /// played out. The runtime consumes it before it considers searching again.</summary>
-    internal bool HasPendingPlan => pending.Count > 0;
-
-    /// <summary>
-    /// The next step of the plan the team already paid to compute, if it is still
-    /// legal on the live board. Cards and end-turn steps are supported, so one
-    /// long think can be played out across turn boundaries without searching
-    /// again. Every step is re-validated: anything the plan assumed but the board
-    /// no longer matches drops the whole remainder, so a stale assumption can
-    /// never be played out. Returns false when there is nothing to reuse, and the
-    /// caller searches normally.
-    /// </summary>
-    internal bool TryTakeNext(bool humansFinished, out KernelTeamSearch.Action action)
+    // The cheap live-board gate: true only when no eligible bot holds a playable
+    // card or a usable combat potion. It runs before the root is captured, so an
+    // idle team never pays for a kernel search. Energy is deliberately not the
+    // test: zero-cost and X-cost cards are playable at zero energy, and an
+    // energy/draw potion can unlock an unaffordable hand, so cards are checked
+    // with CanPlay and potions with the same usability rules the game uses.
+    internal static bool NoAvailableCombatAction(IReadOnlyList<Player> actors)
     {
-        action = null!;
-        while (pending.Count > 0)
+        foreach (var player in actors)
         {
-            var next = pending.Peek();
-            if (next.Player.Creature.IsDead) { pending.Clear(); return false; }
-            if (next.EndTurn)
+            if (!player.Creature.IsAlive) continue;
+            try
             {
-                // Ending a turn is only ever scripted for a team that owns the
-                // rest of the round; a human still deciding must never be pre-empted
-                // by a stored step.
-                if (!humansFinished) { pending.Clear(); return false; }
-                // The board already reached the state this step wanted (that turn
-                // ended), so the step is satisfied and the next one can run.
-                if (next.Player.PlayerCombatState is not { Phase: PlayerTurnPhase.Play })
-                {
-                    pending.Dequeue();
-                    continue;
-                }
-                pending.Dequeue();
-                action = next;
-                return true;
+                foreach (var card in player.PlayerCombatState!.Hand.Cards)
+                    if (card.CanPlay()) return false;
+                if (player.CanUseOrRemovePotions && player.Potions.Any(potion => !potion.IsQueued
+                    && !potion.HasBeenRemovedFromState && potion.PassesCustomUsabilityCheck
+                    && potion.Usage is PotionUsage.CombatOnly or PotionUsage.AnyTime)) return false;
             }
-            if (next.Card is not { } card || next.Player.PlayerCombatState is not { } state
-                || !state.Hand.Cards.Contains(card) || !card.CanPlayTargeting(next.Target))
-            {
-                // A potion step, a drawn card that is not there, or a board that
-                // moved: the rest of the script cannot be trusted.
-                pending.Clear();
-                return false;
-            }
-            pending.Dequeue();
-            action = next;
-            return true;
+            catch { return false; }
         }
-        return false;
+        return true;
     }
 
     // Re-applying a debuff the target already carries only extends its duration,

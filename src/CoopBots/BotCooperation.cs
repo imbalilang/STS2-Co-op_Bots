@@ -102,6 +102,7 @@ internal static class BotCooperation
             column.AddChild(_advice);
             _panel.AddChild(margin);
             run.AddChild(_panel);
+            DraggablePanel.Attach(_panel, header);
         }
         var active = combat is not null && CombatManager.Instance.IsInProgress;
         if (_callout is not null && GodotObject.IsInstanceValid(_callout))
@@ -150,7 +151,7 @@ internal static class BotCooperation
         if (!isHost)
         {
             _status!.Text = "AI 由房主统一调度。\n" +
-                (humansFinished ? "真人均已结束回合：AI 快速收尾。" : "AI 全队约每秒一次行动；真人均结束后加速。") +
+                (humansFinished ? "真人均已结束回合：AI 收尾。" : "AI 全队按难度节奏分步规划。") +
                 "暂停和集火由房主操作。";
             return;
         }
@@ -172,35 +173,28 @@ internal static class BotCooperation
         }
         var zh = BotUiTheme.Chinese();
         _pause!.Text = Gate.Paused ? (zh ? "继续" : "Resume") : (zh ? "暂停" : "Pause");
-        // With every human dead the team plays the fight out alone; a deep search
-        // can take seconds, so say what the silence is instead of looking frozen.
-        _status!.Text = Gate.Paused
+        // Planning is bounded in every phase: no long think, and no replay of a
+        // stored script. Say that rather than promising a full-fight optimum or
+        // back-to-back scripted play the team no longer attempts.
+        _status!.Text = (Gate.Paused
             ? (zh ? "已暂停：不再提交新的 Bot 行动" : "Paused: no new bot actions")
-            : (SoloThinking
-                ? (zh ? "机器人思考中……" : "Bots are thinking…")
-                : humansFinished
-                    ? (zh ? "快速收尾：全队连续行动" : "Wrapping up: the team acts back to back")
-                    : (zh ? "协作节奏：等待真人决策" : "Co-op pace: waiting for the humans"))
-              + (string.IsNullOrEmpty(LastAction) ? "" : "\n" + LastAction);
+            : humansFinished
+                ? (zh ? "机器人行动中" : "Bots are acting")
+                : (zh ? "协作节奏：等待真人决策" : "Co-op pace: waiting for the humans"))
+            + (string.IsNullOrEmpty(LastAction) ? "" : "\n" + LastAction);
     }
 
     internal static bool HumansFinished(RunState state) => MultiHumanCooperation.HumansReady(state.Players,
         CombatManager.Instance.IsPlayerReadyToEndTurn);
 
     /// <summary>
-    /// Every human is dead, so the rest of this fight belongs to the team alone:
-    /// nothing can change under a search and nobody is waiting on it. The planner
-    /// uses this to spend its deep budget on every plan, not just the first.
+    /// Every human is dead, so the rest of this fight belongs to the team alone.
+    /// Kept as a plain predicate for callers that describe the state; it no longer
+    /// changes the planner budget (the bounded search runs in every phase).
     /// </summary>
     internal static bool AllHumansDown(IRunState state)
         => state.Players.Where(p => !BotRegistry.IsBot(p.NetId)).All(p => !p.Creature.IsAlive);
 
-    /// <summary>True while the team is deliberating alone, so the panel can say so.</summary>
-    internal static bool SoloThinking { get; set; }
-
-    /// <summary>True while the stored script is being played out.</summary>
-    internal static bool SoloExecuting { get; set; }
-
-    internal static void Reset() { Gate.Reset(); LastAction = ""; SoloThinking = false; SoloExecuting = false; FocusTarget = null; _enemySignature = ""; _nextAdviceAt = DateTime.MinValue; Callout = ""; _calloutUntilMs = 0; }
+    internal static void Reset() { Gate.Reset(); LastAction = ""; FocusTarget = null; _enemySignature = ""; _nextAdviceAt = DateTime.MinValue; Callout = ""; _calloutUntilMs = 0; }
 }
 

@@ -178,6 +178,9 @@ internal static class KernelEngineScenarios
         AuditRedundantPotionDeclined();
         AuditPotionOnlyWhenCardsCannotFinisher();
         AuditSoloTakeover();
+        AuditBoundedSearchPolicy();
+        AuditIdleGating();
+        AuditNoActionStampReuse();
         AuditBotStampIgnoresHumanEndTurn();
         AuditBossReactiveMechanics();
         AuditScalingThreatFocus();
@@ -191,7 +194,7 @@ internal static class KernelEngineScenarios
         AuditOutrage();
         AuditMultiplayerBatchA();
         AuditFlankingKnockdown();
-        AuditPlanReuse();
+        AuditReplanAfterAction();
         AuditCoopBuffTiming();
         AuditCardCoverage();
 
@@ -560,17 +563,18 @@ internal static class KernelEngineScenarios
             throw new Exception($"Notification churn changed the kernel outcome ({status} -> {notifyStatus}); it must be invisible to the planner.");
         Console.WriteLine($"PASS: notification-only churn does not discard an in-flight kernel search ({notifyStatus}).");
 
-        // Deep phase: once every human has ended their turn the planner spends a
-        // much larger budget and projects further rounds; it must still resolve.
-        var deep = new KernelCombatPlanner();
-        var deepStatus = KernelCombatPlanner.Status.Pending;
-        TeamCombatPlanner.Decision? deepDecision = null;
-        var deepTicks = 0;
-        while (deepStatus == KernelCombatPlanner.Status.Pending && deepTicks++ < 4000)
-            deepStatus = deep.Poll(combat, new[] { bot }, 0, null, true, BotDifficulty.Pro, out deepDecision);
-        if (deepStatus == KernelCombatPlanner.Status.Pending)
-            throw new Exception("Deep phase (humans finished) must resolve, not spin.");
-        Console.WriteLine($"PASS: kernel planner resolves in the deep (humans finished) phase: {deepStatus}.");
+        // Finished phase: once every human has ended their turn the planner still
+        // uses the same bounded budget (end-turn branches now included) and must
+        // resolve, not spin.
+        var finished = new KernelCombatPlanner();
+        var finishedStatus = KernelCombatPlanner.Status.Pending;
+        TeamCombatPlanner.Decision? finishedDecision = null;
+        var finishedTicks = 0;
+        while (finishedStatus == KernelCombatPlanner.Status.Pending && finishedTicks++ < 4000)
+            finishedStatus = finished.Poll(combat, new[] { bot }, 0, null, true, BotDifficulty.Pro, out finishedDecision);
+        if (finishedStatus == KernelCombatPlanner.Status.Pending)
+            throw new Exception("Finished phase (humans finished) must resolve, not spin.");
+        Console.WriteLine($"PASS: kernel planner resolves in the finished (humans finished) phase: {finishedStatus}.");
     }
 
     // P0: (1) an unmodeled card must not disable the kernel for the whole fight;
@@ -1623,50 +1627,65 @@ internal static class KernelEngineScenarios
             + $"excludes the applier, and KNOCKDOWN is 2x / 3x upgraded.");
     }
 
-    // After one think the team should play the rest of that plan without paying
-    // for another search. The tail is only replayed while every step is still
-    // legal on the live board; anything else drops it and searches again.
-    private static void AuditPlanReuse()
+    // Every action is re-planned from the real board. Only the first action of a
+    // search is submitted; there is no speculative tail to replay, so the action
+    // after a resolved play must come from a fresh search on the current board.
+    private static void AuditReplanAfterAction()
     {
-        KernelCombatPlanner Plan(out CardModel secondStrike, out Player owner)
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 46, 1));
+        var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "REPLAN"));
+        bot.ResetCombatState(); combat.AddPlayer(bot);
+        bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
+        bot.PlayerCombatState!.Phase = PlayerTurnPhase.Play; bot.PlayerCombatState.GainEnergy(3);
+        var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "replan");
+        combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+        foe.SetMaxHpInternal(12); foe.SetCurrentHpInternal(12);
+        foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(1)), true);
+        var first = combat.CreateCard<StrikeIronclad>(bot);
+        var second = combat.CreateCard<StrikeIronclad>(bot);
+        bot.PlayerCombatState.Hand.AddInternal(first);
+        bot.PlayerCombatState.Hand.AddInternal(second);
+
+        TeamCombatPlanner.Decision? Plan(KernelCombatPlanner planner, uint version, out int ticks)
         {
-            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 46, 1));
-            owner = bot;
-            var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "REUSE"));
-            bot.ResetCombatState(); combat.AddPlayer(bot);
-            bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
-            bot.PlayerCombatState!.Phase = PlayerTurnPhase.Play; bot.PlayerCombatState.GainEnergy(3);
-            var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "reuse");
-            combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
-            foe.SetMaxHpInternal(12); foe.SetCurrentHpInternal(12);
-            foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(1)), true);
-            bot.PlayerCombatState.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
-            secondStrike = combat.CreateCard<StrikeIronclad>(bot);
-            bot.PlayerCombatState.Hand.AddInternal(secondStrike);
-            var planner = new KernelCombatPlanner();
-            var status = KernelCombatPlanner.Status.Pending;
             TeamCombatPlanner.Decision? decision = null;
-            var ticks = 0;
+            var status = KernelCombatPlanner.Status.Pending;
+            ticks = 0;
             while (status == KernelCombatPlanner.Status.Pending && ticks++ < 2000)
-                status = planner.Poll(combat, new[] { bot }, 0, null, false, BotDifficulty.Pro, out decision);
+                status = planner.Poll(combat, new[] { bot }, version, null, false, BotDifficulty.Pro, out decision);
             if (status != KernelCombatPlanner.Status.Ready || decision is null)
                 throw new Exception($"A two-Strike kill must produce a plan, got {status}.");
-            return planner;
+            return decision;
         }
 
-        var planner = Plan(out var second, out var owner);
-        if (!planner.TryTakeNext(false, out var reused) || !ReferenceEquals(reused.Card, second))
-            throw new Exception("The remaining card of the plan must be reusable without another search.");
-        if (planner.TryTakeNext(false, out _))
-            throw new Exception("A consumed plan tail must not yield more actions.");
+        var planner = new KernelCombatPlanner();
+        var opening = Plan(planner, 0, out _);
+        if (opening.Move.Card is not { } selected)
+            throw new Exception("The opening plan must select a card.");
+        // No speculative tail: an immediate re-poll on the same planner and board
+        // must begin a fresh search instead of handing back the rest of the old
+        // plan for free.
+        var immediate = planner.Poll(combat, new[] { bot }, 0, null, false, BotDifficulty.Pro, out var immediateDecision);
+        if (immediate != KernelCombatPlanner.Status.Pending || immediateDecision is not null || !planner.IsSearching)
+            throw new Exception($"The next action must start a fresh search, not replay a tail; got {immediate}.");
 
-        // If the live board no longer matches the plan, the tail is dropped so a
-        // stale assumption can never be played.
-        var stale = Plan(out var gone, out var staleOwner);
-        staleOwner.PlayerCombatState!.Hand.RemoveInternal(gone);
-        if (stale.TryTakeNext(false, out _))
-            throw new Exception("A plan whose card left the hand must not be replayed.");
-        Console.WriteLine("PASS: the tail of a plan is replayed without a new search, and dropped when the board moved.");
+        // The first action is resolved against the real board: its selected card
+        // left the hand, its energy was spent, and the foe took its damage. A
+        // queued-action version bump then invalidates the in-flight search root.
+        bot.PlayerCombatState.Hand.RemoveInternal(selected);
+        bot.PlayerCombatState.LoseEnergy(1);
+        foe.SetCurrentHpInternal(foe.CurrentHp - 6);
+        var stale = planner.Poll(combat, new[] { bot }, 1, null, false, BotDifficulty.Pro, out var staleDecision);
+        if (stale != KernelCombatPlanner.Status.Fallback || staleDecision is not null || planner.IsSearching)
+            throw new Exception($"A stale root must be discarded without a decision, got {stale}.");
+
+        // The same planner now re-plans from the actual board and must pick the
+        // card that is still in hand.
+        var remaining = ReferenceEquals(selected, first) ? second : first;
+        var next = Plan(planner, 1, out _);
+        if (next.Move.Card is not { } card || !ReferenceEquals(card, remaining))
+            throw new Exception($"The action after a resolved play must be re-planned from the current board, got {next.Move.Card?.Id.Entry ?? "none"}.");
+        Console.WriteLine("PASS: the next action is re-planned from the current board; no speculative tail is replayed.");
     }
 
     // Handing a one-turn buff to a player who has already ended throws it away,
@@ -1788,9 +1807,9 @@ internal static class KernelEngineScenarios
         Console.WriteLine("PASS: the final encounter spends a bottle on a kill the cards cannot get, and only there.");
     }
 
-    // Once every human is dead the team owns the fight: nothing can change under
-    // a search and nobody is waiting, so the planner spends its deep budget on
-    // every plan and the panel says it is thinking.
+    // Once every human is dead the team owns the fight. The predicate is still
+    // reported for callers that describe the state, but it no longer changes the
+    // planner budget: the same bounded search runs whether or not a human lives.
     private static void AuditSoloTakeover()
     {
         var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 49, 1));
@@ -1808,6 +1827,134 @@ internal static class KernelEngineScenarios
         if (!BotCooperation.AllHumansDown(combat.RunState))
             throw new Exception("With every human dead the team must own the rest of the fight.");
         Console.WriteLine("PASS: the solo-takeover state is detected exactly when no human is left alive.");
+    }
+
+    // The removed escalation is the regression: humans finishing (or dying) must
+    // not widen the search budget, so the scheduled wall clock is the same small
+    // bound in every phase.
+    private static void AuditBoundedSearchPolicy()
+    {
+        int WallBudget(bool finished)
+        {
+            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 51, 1));
+            var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "BUDGET-" + finished));
+            bot.ResetCombatState(); combat.AddPlayer(bot);
+            bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
+            bot.PlayerCombatState!.Phase = PlayerTurnPhase.Play; bot.PlayerCombatState.GainEnergy(3);
+            var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "budget");
+            combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+            foe.SetMaxHpInternal(60); foe.SetCurrentHpInternal(60);
+            foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(4)), true);
+            bot.PlayerCombatState.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
+            var planner = new KernelCombatPlanner();
+            var status = planner.Poll(combat, new[] { bot }, 0, null, finished, BotDifficulty.Pro, out _);
+            if (status != KernelCombatPlanner.Status.Pending)
+                throw new Exception($"Bounded-policy probe must start a search, got {status}.");
+            var field = typeof(KernelCombatPlanner).GetField("wallBudgetMs", BindingFlags.NonPublic | BindingFlags.Instance)
+                ?? throw new Exception("KernelCombatPlanner.wallBudgetMs was not found.");
+            var budget = (int)field.GetValue(planner)!;
+            planner.Reset();
+            return budget;
+        }
+
+        var live = WallBudget(false);
+        var finished = WallBudget(true);
+        if (live != finished)
+            throw new Exception($"Live and finished phases must share one bounded wall budget, got {live} vs {finished}.");
+        if (finished > 450)
+            throw new Exception($"Pro's scheduled wall budget must stay bounded at 450ms, got {finished}.");
+        Console.WriteLine($"PASS: one bounded search policy in every phase (Pro wall={finished}ms; live==finished).");
+    }
+
+    // Cheap live-board gate: an idle team must answer without capturing or
+    // searching, but zero energy is not idle and a potion can still be the action.
+    private static void AuditIdleGating()
+    {
+        KernelCombatPlanner IdlePlanner(out Player bot, out CombatState combat)
+        {
+            bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 52, 1));
+            combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "IDLE-GATE"));
+            bot.ResetCombatState(); combat.AddPlayer(bot);
+            bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
+            bot.PlayerCombatState!.Phase = PlayerTurnPhase.Play;
+            bot.PlayerCombatState.LoseEnergy(bot.PlayerCombatState.Energy); // exactly zero energy
+            var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "idle");
+            combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+            foe.SetMaxHpInternal(60); foe.SetCurrentHpInternal(60);
+            foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(4)), true);
+            return new KernelCombatPlanner();
+        }
+
+        // (1) Unaffordable card, no potion: immediate fallback with no search.
+        var idle = IdlePlanner(out var idleBot, out var idleCombat);
+        idleBot.PlayerCombatState!.Hand.AddInternal(idleCombat.CreateCard<StrikeIronclad>(idleBot));
+        var idleStatus = idle.Poll(idleCombat, new[] { idleBot }, 0, null, false, BotDifficulty.Pro, out var idleDecision);
+        if (idleStatus != KernelCombatPlanner.Status.Fallback || idleDecision is not null)
+            throw new Exception($"An unaffordable hand with no potion must fall back immediately, got {idleStatus}.");
+        if (idle.LastNoAction != KernelCombatPlanner.NoActionKind.Idle)
+            throw new Exception($"An out-of-cards board must be classified Idle, got {idle.LastNoAction}.");
+        if (idle.IsSearching)
+            throw new Exception("An idle board must not start a kernel search.");
+        idle.Poll(idleCombat, new[] { idleBot }, 0, null, true, BotDifficulty.Pro, out _);
+        if (idle.LastNoAction != KernelCombatPlanner.NoActionKind.Idle)
+            throw new Exception("The idle verdict must hold after the humans finish.");
+
+        // (2) A zero-cost card is playable at zero energy and must not be skipped.
+        var zero = IdlePlanner(out var zeroBot, out var zeroCombat);
+        zeroBot.PlayerCombatState!.Hand.AddInternal(zeroCombat.CreateCard<BattleTrance>(zeroBot));
+        var zeroStatus = zero.Poll(zeroCombat, new[] { zeroBot }, 0, null, false, BotDifficulty.Pro, out _);
+        if (zeroStatus != KernelCombatPlanner.Status.Pending)
+            throw new Exception($"A zero-cost card at zero energy must start a search, got {zeroStatus}.");
+        zero.Reset();
+
+        // (3) An energy potion unlocks an unaffordable hand: keep searching.
+        var potion = IdlePlanner(out var potionBot, out var potionCombat);
+        potionBot.PlayerCombatState!.Hand.AddInternal(potionCombat.CreateCard<StrikeIronclad>(potionBot));
+        potionBot.AddPotionInternal(ModelDb.Potion<EnergyPotion>().ToMutable());
+        var potionStatus = potion.Poll(potionCombat, new[] { potionBot }, 0, null, false, BotDifficulty.Pro, out _);
+        if (potionStatus != KernelCombatPlanner.Status.Pending)
+            throw new Exception($"An energy potion with an unaffordable card must remain searchable, got {potionStatus}.");
+        potion.Reset();
+        Console.WriteLine("PASS: idle boards short-circuit without capture/search; zero-cost cards and energy potions are not skipped.");
+    }
+
+    // A completed search that recommends nothing caches that verdict against the
+    // bot-visible board. Finishing the humans changes nothing the team can see, so
+    // the cached verdict must be reused instead of paying for another search.
+    private static void AuditNoActionStampReuse()
+    {
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 53, 1));
+        var human = Player.CreateForNewRun<Deprived>(UnlockState.all, (ulong)531);
+        var party = new[] { bot, human };
+        var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "NOACTION"));
+        foreach (var p in party)
+        {
+            p.ResetCombatState(); combat.AddPlayer(p);
+            p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80);
+            p.PlayerCombatState!.Phase = PlayerTurnPhase.Play; p.PlayerCombatState.GainEnergy(3);
+        }
+        var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "noaction");
+        combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+        foe.SetMaxHpInternal(60); foe.SetCurrentHpInternal(60);
+        foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(4)), true);
+        // The only playable card is unmodeled, so the search can recommend nothing
+        // and the no-action verdict is what gets cached.
+        bot.PlayerCombatState.Hand.AddInternal(
+            combat.CreateCard(ModelDb.AllCards.First(c => c.GetType().Name == "OneForAll"), bot));
+
+        var planner = new KernelCombatPlanner();
+        var status = KernelCombatPlanner.Status.Pending;
+        var ticks = 0;
+        while (status == KernelCombatPlanner.Status.Pending && ticks++ < 2000)
+            status = planner.Poll(combat, new[] { bot }, 0, null, false, BotDifficulty.Pro, out _);
+        if (status != KernelCombatPlanner.Status.Fallback || planner.LastNoAction != KernelCombatPlanner.NoActionKind.Boundary)
+            throw new Exception($"An unmodeled-only hand must cache a boundary no-action verdict, got {status}/{planner.LastNoAction}.");
+
+        human.PlayerCombatState!.Phase = PlayerTurnPhase.End;
+        status = planner.Poll(combat, new[] { bot }, 0, null, true, BotDifficulty.Pro, out _);
+        if (status != KernelCombatPlanner.Status.Fallback || planner.IsSearching)
+            throw new Exception($"The unchanged no-action verdict must be reused after the humans finish, got {status}.");
+        Console.WriteLine("PASS: an unchanged no-action board is reused across the humans-finished transition.");
     }
 
     // A human merely ending their turn changes nothing the team can see: same

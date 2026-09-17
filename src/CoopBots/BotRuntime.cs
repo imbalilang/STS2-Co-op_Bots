@@ -100,10 +100,6 @@ public static class BotRuntime
                 || manager.ActionQueueSynchronizer.CombatState != MegaCrit.Sts2.Core.Entities.Multiplayer.ActionSynchronizerCombatState.PlayPhase
                 || BotCooperation.Gate.Paused) { KernelPlanner.Reset(); _planStartedAt = 0; return; }
             var humansFinished = BotCooperation.HumansFinished(state);
-            var allHumansDown = BotCooperation.AllHumansDown(state);
-            // The panel shows this while the team thinks a fight through alone.
-            BotCooperation.SoloThinking = allHumansDown && KernelPlanner.IsSearching;
-            BotCooperation.SoloExecuting = allHumansDown && KernelPlanner.HasPendingPlan;
             var teamDifficulty = TeamDifficulty(state);
             if (combatIdentity is not MegaCrit.Sts2.Core.Combat.CombatState combat) return;
             Pacing.Observe(combat, combat.RoundNumber, ClockMs);
@@ -114,41 +110,10 @@ public static class BotRuntime
                 && !manager.ActionQueueSet.ActionQueueIsPaused(p.NetId)).ToList();
             if (eligible.Count == 0) { KernelPlanner.Reset(); _planStartedAt = 0; return; }
             var candidates = new List<(MegaCrit.Sts2.Core.Entities.Players.Player Player, BotBrain.CombatMove Move)>();
-            var botsIdle = NoPlayableCard(eligible);
-            // Play out the plan the team already computed, one step per tick, with
-            // no search in between. Solo takeover is the case this exists for: a
-            // single very long think resolves the whole fight and the rest of it
-            // is executed — end-turn steps included — without thinking again.
-            // The interval must not delay a queued script, so this runs first.
-            if (KernelPlanner.HasPendingPlan && KernelPlanner.TryTakeNext(humansFinished, out var step))
-            {
-                if (step.EndTurn)
-                {
-                    EnqueueAs.Invoke(manager.ActionQueueSynchronizer,
-                        new object[] { new EndPlayerTurnAction(step.Player, step.Player.PlayerCombatState!.TurnNumber), step.Player.NetId });
-                    BotCooperation.LastAction = $"{BotRegistry.DisplayName(step.Player.NetId)}：按计划结束回合";
-                    Log.Info($"CoopBots team: {step.Player.NetId} ends the turn; plan-step");
-                }
-                else
-                {
-                    var stepCard = step.Card!;
-                    if (step.Choices is { Count: > 0 }
-                        && !BotChoicePlanSync.Prepare(new(step.Player, new(stepCard, step.Target, 0, "plan-step", step.Choices), 1), combat)) return;
-                    EnqueueAs.Invoke(manager.ActionQueueSynchronizer,
-                        new object[] { new PlayCardAction(stepCard, step.Target), step.Player.NetId });
-                    TeamFocus.ObserveSubmitted(combat, new(stepCard, step.Target, 0), BotCooperation.FocusTarget);
-                    BotCooperation.LastAction = $"按计划：{BotRegistry.DisplayName(step.Player.NetId)} — {stepCard.Title}";
-                    Log.Info($"CoopBots team: {step.Player.NetId} plays {stepCard.Id.Entry} on {step.Target?.LogName}; plan-step");
-                    var stepTurn = step.Player.PlayerCombatState!.TurnNumber;
-                    if (!TurnState.TryGetValue(step.Player.NetId, out var stepProgress) || stepProgress.Turn != stepTurn)
-                        TurnState[step.Player.NetId] = stepProgress = (stepTurn, 0);
-                    TurnState[step.Player.NetId] = (stepTurn, stepProgress.Actions + 1);
-                }
-                _lastProgressAt = ClockMs;
-                _idleLast = false;
-                Pacing.MarkAction(ClockMs, 0);
-                return;
-            }
+            // Every action is re-planned from the real board: only the first action
+            // of a search is submitted, so there is no stored script to play out
+            // (and none to go stale) between actions.
+            var botsIdle = NoAvailableCombatAction(eligible);
             // The interval throttles only the idle re-check, never the action
             // itself: an in-flight search keeps its frames, and a team with a
             // playable card acts as soon as the plan is ready. Waiting the whole
@@ -209,7 +174,7 @@ public static class BotRuntime
                 else if (BotChoicePlanSync.Resume(combat, out joint))
                     kernelStatus = joint is null ? KernelCombatPlanner.Status.Pending : KernelCombatPlanner.Status.Ready;
                 else kernelStatus = KernelPlanner.Poll(combat, eligible, manager.ActionQueueSet.NextActionId,
-                    BotCooperation.FocusTarget, humansFinished, teamDifficulty, out joint, allHumansDown);
+                    BotCooperation.FocusTarget, humansFinished, teamDifficulty, out joint);
             }
             catch (Exception error)
             {
@@ -441,16 +406,19 @@ public static class BotRuntime
         Log.Info($"CoopBots idle-skip: no playable card; skipped={_idleSkips} kernel polls this combat.");
     }
 
-    // Only true when no eligible bot can play a card AND none holds a usable
-    // combat potion: a potion can still be worth using (a rescue, or the energy
-    // that unlocks a hand), so those cases keep the full search.
+    // Cards only. Callers that also care about potions use
+    // NoAvailableCombatAction: a usable potion keeps the planner searching.
     private static bool NoPlayableCards(IReadOnlyList<MegaCrit.Sts2.Core.Entities.Players.Player> eligible)
     {
         try { return eligible.All(p => !p.PlayerCombatState!.Hand.Cards.Any(c => c.CanPlay())); }
         catch (Exception error) { Report(error); return false; }
     }
 
-    private static bool NoPlayableCard(IReadOnlyList<MegaCrit.Sts2.Core.Entities.Players.Player> eligible)
+    // Named for the action, not the card: this is also false when a bot holds a
+    // usable combat potion, because a potion can rescue or unlock a hand and must
+    // keep the planner running. Energy alone never makes this true (zero-cost and
+    // X-cost cards are playable at zero energy).
+    private static bool NoAvailableCombatAction(IReadOnlyList<MegaCrit.Sts2.Core.Entities.Players.Player> eligible)
     {
         foreach (var player in eligible)
         {

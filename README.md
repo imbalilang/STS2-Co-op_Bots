@@ -9,6 +9,7 @@ Bot 注入真实联机大厅：每个 Bot 是真实玩家槽位，行为通过�
 - 战斗搜索基于**真实模拟**（复用 CombatSolver 内核），不是启发式打分
 - 构筑：统一估值 + 数据挖掘的流派识别 + 真实升级差分；宁可跳过也不稀释核心
 - 事件、商店、营地、路线建议均由 AI 处理
+- 大厅与战斗面板的标题栏均可拖动；战斗思考保持有界——没有自动长考，也没有投机脚本回放
 
 完整的**版本变更记录**见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -44,7 +45,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build.ps1 -GameData "<...>\data
 
 ## 版本 / Version
 
-当前开发版本 **0.36.1**，最新安装包 `outputs/CoopBots-v0.36.1.zip`。运行目标为游戏 v0.111.0，
+当前开发版本 **0.36.2**，最新安装包 `outputs/CoopBots-v0.36.2.zip`。运行目标为游戏 v0.111.0，
 运行依赖 **RitsuLib 0.6.2 及以上**（Steam 创意工坊 id 3747602295）。
 
 完整变更记录、每版修复内容与发布状态见 **[CHANGELOG.md](CHANGELOG.md)**。

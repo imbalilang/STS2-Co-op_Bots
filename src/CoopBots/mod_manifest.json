@@ -3,7 +3,7 @@
   "name": "Co-op Bots / 联机机器人",
   "author": "xiwa + Codex",
   "description": "Adds configurable virtual teammates to official multiplayer lobbies, with Flash, Pro, and Cheated AI levels.",
-  "version": "0.36.1",
+  "version": "0.36.2",
   "has_pck": false,
   "has_dll": true,
   "affects_gameplay": true,
