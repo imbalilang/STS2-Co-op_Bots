@@ -1,4 +1,5 @@
 using System.Reflection;
+using CoopBots.Building;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Entities.RestSite;
@@ -105,8 +106,11 @@ internal static class BotRestSitePatch
         // The upgrade value is now the real difference an upgrade makes (a cost
         // drop is worth ~14, +3 damage ~3.6), so the gate asks "does some card
         // actually improve", not "is some card good on its own".
-        var upgradeWorthwhile = player.Deck.Cards.Any(card =>
-            HumanCoopAdvisor.UpgradeValue(card, player) >= WorthwhileUpgrade);
+        // Score each card's upgrade once: the worthwhile gate and the best
+        // upgrade are two reads of the same value, and rescoring clones twice per
+        // camp was pure waste.
+        var upgrades = player.Deck.Cards.Select(card => HumanCoopAdvisor.UpgradeValue(card, player)).ToList();
+        var upgradeWorthwhile = upgrades.Any(value => value >= WorthwhileUpgrade);
         var selfHeal = HealAmount(player, self: true);
         // Resting also pays out through these relics, so the heal option carries
         // their value too.
@@ -137,10 +141,7 @@ internal static class BotRestSitePatch
         // The best upgrade the deck can actually buy. Not a flat number: the smith
         // option has to be able to lose to a relic or to a real wound, and it has
         // to prefer a deck that holds a core card over one that only holds basics.
-        var bestUpgrade = player.Deck.Cards
-            .Select(card => HumanCoopAdvisor.UpgradeValue(card, player))
-            .DefaultIfEmpty(0)
-            .Max();
+        var bestUpgrade = upgrades.DefaultIfEmpty(0).Max();
 
         // The line this camp uses: above it the camp goes to the deck, below it to
         // survival. Acts 1-2 are the greedy ones — a weakened member can be carried
@@ -197,18 +198,28 @@ internal static class BotRestSitePatch
         try
         {
             var state = player.RunState;
-            // Children of the camp are the rooms actually reachable next, so this
-            // is what the heal is being bought for rather than a guess.
-            var next = state.CurrentMapPoint?.Children
-                .OrderBy(child => child.coord.ToString(), StringComparer.Ordinal)
-                .FirstOrDefault();
-            return RiskForCamp(state.CurrentActIndex, next?.PointType, RunDepth.LastCampBeforeBoss(player));
+            // The actual next choice is unknown, so price the camp for the most
+            // dangerous room it could reach rather than the lexicographically
+            // first child: child order is presentation order, not travel order.
+            var types = state.CurrentMapPoint?.Children.Select(child => child.PointType);
+            return MaxReachableRisk(state.CurrentActIndex, types, RunDepth.LastCampBeforeBoss(player));
         }
         catch
         {
             // A map we cannot read must not change the camp decision.
             return 1;
         }
+    }
+
+    // The conservative maximum reachable risk, kept free of the map so its order
+    // invariance can be pinned directly. An unknown set is neutral, and the last
+    // camp before a boss keeps its own act's boss floor.
+    internal static double MaxReachableRisk(int act, IEnumerable<MapPointType>? nextTypes, bool lastCampBeforeBoss)
+    {
+        var risk = 1.0;
+        if (nextTypes is not null)
+            foreach (var type in nextTypes) risk = Math.Max(risk, RiskFor(type, act));
+        return lastCampBeforeBoss ? Math.Max(risk, RiskFor(MapPointType.Boss, act)) : risk;
     }
 
     // Kept free of the map so it can be pinned directly, the way RiskFor is.
@@ -275,14 +286,22 @@ internal static class BotRestSitePatch
 
     private static double CookValue(Player player)
     {
-        // Cook removes two cards AND grants +5 max HP, so it is only wrongly
-        // attractive when the two worst cards are not actually bad: the removal
-        // term stays zero then and only the durability gain remains.
-        var removable = player.Deck.Cards.Where(card => card.IsRemovable)
-            .OrderBy(card => HumanCoopAdvisor.CardValue(card, player).Score).Take(2).ToList();
+        // Cook removes two cards AND grants +5 max HP. The ordered plan is the
+        // same one the permanent deck-edit path makes, so the cards Cook is
+        // valued for removing are the cards it removes. Two corrections:
+        //  - A protected step is the planner refusing to strip a role, not a
+        //    free removal. If either required step is protected the option is
+        //    declined outright rather than valued as if the cost were zero.
+        //  - The removal term is signed. Removing strong cards is a real cost,
+        //    so it may pull the whole choice below the +5 max HP baseline (worth
+        //    10); only the upper bound is capped, and the choice floors at zero.
+        var removable = player.Deck.Cards.Where(card => card.IsRemovable).ToList();
         if (removable.Count < 2) return 0;
-        var removal = Math.Min(35, removable.Sum(card => BotShopPlanner.RemovalValue(card, player)) * 0.3);
-        return 10 + removal;
+        var plan = RemovalPlan.Choose(player, removable, 2);
+        if (plan.Steps.Count < 2) return 0;
+        if (plan.Steps.Any(step => step.Protected)) return 0;
+        var removal = Math.Min(plan.Steps.Sum(step => step.Value) * 0.3, 35);
+        return Math.Max(0, 10 + removal);
     }
 
     private static decimal HealAmount(Player player, bool self)

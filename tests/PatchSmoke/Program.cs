@@ -9,6 +9,29 @@ var harmony = new Harmony("cn.xiwa.sts2.coopbots.smoke");
 LobbyBotService.ValidateRuntimeSchema();
 harmony.PatchAll(typeof(ModEntry).Assembly);
 
+// Focused building-policy-v2 core gate: mechanism dependencies, continuous
+// size relief, structure bottlenecks and contextual upgrades. TestEnvironment
+// installs the headless model database the scenarios need; the same Run() is
+// also called in the normal suite below.
+if (args.Contains("--building-policy-only"))
+{
+    BuildingPolicyScenarios.Run();
+    return;
+}
+
+// Focused team-economy gate: the combat-start snapshot, bounded team bonus,
+// bounded two-purchase shop comparison and the shared removal plan, followed by
+// the existing build/shop/coordinator regressions they touch.
+if (args.Contains("--team-economy-only"))
+{
+    TeamEconomyScenarios.Run();
+    BuildValueScenarios.Run();
+    BuildingPolicyScenarios.Run();
+    ShopScenarios.Run();
+    CoordinatorScenarios.Run();
+    return;
+}
+
 // Tuning loop only: the patches above are what make the game models loadable
 // headlessly, so they are required, but the assertions below are not. This skips
 // straight to the deck tools.
@@ -153,6 +176,8 @@ catch (Exception error) when (error is IOException or UnauthorizedAccessExceptio
 }
 
 BuildValueScenarios.Run();
+BuildingPolicyScenarios.Run();
+TeamEconomyScenarios.Run();
 Console.WriteLine($"PASS: {patched.Count} Harmony patches applied; bot IDs and Genius tactical probes verified.");
 foreach (var method in patched)
     Console.WriteLine($"  {method.DeclaringType?.FullName}.{method.Name}");

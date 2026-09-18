@@ -220,5 +220,25 @@ internal static class ShopScenarios
             throw new Exception($"An act-1 shop with shops ahead must keep the ordinary bar, got {earlyShop:F2}.");
         Console.WriteLine($"PASS: the shop bar falls by depth and collapses at the last shop "
             + $"({earlyShop:F2} -> {lateShop:F2} -> {lastShop:F2}).");
+
+        // The bar alone cannot buy an unmodelled relic: a score of zero fails
+        // `value > cost * factor` at every factor, so the documented "at the last
+        // shop anything that does not make the deck worse is bought" was never
+        // reachable for one. The reviewed run left its last shop with 137 gold
+        // unspent. Telling "nobody modelled this" from "modelled as worthless" is
+        // what makes the speculative buy possible — and what keeps a relic with a
+        // modelled downside out even then.
+        var probeStrawberry = ModelDb.Relic<Strawberry>().ToMutable(); probeStrawberry.Owner = bot;
+        var probeMarbles = ModelDb.Relic<BagOfMarbles>().ToMutable(); probeMarbles.Owner = bot;
+        var probeBrimstone = ModelDb.Relic<Brimstone>().ToMutable(); probeBrimstone.Owner = bot;
+        if (CoopBots.HumanCoopAdvisor.RelicPriced(probeStrawberry, bot))
+            throw new Exception("A relic nothing models must not count as priced.");
+        if (!CoopBots.HumanCoopAdvisor.RelicPriced(probeMarbles, bot))
+            throw new Exception("A whitelisted relic must count as priced.");
+        if (!CoopBots.HumanCoopAdvisor.RelicPriced(probeBrimstone, bot))
+            throw new Exception("A relic with a modelled downside must count as priced, so it stays refused.");
+        if (CoopBots.HumanCoopAdvisor.RelicValue(probeStrawberry, bot).Score != 0)
+            throw new Exception("The specimen relic must still be worth zero on the value chain itself.");
+        Console.WriteLine("PASS: an unmodelled relic is distinguishable from one modelled as worthless.");
     }
 }

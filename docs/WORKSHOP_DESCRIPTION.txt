@@ -1,0 +1,121 @@
+[h1]Co-op Bots / 联机机器人[/h1]
+[b]0.36.3：战斗面板可折叠，构筑与团队经济策略更新。[/b]
+
+为多人房间加入 AI 队友，由房主统一调度。
+
+[h2]需要先订阅[/h2]
+[list]
+[*][b]RitsuLib[/b] 0.6.2 或更高（硬依赖，缺了无法加载）
+[*]所有真人必须使用[b]同一版本[/b]的 CoopBots
+[*]游戏版本 v0.111.0
+[/list]
+
+[h2]0.36.3 更新[/h2]
+[list]
+[*]战斗面板可折叠，标题栏可收起 / 展开，状态本次运行内记住
+[*]修复“新叶”变牌卡住：不再选择“进阶之灾”等无法变化的牌，同类变牌事件也适用
+[*]拿牌与跳过会结合牌组的机制配合、费用负担和攻防需求
+[*]升级按实际收益比较；连续删牌逐步评估，尽量保留关键功能
+[*]评估队友需求与已有能力，改进支援牌选择；商店比较两件商品组合，营地考虑恢复、升级和删牌的取舍
+[/list]
+[url=https://github.com/imbalilang/STS2-Co-op_Bots/blob/main/CHANGELOG.md]完整变更记录[/url]
+
+[h2]AI 强度[/h2]
+[list]
+[*][b]Flash[/b] 0.5 秒 / 张，预算 ×0.5
+[*][b]Pro[/b] 1.5 秒 / 张，预算 ×1.5
+[*][b]Cheated[/b] Pro 节奏，3 倍金币
+[*]三档同一套完整算法，只差节奏与预算
+[/list]
+
+[h2]特点[/h2]
+[list]
+[*]团队联合决策：共享易伤 / 虚弱、逐人承伤、格挡投射、斩杀呼叫
+[*]战斗搜索基于[b]真实模拟[/b]（CombatSolver 内核）；无自动长考与脚本回放，按实际局面重新规划
+[*]构筑按离目标流派的距离决策：拿牌 / 商店 / 删牌共用同一目标函数，可跳过
+[*]战斗、奖励、商店、事件、营地、路线建议均由 AI 处理
+[/list]
+
+[h2]说明[/h2]
+[list]
+[*]只有房主运行完整逻辑，客户端同步结果
+[*]AI 在真人回合内行动，真人均结束后自动收尾并一次性结束
+[*]固定名称的 AI 队友（Bot 1/2/3）
+[*]本版为隔离离线构建，未做实时 GUI 对局验证，也不宣称胜率提升
+[/list]
+
+[h2]第三方 / Third-party[/h2]
+免费、非商业作品。随包 [b]THIRD_PARTY_NOTICES.md[/b] 为下列授权的权威记录，必须随分发保留。
+[list]
+[*][b]Combat Solver[/b]（模拟核心 v0.33.9）：部分卡牌与遗物模拟改编自其 Engine / Prediction / Search 源码，以 [b]CoopBots.Kernel.Vendor[/b] 命名空间随 [b]CoopBots.Kernel.dll[/b] 发布；不含原模组启动、界面与自动化，也不加载其程序集。版权归 [b]Torch[/b] 及贡献者。
+[*][b]Random Foreseer[/b]：Combat Solver 内置战斗模拟使用并改造其部分实现，已获原作者许可。作者 / 版权：[b]hotwords123[/b]。
+[url=https://github.com/hotwords123/StS2.RandomForeseer]github.com/hotwords123/StS2.RandomForeseer[/url]
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3747531952]创意工坊页面[/url]
+[*][b]Spire Codex[/b]：构筑所用的流派聚类、卡牌关联与事件选项数据由其数据挖掘结果生成（快照 built_at=2026-08-22，游戏 v0.111.0），仅烘焙派生标识与统计量。
+[url=https://spire-codex.com]spire-codex.com[/url]
+许可 [b]PolyForm Noncommercial License 1.0.0[/b]（[url=https://polyformproject.org/licenses/noncommercial/1.0.0]polyformproject.org/licenses/noncommercial/1.0.0[/url]）。Required Notice: Copyright © 2025-present Peter Lord and Spire Codex contributors.
+[*][b]Slay the Spire 2[/b]：游戏及其数据版权归 [b]Mega Crit Games[/b]；本 Mod 不重新分发游戏资源。
+[/list]
+
+[citation]CoopBots 自身代码 MIT（见仓库 LICENSE）；Combat Solver、Random Foreseer 衍生部分与 Spire Codex 数据各适用其原有条款，完整记录见随包 THIRD_PARTY_NOTICES.md。[/citation]
+
+[hr][/hr]
+
+[h1]Co-op Bots (English)[/h1]
+Configurable AI teammates for the official multiplayer lobby. The host drives everything; bots play cards, pick rewards, shop and vote on the map.
+
+[h2]Requirements[/h2]
+[list]
+[*][b]RitsuLib[/b] 0.6.2+ — hard dependency; the mod cannot load without it.
+[*]Every human must run the [b]same version[/b] of CoopBots.
+[*]Game version v0.111.0.
+[/list]
+
+[h2]0.36.3 changes[/h2]
+[list]
+[*]Collapsible combat panel with a remembered Collapse / Expand state.
+[*]Fixed NewLeaf / Eternal curse selection: transforms filter Quest and un-transformable cards.
+[*]Deck pick / skip: continuous bounded size pressure, with mechanism support and the cost curve.
+[*]Contextual upgrades and sequential removals that protect the last copy of a role.
+[*]Stable team snapshot economy: bounded two-purchase shop comparison, replan after buying, and camp opportunity cost.
+[/list]
+[url=https://github.com/imbalilang/STS2-Co-op_Bots/blob/main/CHANGELOG.md]Full changelog[/url]
+
+[h2]AI tiers[/h2]
+[list]
+[*][b]Flash[/b]: 0.5 s/card, budget x0.5
+[*][b]Pro[/b]: 1.5 s/card, budget x1.5
+[*][b]Cheated[/b]: Pro pacing, 3x gold
+[*]All three run the same complete algorithm; only pacing and budget differ.
+[/list]
+
+[h2]Features[/h2]
+[list]
+[*]Joint team decisions: shared Vulnerable / Weak, per-member incoming damage, block projection, kill callouts
+[*]Combat search on a [b]real simulation[/b] (CombatSolver kernel); no auto long think and no script replay, replanned from the real state
+[*]Deck building by distance from the target build: rewards, shop and removals share one objective, skipping is real
+[*]Combat, rewards, shop, events, camp and route advice are all handled by the AI
+[/list]
+
+[h2]Notes[/h2]
+[list]
+[*]Only the host runs the full logic; clients sync the results.
+[*]Bots act during the human turn and finish on their own once every human has ended.
+[*]Bots have fixed names (Bot 1/2/3).
+[*]Isolated offline build; no live GUI test and no win-rate claim.
+[/list]
+
+[h2]Third-party[/h2]
+Free, non-commercial mod. The bundled [b]THIRD_PARTY_NOTICES.md[/b] is the authoritative record and must be kept with any distribution.
+[list]
+[*][b]Combat Solver[/b] (simulation core v0.33.9): card and relic simulation adapted from its Engine / Prediction / Search trees, shipped as [b]CoopBots.Kernel.Vendor[/b] in [b]CoopBots.Kernel.dll[/b]; the original startup, UI and automation are not included and its assemblies are never loaded. Copyright [b]Torch[/b] and contributors.
+[*][b]Random Foreseer[/b]: Combat Solver's simulation uses and modifies portions of it, with the original author's permission. Author / copyright: [b]hotwords123[/b].
+[url=https://github.com/hotwords123/StS2.RandomForeseer]github.com/hotwords123/StS2.RandomForeseer[/url]
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3747531952]Steam Workshop page[/url]
+[*][b]Spire Codex[/b]: the archetype clusters, card affinity and event option tables come from its data mining (snapshot built_at=2026-08-22, game v0.111.0); only derived identifiers and statistics are baked.
+[url=https://spire-codex.com]spire-codex.com[/url]
+Licensed under the [b]PolyForm Noncommercial License 1.0.0[/b] ([url=https://polyformproject.org/licenses/noncommercial/1.0.0]polyformproject.org/licenses/noncommercial/1.0.0[/url]). Required Notice: Copyright © 2025-present Peter Lord and Spire Codex contributors.
+[*][b]Slay the Spire 2[/b]: the game and its data belong to [b]Mega Crit Games[/b]; this mod redistributes no game assets.
+[/list]
+
+[citation]CoopBots' own code is MIT (see the repository LICENSE); Combat Solver and Random Foreseer derived portions, and the Spire Codex data, remain under their own terms; the full record is in the bundled THIRD_PARTY_NOTICES.md.[/citation]

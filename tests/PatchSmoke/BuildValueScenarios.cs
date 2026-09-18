@@ -18,6 +18,9 @@ internal static class BuildValueScenarios
 {
     internal static void Run()
     {
+        // Idempotent: the full suite has already installed this by the time it
+        // reaches here, but --building-edits-only runs this scenario first.
+        TestEnvironment.Ensure();
         var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
         var party = new[] { bot };
         var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "BUILDVALUE"));
@@ -167,22 +170,27 @@ internal static class BuildValueScenarios
                 + $"{ruptureWithEnabler.Total:F1} vs {ruptureAlone.Total:F1}");
         Console.WriteLine("PASS: a scaling payoff without its mined enabler is flagged and valued lower.");
 
-        // "On plan" must include the mined affinity, not only the recognised
-        // route. Both decks are the same size, so the raw size pressure is the
-        // same; only the partner card differs, and it is the mined data (not the
-        // route table) that says a Deadly Poison belongs with it. At 21 cards the
-        // raw pressure is (21-15)*5 = 30 and an on-plan card pays 40% = 12.
-        Clear(); Give<StrikeSilent>(5); Give<DefendSilent>(15); Give<Outbreak>(1);
-        var withAffinity = BuildValue.Add(combat.CreateCard<DeadlyPoison>(bot), bot);
-        if (!withAffinity.Reason.Contains("size:12.0"))
-            throw new Exception($"A card with mined affinity must pay the reduced size pressure: {withAffinity.Reason}");
+        // Community affinity is a bounded additive prior and must never control
+        // the size penalty. The old code let any positive lift switch the
+        // 30-point dilution cost down to 12, so a +2 nudge waived 18 points. The
+        // feed is directional: the held card's document recommends the offered
+        // candidate, so a held Deadly Poison activates Outbreak's prior. The
+        // prior still adds value, but both decks pay the full size:30.0.
+        Clear(); Give<StrikeSilent>(5); Give<DefendSilent>(15); Give<DeadlyPoison>(1);
+        var withPrior = BuildValue.Add(combat.CreateCard<Outbreak>(bot), bot);
+        if (!withPrior.Reason.Contains("drafted-together"))
+            throw new Exception($"A held partner's recommendation must earn the affinity prior: {withPrior.Reason}");
+        if (!withPrior.Reason.Contains("size:30.0"))
+            throw new Exception($"Affinity must not waive the size penalty: {withPrior.Reason}");
+        if (withPrior.Reason.Contains("relief:"))
+            throw new Exception($"Affinity must not grant size relief: {withPrior.Reason}");
         Clear(); Give<StrikeSilent>(5); Give<DefendSilent>(16);
-        var withoutAffinity = BuildValue.Add(combat.CreateCard<DeadlyPoison>(bot), bot);
-        if (!withoutAffinity.Reason.Contains("size:30.0"))
-            throw new Exception($"A card with no partner must pay the full size pressure: {withoutAffinity.Reason}");
-        if (!(withAffinity.Total > withoutAffinity.Total))
-            throw new Exception($"Mined affinity must be worth real value: {withAffinity.Total:F1} vs {withoutAffinity.Total:F1}");
-        Console.WriteLine("PASS: mined affinity counts as on-plan, so a partner card still earns the size relief.");
+        var withoutPrior = BuildValue.Add(combat.CreateCard<Outbreak>(bot), bot);
+        if (withoutPrior.Reason.Contains("drafted-together"))
+            throw new Exception($"Affinity must not fire without its partner: {withoutPrior.Reason}");
+        if (!withoutPrior.Reason.Contains("size:30.0"))
+            throw new Exception($"A card with no partner pays the full size pressure: {withoutPrior.Reason}");
+        Console.WriteLine("PASS: affinity is a bounded prior and no longer controls the size penalty.");
 
         // Thinning must get more valuable as dead draws accumulate, or the shop's
         // growing price (a second removal costs 150) can never be paid: a flat
@@ -343,6 +351,22 @@ internal static class BuildValueScenarios
                 + $"{upgraded.FirstOrDefault()?.Id.Entry ?? "(none)"}.");
         Console.WriteLine("PASS: the smith upgrades the card the build valuation ranks highest.");
 
+        // A screen the game marks declinable must be declinable. The stall guard
+        // below it keys off the method name, and FromChooseACardScreen contains
+        // "ChooseA", so every such screen was forced to a pick: an offer of
+        // another character's cards had to be taken from even when none of them
+        // could be played. Passing the screen's own canSkip through is what lets
+        // the bot decline; the guard still holds when the screen demands a card.
+        var skipProbe = new CardModel[] { trueGrit, bash };
+        if (BotBrain.SelectCards(bot, skipProbe, 0, 1, "FromChooseACardScreen", maySkip: true).Count != 0
+            && BuildValue.Add(trueGrit, bot).Total <= 0 && BuildValue.Add(bash, bot).Total <= 0)
+            throw new Exception("A declinable screen must be able to come back empty.");
+        if (BotBrain.SelectCards(bot, skipProbe, 0, 1, "FromChooseACardScreen", maySkip: false).Count != 1)
+            throw new Exception("A screen that demands a card must still return one.");
+        if (BotBrain.SelectCards(bot, skipProbe, 1, 1, "FromChooseACardScreen", maySkip: true).Count != 1)
+            throw new Exception("maySkip must not override an explicit minimum.");
+        Console.WriteLine("PASS: a declinable card screen can be declined, a mandatory one cannot.");
+
         // The baked clusters come from real runs, so every card they name must
         // exist in this game build. A patch that removes one is a silent
         // invalidation of a signature: fail loudly instead.
@@ -361,6 +385,181 @@ internal static class BuildValueScenarios
         if (BakedArchetypes.All.Length < 40)
             throw new Exception($"The baked archetype table looks truncated: {BakedArchetypes.All.Length} clusters.");
         Console.WriteLine($"PASS: all {BakedArchetypes.All.Length} mined archetypes name cards that exist in this build.");
+
+        // The resource table is scraped from card text and a cost field, so it is
+        // exactly as drift-prone as the archetypes — more so, because a rename
+        // would silently drop a producer and make a payable payoff look unpaid.
+        var unknownResource = BakedResources.All
+            .SelectMany(resource => resource.Producers.Concat(resource.Spends))
+            .Distinct(StringComparer.Ordinal)
+            .Where(id => !localIds.Contains(id))
+            .ToList();
+        if (unknownResource.Count > 0)
+            throw new Exception($"Baked resource cards missing from this build: {string.Join(",", unknownResource)}");
+        var stars = BakedResources.All.Single(resource => resource.Name == "star");
+        if (stars.Producers.Length == 0 || stars.Spends.Length == 0)
+            throw new Exception("The star row must record both sides; it is the one resource where the "
+                + "scarcity argument rests on data rather than on a guess.");
+        // The asymmetry that makes Star the breaking case: far more cards spend it
+        // than can ever make it, and every producer is one character's.
+        // Generators whose text does not read "Gain [star:1]" exactly: a number can
+        // sit between the verb and the resource, and the verb can be lower case.
+        // The first extraction matched the exact shape only, silently dropped both
+        // of these, and the gate then refused Star payoffs for a deck whose only
+        // Star source was one of them. Named so the miss fails loudly instead.
+        foreach (var generator in new[] { "ROYAL_GAMBLE", "THE_SEALED_THRONE" })
+            if (!stars.Producers.Contains(generator))
+                throw new Exception($"{generator} makes Stars, so it must be recorded as a producer; "
+                    + "without it the gate refuses payoffs for a deck that can pay for them.");
+        var shivResource = BakedResources.All.Single(resource => resource.Name == "shiv");
+        foreach (var generator in new[] { "BLADE_DANCE", "INFINITE_BLADES" })
+            if (!shivResource.Producers.Contains(generator))
+                throw new Exception($"{generator} makes Shivs, so it must be recorded as a producer.");
+        if (stars.Spends.Length <= stars.Producers.Length)
+            throw new Exception($"Star spends ({stars.Spends.Length}) must outnumber its producers "
+                + $"({stars.Producers.Length}); if that changed, revisit the scarcity assumption.");
+        Console.WriteLine($"PASS: the baked resource table names live cards; stars are {stars.Producers.Length} "
+            + $"producers against {stars.Spends.Length} payoffs.");
+
+        // The gate. Both reviewed cases — a Regent whose producers had been stolen
+        // and a cross-class bot offered another character's Star card — reduce to
+        // one fact: the deck makes no Stars, so the card never leaves the hand.
+        // That is why the gate needs no character lookup at all.
+        Clear(); Give<StrikeIronclad>(5);
+        var sevenStars = combat.CreateCard<SevenStars>(bot);
+        var unpayable = BuildValue.Marginal(sevenStars, bot);
+        if (unpayable.Total > 0)
+            throw new Exception($"A Star payoff with no producer in the deck must be refused, got {unpayable.Total:F1}.");
+        if (!unpayable.Reason.Contains("no-star"))
+            throw new Exception($"The refusal must name the missing resource, got '{unpayable.Reason}'.");
+        Clear(); Give<StrikeIronclad>(5); Give<Glow>(1);
+        if (BuildValue.Marginal(sevenStars, bot).Total <= 0)
+            throw new Exception("With a producer in the deck the same card must be priced normally.");
+        Console.WriteLine("PASS: a Star payoff is refused without a producer and priced with one.");
+
+        // The shiv package is the one concrete case where a single tag conflates
+        // three different roles. All of Blade Dance, Accuracy and Knife Trap carry
+        // the same `shiv` tag, so the old additive route — which counts that tag and
+        // needs two of it — scored "two producers, no multiplier" (measured odds
+        // ratio 0.45, a negative asset) identically to "producers + Accuracy +
+        // Knife Trap" (3.11). Splitting them is what makes the package expressible.
+        var shivs = BakedResources.All.Single(resource => resource.Name == "shiv");
+        foreach (var producer in new[] { "BLADE_DANCE", "INFINITE_BLADES", "CLOAK_AND_DAGGER" })
+            if (!shivs.Producers.Contains(producer))
+                throw new Exception($"{producer} makes Shivs and must be a producer.");
+        if (!shivs.Multipliers.Contains("ACCURACY"))
+            throw new Exception("Accuracy makes each Shiv worth more, so it is a multiplier, not a producer.");
+        if (!shivs.Replayers.Contains("KNIFE_TRAP"))
+            throw new Exception("Knife Trap cashes in the accumulated Shivs, so it is a replayer.");
+        // The discriminator the old tag could not make: the Shiv token IS the
+        // resource. Counting it as a source is what let two tokens satisfy a
+        // "complete" package.
+        foreach (var role in new[] { shivs.Producers, shivs.Multipliers, shivs.Replayers })
+            if (role.Contains("SHIV"))
+                throw new Exception("The Shiv token is the resource itself; it must not count as a source of it.");
+        // And the overlap the single tag also could not express: this card does both.
+        if (!(shivs.Producers.Contains("FAN_OF_KNIVES") && shivs.Multipliers.Contains("FAN_OF_KNIVES")))
+            throw new Exception("Fan of Knives both makes Shivs and makes them hit everything.");
+        Console.WriteLine($"PASS: the shiv package splits into {shivs.Producers.Length} producers, "
+            + $"{shivs.Multipliers.Length} multipliers and {shivs.Replayers.Length} replayers.");
+
+        // Poison, same three-way split. Its finding is an absence: it has a
+        // multiplier (Accelerant triggers each stack once more) and two ways to
+        // cash in gradually — Mirage converts the stacks to Block, Outbreak fires
+        // every third application — but nothing that dumps the accumulated poison
+        // at once. Shiv's top tier (odds ratio 3.11) comes precisely from having
+        // that burst in Knife Trap, so poison's measured -18pt against shiv's +31pt
+        // has a concrete structural candidate. Recorded, not acted on: whether the
+        // replayer tier earns its own dimension is for the AUC table to say.
+        var poison = BakedResources.All.Single(resource => resource.Name == "poison");
+        foreach (var producer in new[] { "DEADLY_POISON", "SNAKEBITE", "NOXIOUS_FUMES" })
+            if (!poison.Producers.Contains(producer))
+                throw new Exception($"{producer} applies Poison and must be a producer.");
+        if (!poison.Multipliers.Contains("ACCELERANT"))
+            throw new Exception("Accelerant makes each Poison stack trigger again, so it is a multiplier.");
+        if (poison.Replayers.Length != 0)
+            throw new Exception("Poison has no burst replayer; if one is added, re-check the ramp/burst "
+                + $"split rather than assuming it belongs here (got {string.Join(",", poison.Replayers)}).");
+        // Re-bucketing: three cards the tester identified as exponential engines were
+        // sitting in the loose Payoffs set and absent from M/R. Each judgement cites
+        // the card-text clause it rests on, so it can be independently reviewed.
+        var doom = BakedResources.All.Single(resource => resource.Name == "doom");
+        if (!doom.Multipliers.Contains("NO_ESCAPE"))
+            throw new Exception("No Escape adds Doom per existing Doom, so its output grows with the "
+                + "stock: that is a multiplier, not a payoff.");
+        var orb = BakedResources.All.Single(resource => resource.Name == "orb");
+        // Tester's independent reading (high confidence), adopted over my first call:
+        // it reads what is already channelled and produces that much again in one go,
+        // which is the cash-in shape, not a standing amplifier.
+        if (!orb.Replayers.Contains("VOLTAIC"))
+            throw new Exception("Voltaic channels Lightning equal to what is already channelled this combat: replayer.");
+        var soul = BakedResources.All.Single(resource => resource.Name == "soul");
+        if (!soul.Replayers.Contains("SOUL_STORM"))
+            throw new Exception("Soul Storm converts the Soul stock in the exhaust pile into damage in one "
+                + "go: a cash-in, so it belongs with replayers, not multipliers.");
+        // The one that must NOT be bucketed: its multiplier is over a resource this
+        // table has no axis for, so filing it under any resource would fake a stock.
+        foreach (var resource in BakedResources.All)
+            if (resource.Multipliers.Contains("SUPERMASSIVE") || resource.Replayers.Contains("SUPERMASSIVE"))
+                throw new Exception("Supermassive scales on cards created this combat, which is not a "
+                    + "resource this table tracks; it must stay unbucketed until that axis exists.");
+        // The fourth bucket. Without it the residue of the loose Payoff set has
+        // nowhere to go, and clearing that set would delete Mirage from the table
+        // entirely — a card the tester's full sweep found is the only Poison reader
+        // Silent has. Data classification only: `complete` does not consult it.
+        var poisonConverters = BakedResources.All.Single(r => r.Name == "poison").Converters;
+        if (!poisonConverters.Contains("MIRAGE"))
+            throw new Exception("Mirage is the only card that reads the Poison stack; it must survive in "
+                + "the converter bucket now that the loose payoff set is cleared.");
+        var doomConverters = doom.Converters;
+        if (!(doomConverters.Contains("TIME'S UP") && doomConverters.Contains("SHROUD")))
+            throw new Exception("Time's Up and Shroud read the Doom stack: converters, not payoffs.");
+        Console.WriteLine($"PASS: the converter bucket keeps Mirage and {doomConverters.Length - 1} Doom readers.");
+        // Ironclad Strength. Two things are worth pinning.
+        var strength = BakedResources.All.Single(resource => resource.Name == "strength");
+        // 1. Colorless cards are in every class's pool. The generator scanned only the
+        //    five class colours, so Prowess ("Gain 1 Strength") was invisible to the
+        //    strength row. Fixing that is what put it back.
+        if (!strength.Producers.Contains("PROWESS"))
+            throw new Exception("Prowess is Colorless but gains Strength; the table must scan the "
+                + "colorless pool or every row silently loses those cards.");
+        // 2. Strength has no doubler in this build, and its real multiplier is not a card
+        //    but a card property: hit count. A multi-hit attack applies the whole
+        //    accumulated Strength once per hit, so it is the cash-in (replayer), not a
+        //    standing amplifier. Twin Strike "Deal 5 damage twice" is the canonical one.
+        if (strength.Multipliers.Length != 0)
+            throw new Exception("No card in this build doubles Strength; if one is added, re-decide "
+                + $"whether it is a multiplier or a replayer (got {string.Join(",", strength.Multipliers)}).");
+        if (!strength.Replayers.Contains("TWIN_STRIKE"))
+            throw new Exception("A multi-hit attack is how accumulated Strength is spent in one play.");
+        // 3. The interaction the user pointed at runs on the Vulnerable axis, not Strength:
+        //    Molten Fist doubles Vulnerable, Dominate converts Vulnerable into Strength.
+        //    Molten Fist never mentions Strength, so filing it under that row would fake
+        //    the relationship. It waits for a Vulnerable axis.
+        foreach (var resource in BakedResources.All)
+            foreach (var bucket in new[] { resource.Producers, resource.Multipliers, resource.Replayers, resource.Converters })
+                if (bucket.Contains("MOLTEN_FIST"))
+                    throw new Exception("Molten Fist doubles Vulnerable; it is not a Strength card and "
+                        + "must wait for the Vulnerable axis rather than be filed under Strength.");
+        Console.WriteLine($"PASS: strength is {strength.Producers.Length} producers / no doubler / "
+            + $"{strength.Replayers.Length} multi-hit cash-ins; Molten Fist stays off the Strength axis.");
+        Console.WriteLine("PASS: No Escape / Voltaic / Soul Storm are re-bucketed with cited card text, "
+            + "and Supermassive stays out.");
+        Console.WriteLine($"PASS: poison splits into {poison.Producers.Length} producers, "
+            + $"{poison.Multipliers.Length} multiplier and no replayer.");
+
+        // A team bonus may not carry a card on its own: the reviewed run took two
+        // CONCOCT on `team-fit` alone into a deck that could not support them.
+        // The cap is a share of the card's own contribution rather than an
+        // absolute, so it self-normalises and holds at every party size — which is
+        // also why it needs no tuning and is safe to pin here.
+        var teamCappedScore = TeamCoordinator.CardValue(bash, bot).Score;
+        var ownOnlyScore = HumanCoopAdvisor.CardValue(bash, bot).Score;
+        if (teamCappedScore > ownOnlyScore + Math.Max(0, ownOnlyScore) * 1.5 + 0.001)
+            throw new Exception($"A team bonus must not exceed 1.5x the card's own value: "
+                + $"team={teamCappedScore:F1} own={ownOnlyScore:F1}.");
+        Console.WriteLine("PASS: a team bonus cannot outvote the card's own contribution.");
+
 
         // A deck holding a mined signature must be recognised by it, and the
         // cards that complete that signature must be worth more than they would
@@ -420,23 +619,135 @@ internal static class BuildValueScenarios
             throw new Exception("Affinity sample floors are too low to trust the mined pairs.");
         Console.WriteLine($"PASS: all {affinityIds.Count} cards named by the {BakedCardAffinity.Pairs.Count} affinity entries exist in this build.");
 
-        // A card drafted alongside another must be worth more when that partner is
-        // already in the deck. Asserted on the reason, so the check does not
-        // silently pass because some other term happened to move the same way.
-        var firstPair = BakedCardAffinity.Pairs
-            .Where(pair => pair.Value.Length > 0)
-            .OrderByDescending(pair => pair.Value[0].Lift)
-            .FirstOrDefault();
-        if (firstPair.Key is not null && Local(firstPair.Key) is { } affinityCard && Local(firstPair.Value[0].Card) is { } partner)
+        // Direction matters: the feed's document for a held card B lists the
+        // offered cards A it recommends. The old code read the candidate A's
+        // document and searched the deck for a partner B — the reverse arrow.
+        // Here a held Deadly Poison's document recommends Outbreak, so adding
+        // the former must activate the latter's prior.
+        if (Local("DEADLY_POISON") is { } held && Local("OUTBREAK") is { } offered)
         {
             foreach (var card in knight.Deck.Cards.ToArray()) knight.Deck.RemoveInternal(card);
             GiveKnight<StrikeIronclad>(5); GiveKnight<DefendIronclad>(4);
-            if (BuildValue.Marginal(affinityCard, knight).Reason.Contains("drafted-together"))
-                throw new Exception("Affinity must not fire on a card whose partner is absent.");
-            knight.Deck.AddInternal(partner);
-            if (!BuildValue.Marginal(affinityCard, knight).Reason.Contains("drafted-together"))
-                throw new Exception($"Affinity must fire when {firstPair.Value[0].Card} is already in the deck.");
-            Console.WriteLine($"PASS: affinity rewards drafting {firstPair.Key} alongside {firstPair.Value[0].Card}.");
+            if (BuildValue.Marginal(offered, knight).Reason.Contains("drafted-together"))
+                throw new Exception("Affinity must not fire on a card whose recommending context is absent.");
+            knight.Deck.AddInternal(held);
+            if (!BuildValue.Marginal(offered, knight).Reason.Contains("drafted-together"))
+                throw new Exception("Affinity must fire when DEADLY_POISON, the context card, is already in the deck.");
+            Console.WriteLine("PASS: affinity reads held=>offered, so DEADLY_POISON activates OUTBREAK.");
         }
+
+        // Removal entry point: a protected card is a refusal, not a slightly
+        // worse score. The old ranking compared the refusal's 0 against an
+        // unprotected candidate's negative removal value and removed the
+        // protected card, so the deck lost the last copy of a role.
+        Clear();
+        Give<DefendIronclad>(1);
+        Give<StrikeIronclad>(15);
+        var lastBlock = bot.Deck.Cards.First(card => card.Id.Entry == "DEFEND_IRONCLAD");
+        var strongTarget = combat.CreateCard<Inflame>(bot);
+        bot.Deck.AddInternal(strongTarget);
+        var guardRemoval = BuildValue.Remove(lastBlock, bot);
+        var negativeRemoval = BuildValue.Remove(strongTarget, bot);
+        if (guardRemoval.Total != 0 || !guardRemoval.Reason.Contains("protected"))
+            throw new Exception($"The last block card must be a refused removal: {guardRemoval.Total:F1} ({guardRemoval.Reason}).");
+        if (negativeRemoval.Total >= 0)
+            throw new Exception($"This fixture needs an unprotected negative removal target, got {negativeRemoval.Total:F1} ({negativeRemoval.Reason}).");
+        var preferUnprotected = BotBrain.SelectCards(bot, new CardModel[] { lastBlock, strongTarget }, 1, 1, "FromDeckForRemoval");
+        if (preferUnprotected.Count != 1 || !ReferenceEquals(preferUnprotected[0], strongTarget))
+            throw new Exception($"An unprotected candidate must win over a protected card even when its score is negative, got "
+                + $"{preferUnprotected.FirstOrDefault()?.Id.Entry ?? "(none)"}.");
+        Console.WriteLine("PASS: removal prefers an unprotected negative target over a protected card.");
+
+        // Two removals must re-read the deck after each pick. With two Defends
+        // the first may go, but the second becomes the last block card and must
+        // be left alone while unprotected alternatives remain. The old code
+        // scores the whole list once and takes the top two, which removes both.
+        Clear();
+        Give<DefendIronclad>(2);
+        Give<StrikeIronclad>(12);
+        var twoCandidates = bot.Deck.Cards.ToList();
+        var twoRemovals = BotBrain.SelectCards(bot, twoCandidates, 2, 2, "FromDeckForRemoval");
+        if (twoRemovals.Count != 2)
+            throw new Exception($"Two removals must return two cards, got {twoRemovals.Count}.");
+        if (twoRemovals.Count(card => card.Id.Entry == "DEFEND_IRONCLAD") > 1)
+            throw new Exception("Two removals must not take the deck's last block card while other options exist.");
+        if (ReferenceEquals(twoRemovals[0], twoRemovals[1]))
+            throw new Exception("Two removals must not return the same card twice.");
+        Console.WriteLine($"PASS: two removals keep a block card back ({string.Join(",", twoRemovals.Select(card => card.Id.Entry))}).");
+
+        // When every legal candidate is protected the screen still demands its
+        // count, so the pick fills deterministically from the protected pool and
+        // logs the fallback rather than short-picking or stalling.
+        Clear();
+        Give<DefendIronclad>(1);
+        Give<Breakthrough>(1);
+        Give<PommelStrike>(1);
+        Give<StrikeIronclad>(10);
+        var forcedBlock = bot.Deck.Cards.First(card => card.Id.Entry == "DEFEND_IRONCLAD");
+        var forcedAoe = bot.Deck.Cards.First(card => card.Id.Entry == "BREAKTHROUGH");
+        var forcedDraw = bot.Deck.Cards.First(card => card.Id.Entry == "POMMEL_STRIKE");
+        foreach (var protectedCard in new[] { forcedBlock, forcedAoe, forcedDraw })
+            if (BuildValue.Remove(protectedCard, bot).Total != 0)
+                throw new Exception($"This fixture needs {protectedCard.Id.Entry} to be a refused removal, got {BuildValue.Remove(protectedCard, bot).Total:F1}.");
+        var forced = BotBrain.SelectCards(bot, new CardModel[] { forcedBlock, forcedAoe, forcedDraw }, 2, 2, "FromDeckForRemoval");
+        if (forced.Count != 2)
+            throw new Exception($"A forced removal screen must still return its required count, got {forced.Count}.");
+        if (ReferenceEquals(forced[0], forced[1]))
+            throw new Exception("A forced removal screen must not return the same instance twice.");
+        Console.WriteLine($"PASS: an all-protected forced removal still returns {forced.Count} distinct cards "
+            + $"({string.Join(",", forced.Select(card => card.Id.Entry))}).");
+
+        // Transformation must judge each candidate against the full actual deck,
+        // not the offered subset. Seven Stars is refused (0) when its whole
+        // context is the subset, but is a payable Regent payoff once the deck's
+        // Star producer is visible, so the subset ranking and the full-deck
+        // ranking disagree. The old code scored the subset and transformed the
+        // wrong card.
+        Clear();
+        Give<StrikeIronclad>(5);
+        Give<Glow>(1);
+        var transformStrike = bot.Deck.Cards.First(card => card.Id.Entry == "STRIKE_IRONCLAD");
+        var transformStar = combat.CreateCard<SevenStars>(bot);
+        bot.Deck.AddInternal(transformStar);
+        var fullDeckContext = bot.Deck.Cards.ToList();
+        var transformCandidates = new CardModel[] { transformStrike, transformStar };
+        var starFull = BuildValue.Marginal(transformStar, bot, fullDeckContext).Total;
+        var strikeFull = BuildValue.Marginal(transformStrike, bot, fullDeckContext).Total;
+        var starSubset = BuildValue.Marginal(transformStar, bot, transformCandidates).Total;
+        var strikeSubset = BuildValue.Marginal(transformStrike, bot, transformCandidates).Total;
+        if (!(starFull > strikeFull))
+            throw new Exception($"This fixture needs the full deck to rank the Star payoff above a Strike "
+                + $"(star={starFull:F1}, strike={strikeFull:F1}).");
+        if (!(starSubset < strikeSubset))
+            throw new Exception($"This fixture needs the subset to rank the unpayable Star payoff below a Strike "
+                + $"(star={starSubset:F1}, strike={strikeSubset:F1}).");
+        var transformed = BotBrain.SelectCards(bot, transformCandidates, 1, 1, "FromDeckForTransformation");
+        if (transformed.Count != 1 || !ReferenceEquals(transformed[0], transformStrike))
+            throw new Exception($"Transformation must use the full-deck ranking and target the weakest real card, got "
+                + $"{transformed.FirstOrDefault()?.Id.Entry ?? "(none)"}.");
+        Console.WriteLine("PASS: transformation scores candidates against the full deck, so the subset counterexample is avoided.");
+
+        // The valuation reads a copy of the deck and never edits the real one,
+        // and the same call twice must return the same cards in the same order.
+        Clear();
+        Give<DefendIronclad>(2);
+        Give<StrikeIronclad>(12);
+        var liveBefore = bot.Deck.Cards.ToList();
+        var liveFirst = BotBrain.SelectCards(bot, liveBefore, 2, 2, "FromDeckForRemoval");
+        var liveSecond = BotBrain.SelectCards(bot, liveBefore, 2, 2, "FromDeckForRemoval");
+        if (bot.Deck.Cards.Count != liveBefore.Count)
+            throw new Exception($"The live deck must keep its size during a removal choice "
+                + $"({liveBefore.Count} -> {bot.Deck.Cards.Count}).");
+        for (var index = 0; index < liveBefore.Count; index++)
+            if (!ReferenceEquals(bot.Deck.Cards[index], liveBefore[index]))
+                throw new Exception($"The live deck must not be mutated or reordered during a removal choice (index {index}).");
+        if (liveFirst.Count != liveSecond.Count)
+            throw new Exception($"Repeated selection must return the same count ({liveFirst.Count} vs {liveSecond.Count}).");
+        for (var index = 0; index < liveFirst.Count; index++)
+            if (!ReferenceEquals(liveFirst[index], liveSecond[index]))
+                throw new Exception($"Repeated selection must be deterministic (index {index}).");
+        Console.WriteLine("PASS: removal never touches the live deck and repeats deterministically.");
+
+        NewLeafScenarios.Run();
     }
 }

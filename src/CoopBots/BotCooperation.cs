@@ -28,9 +28,16 @@ internal static class BotCooperation
     private static OptionButton? _focus;
     private static Label? _advice;
     private static Label? _callout;
+    private static VBoxContainer? _body;
+    private static Button? _collapse;
+    // Collapsed is a presentation preference, not fight state: it survives every
+    // room change and panel rebuild for the whole process, and Reset() never
+    // touches it. A callout or a Refresh must not pop the panel back open.
+    private static bool _collapsed;
     private static DateTime _nextAdviceAt;
     private static string _enemySignature = "";
     private static List<uint?> _focusIds = new();
+    private const float PanelWidth = 440f;
     internal static uint? FocusTarget { get; private set; }
     internal static string LastAction = "";
     internal static string Callout = "";
@@ -64,12 +71,30 @@ internal static class BotCooperation
             _panel.AnchorLeft = 1; _panel.AnchorRight = 1;
             _panel.OffsetLeft = -460; _panel.OffsetRight = -20;
             _panel.OffsetTop = 105; _panel.OffsetBottom = 105;
-            _panel.GrowHorizontal = Control.GrowDirection.Begin;
+            // The begin (left) edge is the one we hold still while the card
+            // collapses and expands, so a later minimum-size recompute grows the
+            // card to the right instead of dragging the title bar sideways.
+            _panel.GrowHorizontal = Control.GrowDirection.End;
             _panel.Theme = run.Theme;
             var margin = BotUiTheme.Margin(12);
             var column = new VBoxContainer();
             column.AddThemeConstantOverride("separation", 8);
             margin.AddChild(column);
+            // The header is the drag grip and stays on screen when the panel is
+            // collapsed; only the label and the toggle live here so a collapsed
+            // panel is a compact title bar instead of an empty 440px card.
+            var header = new HBoxContainer();
+            header.AddThemeConstantOverride("separation", 10);
+            var title = BotUiTheme.Text("Co-op Bots", 13, BotUiTheme.Muted);
+            title.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+            header.AddChild(title);
+            _collapse = new Button { Text = string.Empty, MouseFilter = Control.MouseFilterEnum.Stop };
+            _collapse.Pressed += () => { _collapsed = !_collapsed; ApplyCollapsedState(); };
+            header.AddChild(_collapse);
+            column.AddChild(header);
+            _body = new VBoxContainer();
+            _body.AddThemeConstantOverride("separation", 8);
+            column.AddChild(_body);
             // The callout asks the player for a specific hit, so it is the first
             // thing seen rather than a line inside the status block.
             _callout = BotUiTheme.Text(string.Empty, 15, BotUiTheme.Accent);
@@ -78,31 +103,28 @@ internal static class BotCooperation
             _callout.AutowrapMode = TextServer.AutowrapMode.WordSmart;
             _callout.CustomMinimumSize = new Vector2(420, 0);
             _callout.MouseFilter = Control.MouseFilterEnum.Ignore;
-            column.AddChild(_callout);
-            var header = new HBoxContainer();
-            header.AddThemeConstantOverride("separation", 10);
-            header.AddChild(BotUiTheme.Text("Co-op Bots", 13, BotUiTheme.Muted));
+            _body.AddChild(_callout);
             _status = BotUiTheme.Text(string.Empty, 13, BotUiTheme.Ink);
             _status.AutowrapMode = TextServer.AutowrapMode.WordSmart;
             _status.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
-            header.AddChild(_status);
-            column.AddChild(header);
+            _body.AddChild(_status);
             var buttons = new HBoxContainer();
             buttons.AddThemeConstantOverride("separation", 8);
             _pause = new Button { Text = chinese ? "暂停" : "Pause", SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
             _pause.Pressed += () => { Gate.TogglePause(); if (!Gate.Paused) BotRuntime.ResumeAfterPause(); };
             buttons.AddChild(_pause);
-            column.AddChild(buttons);
+            _body.AddChild(buttons);
             _focus = new OptionButton { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
             _focus.ItemSelected += index => FocusTarget = index >= 0 && index < _focusIds.Count ? _focusIds[(int)index] : null;
-            column.AddChild(_focus);
+            _body.AddChild(_focus);
             _advice = BotUiTheme.Text(string.Empty, 12, BotUiTheme.Muted);
             _advice.AutowrapMode = TextServer.AutowrapMode.WordSmart;
             _advice.MouseFilter = Control.MouseFilterEnum.Ignore;
-            column.AddChild(_advice);
+            _body.AddChild(_advice);
             _panel.AddChild(margin);
             run.AddChild(_panel);
             DraggablePanel.Attach(_panel, header);
+            ApplyCollapsedState();
         }
         var active = combat is not null && CombatManager.Instance.IsInProgress;
         if (_callout is not null && GodotObject.IsInstanceValid(_callout))
@@ -120,7 +142,9 @@ internal static class BotCooperation
         _pause.Text = Gate.Paused
             ? (BotUiTheme.Chinese() ? "继续" : "Resume")
             : (BotUiTheme.Chinese() ? "暂停" : "Pause");
-        if (HumanAdviceUi.Enabled && _panel.Visible && DateTime.UtcNow >= _nextAdviceAt && RunManager.Instance.ActionExecutor.CurrentlyRunningAction is null
+        // A collapsed panel hides the advice line, so do not spend a valuation on
+        // it until the player expands the body again.
+        if (HumanAdviceUi.Enabled && !_collapsed && _panel.Visible && DateTime.UtcNow >= _nextAdviceAt && RunManager.Instance.ActionExecutor.CurrentlyRunningAction is null
             && RunManager.Instance.ActionQueueSet.IsEmpty)
         {
             _nextAdviceAt = DateTime.UtcNow.AddMilliseconds(500);
@@ -182,6 +206,42 @@ internal static class BotCooperation
                 ? (zh ? "机器人行动中" : "Bots are acting")
                 : (zh ? "协作节奏：等待真人决策" : "Co-op pace: waiting for the humans"))
             + (string.IsNullOrEmpty(LastAction) ? "" : "\n" + LastAction);
+    }
+
+    /// <summary>
+    /// Applies the remembered collapse preference to whatever panel is currently
+    /// on screen. Called when the toggle is pressed and whenever Refresh rebuilds
+    /// the panel, so a room change never loses the player's choice.
+    /// </summary>
+    private static void ApplyCollapsedState()
+    {
+        if (_panel is null || !GodotObject.IsInstanceValid(_panel)) return;
+        if (_collapse is not null && GodotObject.IsInstanceValid(_collapse))
+            _collapse.Text = _collapsed
+                ? (BotUiTheme.Chinese() ? "展开" : "Expand")
+                : (BotUiTheme.Chinese() ? "收起" : "Collapse");
+        if (_body is not null && GodotObject.IsInstanceValid(_body))
+            _body.Visible = !_collapsed;
+        ApplyCollapsedLayout();
+        // A container recomputes its minimum size a frame after a child is hidden
+        // or shown, so settle the real size once more to make the card shrink to
+        // the header (or grow back) rather than keep a stale box.
+        Callable.From(ApplyCollapsedLayout).CallDeferred();
+    }
+
+    /// <summary>
+    /// Sizes the panel to the current body visibility on one path for both
+    /// directions. Collapsing shrinks the card to its header minimum in both
+    /// dimensions; expanding restores the full width. GrowHorizontal.End holds
+    /// the left edge fixed, so the corner never needs restoring.
+    /// </summary>
+    private static void ApplyCollapsedLayout()
+    {
+        if (_panel is null || !GodotObject.IsInstanceValid(_panel)) return;
+        // A zero axis means "the minimum the panel currently needs"; width is
+        // forced to PanelWidth only when expanded. set_size already clamps to
+        // the combined minimum, so no ResetSize is needed.
+        _panel.Size = new Vector2(_collapsed ? 0 : PanelWidth, 0);
     }
 
     internal static bool HumansFinished(RunState state) => MultiHumanCooperation.HumansReady(state.Players,

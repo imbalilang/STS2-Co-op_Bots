@@ -6,6 +6,7 @@ using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Runs;
 
 namespace CoopBots;
 
@@ -23,22 +24,46 @@ internal static class BotCardChoiceDispatcher
         var returnValueType = ((MethodInfo)originalMethod).ReturnType.GenericTypeArguments[0];
         var cards = ExtractCards(args, player, originalMethod.Name).ToList();
         var prefs = args.OfType<CardSelectorPrefs>().Cast<CardSelectorPrefs?>().FirstOrDefault();
-        var min = prefs?.MinSelect ?? 1;
+        // A declinable screen says so with a plain bool argument, not with
+        // CardSelectorPrefs. Reading only the prefs made every one of them
+        // mandatory, so an offer the bot had no use for — a group of another
+        // character's cards, say — still had to be picked from. Only
+        // FromChooseACardScreen carries this flag, so the single bool is it.
+        var maySkip = args.OfType<bool>().FirstOrDefault() && SkippingIsFree();
+        var min = prefs?.MinSelect ?? (maySkip ? 0 : 1);
         var max = prefs?.MaxSelect ?? 1;
         var planned = BotChoicePlanSync.Select(player, cards, min, max);
 
         if (returnValueType == typeof(CardModel))
         {
-            value = (planned ?? BotBrain.SelectCards(player, cards, min, max, originalMethod.Name)).FirstOrDefault();
+            value = (planned ?? BotBrain.SelectCards(player, cards, min, max, originalMethod.Name, maySkip)).FirstOrDefault();
         }
         else
         {
             var bundles = args.OfType<IEnumerable<IReadOnlyList<CardModel>>>().FirstOrDefault();
             value = planned is not null ? planned : bundles is not null
                 ? ChooseBundle(player, bundles, originalMethod.Name)
-                : BotBrain.SelectCards(player, cards, min, max, originalMethod.Name);
+                : BotBrain.SelectCards(player, cards, min, max, originalMethod.Name, maySkip);
         }
         return true;
+    }
+
+    // Declining is free for a card offer and costly for a potion: the bottle has
+    // already been spent by the time its choice opens, so an empty answer throws
+    // it away. Only a plain choice may come back empty.
+    private static bool SkippingIsFree()
+    {
+        try
+        {
+            return RunManager.Instance?.ActionExecutor.CurrentlyRunningAction
+                is not MegaCrit.Sts2.Core.GameActions.UsePotionAction;
+        }
+        catch
+        {
+            // A run we cannot inspect must keep the old, non-skipping behaviour
+            // rather than risk turning a real choice into a no-op.
+            return false;
+        }
     }
 
     private static IEnumerable<CardModel> ExtractCards(IEnumerable<object> args, Player player, string methodName)
@@ -53,11 +78,22 @@ internal static class BotCardChoiceDispatcher
                 return ApplyFilter(cards, args);
         }
 
-        var fallback = methodName.Contains("Hand", StringComparison.Ordinal) && player.PlayerCombatState is not null
+        IEnumerable<CardModel> fallback = methodName.Contains("Hand", StringComparison.Ordinal) && player.PlayerCombatState is not null
             ? player.PlayerCombatState.Hand.Cards
             : player.Deck.Cards;
+        // FromDeckForTransformation filters its own deck to cards that can really
+        // be transformed before it ever reaches a selector. Intercepting the call
+        // as a prefix bypasses that body, so the old fallback handed the brain the
+        // whole deck and it could pick an Eternal curse; the transform then threw
+        // "Non-removable cards cannot be transformed". Mirror the native predicate
+        // exactly rather than guessing at curse ids.
+        if (methodName == nameof(CardSelectCmd.FromDeckForTransformation))
+            fallback = fallback.Where(NativeTransformable);
         return ApplyFilter(fallback, args);
     }
+
+    private static bool NativeTransformable(CardModel card) =>
+        card.Type != CardType.Quest && card.IsTransformable;
 
     private static IEnumerable<CardModel> ApplyFilter(IEnumerable<CardModel> cards, IEnumerable<object> args)
     {

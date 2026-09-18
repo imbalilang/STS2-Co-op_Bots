@@ -38,7 +38,9 @@ internal static class Archetypes
         new("doom", "doom", ["doom", "strengthdown"], 2),
         new("force-focus", "focus", ["focus"], 2),
         new("orb-block", "block", ["focus", "dexterity"], 4),
-        new("shiv", "shiv", ["zerocost", "strength"], 2),
+        // payoff 是乘数器而不是"带 shiv 标签的牌":OR 阶梯 0.45(只有产者)→ 1.25(+乘数器)
+        // → 3.11(+重放器)说明变现的一侧才是 payoff。阈值 1 与 OR 数据的分层一致。
+        new("shiv", "buffs-shiv", ["produces-shiv"], 1),
         new("minion", "minion", ["osty"], 2),
         new("exhaust-engine", "exhaust", ["draw", "energy"], 3),
         new("draw-engine", "draw", ["energy", "zerocost"], 4),

@@ -165,6 +165,20 @@ internal static class HumanCoopAdvisor
     internal static double UpgradeValue(CardModel card, Player player)
         => Building.BuildValue.UpgradeDelta(card, player).Total;
 
+    // The one reason that means "nothing here modelled this", as opposed to a
+    // modelled zero. Shared with the shop so it can tell the two apart.
+    internal const string UnpricedRelicReason = "尚无可靠的专属估值，请比较遗物描述与构筑";
+
+    /// <summary>
+    /// Whether the value chain had a real opinion on this relic. A relic that
+    /// scores zero because nothing models it is not the same as one that scores
+    /// zero (or less) because it is worth nothing — only the first is worth a
+    /// speculative buy when the gold is otherwise dead. A relic with a modelled
+    /// downside (Brimstone, PhilosophersStone) is priced, so it stays refused.
+    /// </summary>
+    internal static bool RelicPriced(RelicModel relic, Player player)
+        => RelicValue(relic, player).Reason != UnpricedRelicReason;
+
     internal static (double Score, string Reason) RelicValue(RelicModel relic, Player player)
     {
         var party = player.RunState.Players;
@@ -215,7 +229,7 @@ internal static class HumanCoopAdvisor
             "Lantern" => (23, "首回合额外能量，减少铺垫和输出争抢费用"),
             "BloodVial" => (player.Creature.CurrentHp < player.Creature.MaxHp * .6 ? 26 : 12, "每场战斗首回合恢复生命，减轻持续战损"),
             "HornCleat" => (24, "第二回合获得格挡，缓解启动压力"),
-            _ => (0.0, "尚无可靠的专属估值，请比较遗物描述与构筑")
+            _ => (0.0, UnpricedRelicReason)
         };
         if (knownScore != 0) return (knownScore, knownReason);
         // The chain above only knows relics whose worth is printed on them. A
@@ -226,7 +240,7 @@ internal static class HumanCoopAdvisor
         var predicted = PredictedEffectValue(relic, player, depth: 0);
         return predicted > 0.5
             ? (predicted, $"预测拾取效果：{predicted:F0}")
-            : (0, "尚无可靠的专属估值，请比较遗物描述与构筑");
+            : (0, UnpricedRelicReason);
     }
 
     // Relics whose pickup is a random upgrade of cards already in the deck. Their

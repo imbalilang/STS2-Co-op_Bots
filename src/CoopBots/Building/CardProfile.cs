@@ -24,7 +24,13 @@ internal static class CardProfile
         "poison", "doom", "scaling", "power", "exhaust",
         // Finer tags exist so an engine can be recognised rather than guessed:
         // "scaling" alone cannot tell a Strength deck from a poison one.
-        "strength", "dexterity", "focus", "multihit", "retain", "zerocost", "shiv", "minion", "osty",
+        "strength", "dexterity", "focus", "multihit", "retain", "zerocost",
+        // 小刀拆成三个语义角色,不再用一个 `shiv` 标签兼任。见 Of() 里的口径注释。
+        "is-shiv", "produces-shiv", "buffs-shiv",
+        // 运行期才定型(Type 由 TinkerTime 事件赋值)的卡:角色取三变体并集,
+        // 并打这个标记,让消费方看得见这次并集是被迫的。
+        "variant-type",
+        "minion", "osty",
     ];
 
     internal sealed record Facts(
@@ -65,7 +71,29 @@ internal static class CardProfile
         // Damage split across several hits multiplies any Strength the deck has,
         // which is what makes multi-hit cards the payoff of a Strength engine.
         if (analyzed.TotalDamage > 0 && analyzed.Hits >= 2) roles.Add("multihit");
-        if (card.Tags.Contains(CardTag.Shiv)) roles.Add("shiv");
+        // `shiv` 一个标签曾同时压着四种含义,这是加法编码乘法最干净的实例:
+        // 产者(BLADE_DANCE)、乘数器(ACCURACY)、重放器(KNIFE_TRAP)、以及资源本身(SHIV 白卡)
+        // 全都带 `CardTag.Shiv`。旧 Route 拿这个标签当 payoff 并要求 >=2 张,于是
+        // "两张产者、没有乘数器"(实测 OR 0.45,负资产)与"产者+ACCURACY+KNIFE_TRAP"(OR 3.11)
+        // 评分完全相同。拆成三个,谁都不能再兼任:
+        //   is-shiv       这张牌【就是】小刀 —— 它是资源,既不是 payoff 也不是 enabler
+        //   produces-shiv 把资源造出来   —— enabler
+        //   buffs-shiv    让每张小刀更值钱 —— payoff(乘数器)
+        // 判据来自 BakedResources 的手工校白表(正则在这里必然出错,见烘焙脚本的注释),
+        // 不再从卡面文本或 CardTag 就地推导 —— 这份表是唯一事实来源。
+        var entry = card.Id.Entry;
+        if (card.Tags.Contains(CardTag.Shiv)) roles.Add("is-shiv");
+        foreach (var resource in BakedResources.All)
+        {
+            if (resource.Name != "shiv") continue;
+            if (resource.Producers.Contains(entry, StringComparer.Ordinal)) roles.Add("produces-shiv");
+            if (resource.Multipliers.Contains(entry, StringComparer.Ordinal)) roles.Add("buffs-shiv");
+        }
+        // Mad Science 一张卡就出现在 36% 的牌组里,而它的 Type 由 TinkerTime 事件运行期赋值,
+        // 事件外读作 CardType.None。静态数据无从知道是哪个变体,所以取三变体角色的并集,
+        // 并打 variant-type 标记。并集是被迫的过度声明 —— 标记就是让消费方能看见并自行打折,
+        // 而不是让一条"猜一个变体"的规则在两边各猜各的(那正是 51% 分歧的来源)。
+        if (card.GetType().Name == "MadScience") roles.Add("variant-type");
         if (card.Tags.Contains(CardTag.Minion)) roles.Add("minion");
         if (card.Tags.Contains(CardTag.OstyAttack)) roles.Add("osty");
 
@@ -127,6 +155,9 @@ internal static class CardProfile
             PoisonDelta: after.Poison - before.Poison,
             DoomDelta: after.Doom - before.Doom,
             ScalingDelta: after.Scaling - before.Scaling,
+            // Signed: negative means the upgrade lowers the HP cost, which is a
+            // real improvement the previous diff simply did not carry.
+            HpLossDelta: after.HpLoss - before.HpLoss,
             AddedRoles: addedRoles,
             LostRoles: lostRoles,
             AddedKeywords: addedKeywords,
@@ -138,7 +169,7 @@ internal static class CardProfile
     internal sealed record UpgradeDiff(
         int CostDelta, double DamageDelta, double BlockDelta, double DrawDelta, double EnergyDelta,
         double VulnerableDelta, double WeakDelta, double StrengthDownDelta,
-        double PoisonDelta, double DoomDelta, double ScalingDelta,
+        double PoisonDelta, double DoomDelta, double ScalingDelta, double HpLossDelta,
         IReadOnlyList<string> AddedRoles, IReadOnlyList<string> LostRoles,
         IReadOnlyList<CardKeyword> AddedKeywords, IReadOnlyList<CardKeyword> RemovedKeywords,
         Facts Before, Facts After);

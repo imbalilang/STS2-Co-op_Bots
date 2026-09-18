@@ -77,16 +77,21 @@ public static class BotBrain
         Player player, List<CardModel> list, int count, string purpose)
     {
         if (!purpose.Contains("FromDeck", StringComparison.OrdinalIgnoreCase)) return null;
+        if (purpose.Contains("ForRemoval", StringComparison.OrdinalIgnoreCase))
+            return RemoveFromDeck(player, list, count, purpose);
         Func<CardModel, Building.BuildValue.Valuation> value;
         var worst = false;
         if (purpose.Contains("ForUpgrade", StringComparison.OrdinalIgnoreCase))
             value = card => Building.BuildValue.UpgradeDelta(card, player);
-        else if (purpose.Contains("ForRemoval", StringComparison.OrdinalIgnoreCase))
-            value = card => Building.BuildValue.Remove(card, player);
         else if (purpose.Contains("ForTransformation", StringComparison.OrdinalIgnoreCase))
         {
-            // A transform should target the card contributing the least.
-            value = card => Building.BuildValue.Marginal(card, player, list);
+            // A transform should target the card contributing the least. The
+            // judgement uses the whole deck, not just the offered subset: a
+            // producer or a duplicate copy outside the offer changes what the
+            // candidate is worth, and scoring only the subset transformed the
+            // wrong card.
+            var context = player.Deck.Cards.ToList();
+            value = card => Building.BuildValue.Marginal(card, player, context);
             worst = true;
         }
         else return null;
@@ -103,19 +108,47 @@ public static class BotBrain
         return picked.Select(entry => entry.Card).ToList();
     }
 
+    // Removals are chosen against the deck as each earlier pick would leave it.
+    // The real deck is never touched: `context` is a local copy of the full
+    // actual deck, and only the instance actually selected leaves it, so the last
+    // copy of a role becomes protected exactly when removing it would leave the
+    // deck without that role. Protected candidates only pay when no unprotected
+    // candidate is left, so a forced all-protected screen still fills its count
+    // instead of stalling or short-picking.
+    private static IReadOnlyList<CardModel> RemoveFromDeck(
+        Player player, List<CardModel> candidates, int count, string purpose)
+    {
+        // The ordering lives in RemovalPlan so the rest-site Cook valuation
+        // prices exactly the removals this path would actually make.
+        var plan = Building.RemovalPlan.Choose(player, candidates, count);
+        var selected = plan.Steps.Select(step => step.Card).ToList();
+        var trace = plan.Steps.Select(step => (step.Card, step.Value, step.Reason)).ToList();
+        BuildTrace.LogDeckEdit(player, purpose, selected, trace);
+        if (plan.Fallback)
+            BuildTrace.LogDeckEdit(player, purpose + ":fallback-protected", selected, trace);
+        return selected;
+    }
+
     public static IReadOnlyList<CardModel> SelectCards(
         Player player,
         IEnumerable<CardModel> cards,
         int min,
         int max,
-        string purpose)
+        string purpose,
+        bool maySkip = false)
     {
         var list = cards.Distinct().ToList();
         if (list.Count == 0)
             return Array.Empty<CardModel>();
 
         var count = Math.Clamp(Math.Max(0, min), 0, Math.Min(Math.Max(min, max), list.Count));
-        if (count == 0 && purpose.Contains("ChooseA", StringComparison.OrdinalIgnoreCase))
+        // The screen said it can be declined, so returning nothing is an answer
+        // rather than a failure. The name test below is a stall guard for screens
+        // that demand a pick; applying it to a declinable one made the choice
+        // mandatory, and the bot had to take whatever scored highest — which is how
+        // a Star card the deck could never pay for got picked out of an offer that
+        // was meant to be skippable.
+        if (count == 0 && !maySkip && purpose.Contains("ChooseA", StringComparison.OrdinalIgnoreCase))
             count = 1;
 
         // Permanent deck edits are decided by the same valuation the reward screen
