@@ -69,3 +69,12 @@ RitsuLib 默认从相应 SteamLibrary 的 workshop/content/2868840/3747602295/li
 `scripts/import-combatsolver-kernel.py` 保留上述来源记录。除命名空间替换外，已将诊断用玩家名字改为 NetId，避免模拟捕获依赖平台服务。该适配已写入导入器并检查原始表达式恰好出现一次；上游变化会要求人工检查。
 
 其他本地适配位于 Vendor 外部。授权/署名沿用根目录 `THIRD_PARTY_NOTICES.md`；原始 notice 保持不变。
+
+## 能力路线部分同步（solver-power-sync，2026-09-18，开发中）
+
+- 范围：把 CombatSolver 0.41.0 的**纯策略层**部分回移到 0.33.9 引擎上的生产路径（`KernelTeamSearch`），不是整体替换引擎，也不包含 0.41.0 的逐卡投影与单开能力前缀组合反事实。来源与文件清单见 `POWER_SYNC.json`，基础引擎仍是 `UPSTREAM.json` 记录的 0.33.9。
+- `Vendor/PowerSync/**` 逐文件命名空间适配（`CombatSolver` → `CoopBots.Kernel.Vendor.PowerSync`，正文不变）：合同、准入、承诺记录/生命周期/席位配额/启动投资，以及六卡池逐卡路线政策（共 104 张，Ironclad 19 / Silent 17 / Defect 20 / Regent 18 / Necrobinder 18 / Colorless 12）。未知卡或上游 `NoInCombatCommitment` 卡不产生描述符。
+- `KernelPower.cs` 适配当前按玩家划分的 `KernelSession`：承诺按 `Player.NetId` 归属，随出牌/药水/结束回合沿分支传递。准入只认“本主自己的分支上可观测到的 `PersistentValue` 增量或即时格挡增益”，因此未建模/无触发能力不会凭空开路；Silent 的 Shiv/Block 触发只看该玩家自己的牌堆与 Power，不看队友。
+- `KernelTeamSearch` 在宽度内用上游 normal 席位配额保留承诺代表（至少一半普通席位、最高分普通线优先保护，每个 owner 先占一席避免独占；共享节点只占一席并代表其上所有 owner，其次才给同一 owner 第二个席位；`after.HasWon` 分支先清空承诺），中间内存裁剪与最终 frontier 使用同一套保护；带承诺节点的去重键包含完整决策相关承诺状态（owner、family、cards、priority、opened turn/action/history、transition、last evidence、investment、remaining potential、progress/realized、power count）。承诺不进入 `Score`，`Complete` 排序、取消/过期、药水/选择/结束回合语义均不变。
+- 未移植（诚实边界）：逐卡 `Projection/*`、完整单人开局能力前缀组合（上游每路线 ≥25000 节点 / 10 秒）、0.41.0 Engine/SimulatedCombatState 增量、自动出牌历史检测。需要这些的能力（如要求正投影的卡）保持旧行为，不创建承诺。
+- 验证入口：`scripts/verify-solver-power-sync.ps1`（构建 `EnableKernelTests=true`，运行 `--kernel-power-only`，不部署）；生产行为回归在 `tests/PatchSmoke/KernelPowerRouteScenarios.cs`。

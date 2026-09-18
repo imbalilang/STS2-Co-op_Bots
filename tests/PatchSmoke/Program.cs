@@ -19,6 +19,17 @@ if (args.Contains("--building-policy-only"))
     return;
 }
 
+// Focused community-Elo draft gate: the Elo-first reward/shop Add policy, the
+// directional held-card affinity and the pure-Elo diagnostic baseline.
+// TestEnvironment installs the headless model database the scenarios need
+// before any model is constructed.
+if (args.Contains("--community-draft-only"))
+{
+    TestEnvironment.Ensure();
+    CommunityDraftScenarios.Run();
+    return;
+}
+
 // Focused team-economy gate: the combat-start snapshot, bounded team bonus,
 // bounded two-purchase shop comparison and the shared removal plan, followed by
 // the existing build/shop/coordinator regressions they touch.
@@ -177,6 +188,7 @@ catch (Exception error) when (error is IOException or UnauthorizedAccessExceptio
 
 BuildValueScenarios.Run();
 BuildingPolicyScenarios.Run();
+CommunityDraftScenarios.Run();
 TeamEconomyScenarios.Run();
 Console.WriteLine($"PASS: {patched.Count} Harmony patches applied; bot IDs and Genius tactical probes verified.");
 foreach (var method in patched)

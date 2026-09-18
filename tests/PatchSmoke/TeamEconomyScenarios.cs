@@ -506,8 +506,11 @@ internal static class TeamEconomyScenarios
             bot.MaxEnergy = 3;
             var run = RunState.CreateForTest(new[] { bot }, seed: "TEAM-MAW-" + slot);
             ClearDeck(bot);
-            // An attack-less deck makes a Twin Strike a large, clearly positive
-            // improvement, so the pair comfortably beats the best single.
+            // An attack-less deck makes a draw/energy card a large, clearly
+            // positive improvement, so the pair comfortably beats the best
+            // single. (Changed for community-elo-draft: an ordinary attack like
+            // Twin Strike now sits below the skip Elo and is no longer worth the
+            // fixture's >26 gold.)
             for (var i = 0; i < 8; i++) Give(bot, run.CreateCard<DefendIronclad>(bot));
             bot.Gold = 500;
             var room = new MerchantRoom();
@@ -528,10 +531,10 @@ internal static class TeamEconomyScenarios
 
         var (activeBot, activeRun, activeInv) = Setup(21, withBank: true);
         var (plainBot, plainRun, plainInv) = Setup(22, withBank: false);
-        var activeFree = activeRun.CreateCard<TwinStrike>(activeBot);
-        var activePaid = activeRun.CreateCard<TwinStrike>(activeBot);
-        var plainFree = plainRun.CreateCard<TwinStrike>(plainBot);
-        var plainPaid = plainRun.CreateCard<TwinStrike>(plainBot);
+        var activeFree = activeRun.CreateCard<Adrenaline>(activeBot);
+        var activePaid = activeRun.CreateCard<Adrenaline>(activeBot);
+        var plainFree = plainRun.CreateCard<Adrenaline>(plainBot);
+        var plainPaid = plainRun.CreateCard<Adrenaline>(plainBot);
         var freeValue = Math.Max(0, BuildValue.Add(activeFree, activeBot).Total) * BotShopPlanner.GoldPerDeckValue;
         var paidValue = Math.Max(0, BuildValue.Add(activePaid, activeBot).Total) * BotShopPlanner.GoldPerDeckValue;
         check(freeValue > 26 && Math.Abs(freeValue - paidValue) < 0.001,
@@ -598,8 +601,11 @@ internal static class TeamEconomyScenarios
             return entry;
         }
 
-        Add(run.CreateCard<TwinStrike>(bot));
+        // Changed for community-elo-draft: Twin Strike sits below the skip Elo,
+        // so two cards that are actually worthwhile under the Elo baseline are
+        // used here (Pommel Strike and Shrug It Off).
         Add(run.CreateCard<PommelStrike>(bot));
+        Add(run.CreateCard<ShrugItOff>(bot));
 
         var firstPlan = BotShopPlanner.ChooseDetailed(inventory);
         check(firstPlan.Choice is not null, "a worthwhile card must be chosen.");
@@ -809,7 +815,10 @@ internal static class TeamEconomyScenarios
         room.Inventories.Add(inventory);
         for (var i = 0; i < 16; i++)
         {
-            var card = run.CreateCard<TwinStrike>(shopper);
+            // Changed for community-elo-draft: the stocked card must be one the
+            // Elo baseline values so the bounded pair loop is actually reached
+            // (Twin Strike now sits below the skip Elo in this attack-less deck).
+            var card = run.CreateCard<Adrenaline>(shopper);
             var entry = new MerchantCardEntry(shopper, inventory, Array.Empty<CardModel>(), card.Type);
             typeof(MerchantCardEntry).GetProperty("CreationResult")!.SetValue(entry, new CardCreationResult(card));
             typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(entry, 1);

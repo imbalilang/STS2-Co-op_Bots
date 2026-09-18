@@ -29,6 +29,7 @@
     <Reference Include="STS2-RitsuLib.Settings" HintPath="$(RitsuLibSharedDir)/STS2-RitsuLib.Settings.dll" Private="true" />
     <Compile Remove="KernelEngineScenarios.cs" Condition="'$(EnableKernelTests)' != 'true'" />
     <Compile Remove="KernelRoundScenarios.cs" Condition="'$(EnableKernelTests)' != 'true'" />
+    <Compile Remove="KernelPowerRouteScenarios.cs" Condition="'$(EnableKernelTests)' != 'true'" />
     <Reference Include="System.IO.Hashing" HintPath="$(STS2DataDir)/System.IO.Hashing.dll" Private="true" />
     <Reference Include="sts2" HintPath="$(STS2DataDir)/sts2.dll" Private="true" />
     <Reference Include="GodotSharp" HintPath="$(STS2DataDir)/GodotSharp.dll" Private="true" />

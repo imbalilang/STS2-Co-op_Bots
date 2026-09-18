@@ -72,7 +72,38 @@ internal static class CoordinatorScenarios
         Check(before > Value(combat.CreateCard<StrikeIronclad>(support)), "Designated support should draft team protection before redundant basic offense.");
         support.Deck.AddInternal(shield);
         Check(Value(shield) < before, "Repeated team cards must have diminishing draft value.");
-        Console.WriteLine("PASS: Normal-bot nonfatal sacrifice saves 9 total HP, suicidal sacrifice rejected, joint plan authority, deliberate wait, global relic fit/reservations, support drafting and diminishing duplicates.");
+
+        // The kill request travels as text plus what the ask points at: which
+        // hand, which cards, which enemy. A client draws the arrow from that
+        // payload, so it has to survive the wire unchanged.
+        var callout = new BotCalloutMessage
+        {
+            Text = "玩家 1（Deprived）：当前用 Strike → Bash（共 2 能量）预计可补杀 MOCK。",
+            Actor = human.NetId,
+            Target = 7,
+            Cards = new[] { "STRIKE_IRONCLAD", "BASH_IRONCLAD" },
+            Location = new MegaCrit.Sts2.Core.Runs.RunLocation(0, null, 2),
+        };
+        var writer = new MegaCrit.Sts2.Core.Multiplayer.Serialization.PacketWriter();
+        callout.Serialize(writer);
+        var reader = new MegaCrit.Sts2.Core.Multiplayer.Serialization.PacketReader();
+        reader.Reset(writer.Buffer);
+        var decoded = new BotCalloutMessage();
+        decoded.Deserialize(reader);
+        Check(decoded.Text == callout.Text && decoded.Actor == human.NetId && decoded.Target == 7
+            && decoded.Cards.SequenceEqual(callout.Cards) && decoded.Location.Equals(callout.Location)
+            && decoded.ShouldBroadcast,
+            "A callout must carry its actor, target and ordered cards across the wire.");
+        var cleared = new BotCalloutMessage { Text = "", Actor = 0, Target = 0, Cards = Array.Empty<string>() };
+        var emptyWriter = new MegaCrit.Sts2.Core.Multiplayer.Serialization.PacketWriter();
+        cleared.Serialize(emptyWriter);
+        var emptyReader = new MegaCrit.Sts2.Core.Multiplayer.Serialization.PacketReader();
+        emptyReader.Reset(emptyWriter.Buffer);
+        var emptyDecoded = default(BotCalloutMessage);
+        emptyDecoded.Deserialize(emptyReader);
+        Check(emptyDecoded.Text.Length == 0 && emptyDecoded.Cards.Length == 0,
+            "Clearing a callout must round trip as an empty ask, not as a stale one.");
+        Console.WriteLine("PASS: Normal-bot nonfatal sacrifice saves 9 total HP, suicidal sacrifice rejected, joint plan authority, deliberate wait, global relic fit/reservations, support drafting, diminishing duplicates and the callout payload.");
     }
     private static void Check(bool ok, string message) { if (!ok) throw new Exception(message); }
 }

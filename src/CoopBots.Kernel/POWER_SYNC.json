@@ -1,0 +1,140 @@
+{
+  "artifact": "POWER_SYNC",
+  "description": "Partial 0.41.0 power strategy backport hosted on the production KernelTeamSearch path of the 0.33.9 kernel engine.",
+  "strategy": "partial-hybrid-sync",
+  "base_engine": {
+    "upstream": "CombatSolver 0.33.9",
+    "source_file": "UPSTREAM.json",
+    "note": "UPSTREAM.json stays the honest base record for the vendored engine. This file records only the additional PowerSync backport."
+  },
+  "upstream_source": {
+    "path": "work/combatsolver-sync-latest",
+    "version": "0.41.0",
+    "commit": "0e6cc2df342ed300c854013a7ec667eae4f58861",
+    "read_only": true,
+    "harvested": [
+      "src/Search/PowerCardValuation/PowerCardValuationContracts.cs",
+      "src/Search/PowerCardValuation/PowerRouteAdmission.cs",
+      "src/Search/PowerCardValuation/Commitments/PowerCommitment.cs",
+      "src/Search/PowerCardValuation/Commitments/PowerCommitmentLifecycle.cs",
+      "src/Search/PowerCardValuation/Commitments/PowerCommitmentSeatPolicy.cs",
+      "src/Search/PowerCardValuation/Commitments/PowerActivationInvestmentPolicy.cs",
+      "src/Search/PowerCardValuation/Cards/Ironclad/IroncladPowerRoutePolicy.cs",
+      "src/Search/PowerCardValuation/Cards/Silent/SilentPowerRoutePolicy.cs",
+      "src/Search/PowerCardValuation/Cards/Defect/DefectPowerRoutePolicy.cs",
+      "src/Search/PowerCardValuation/Cards/Regent/RegentPowerRoutePolicy.cs",
+      "src/Search/PowerCardValuation/Cards/Necrobinder/NecrobinderPowerRoutePolicy.cs",
+      "src/Search/PowerCardValuation/Cards/Colorless/ColorlessPowerRoutePolicy.cs"
+    ]
+  },
+  "namespace_adaptation": {
+    "from": "CombatSolver",
+    "to": "CoopBots.Kernel.Vendor.PowerSync",
+    "body_changes": "namespace only; upstream bodies copied verbatim"
+  },
+  "imported_hashes": {
+    "status": "recorded from the passing run of scripts/verify-solver-power-sync.ps1",
+    "summary_field": "sha256.powerSyncImported",
+    "algorithm": "SHA256",
+    "evidence": "work/solver-power-sync/20260918T121813.604554Z/verify-summary.json"
+  },
+  "files": [
+    {
+      "imported_path": "Vendor/PowerSync/PowerCardValuationContracts.cs",
+      "upstream_path": "src/Search/PowerCardValuation/PowerCardValuationContracts.cs",
+      "upstream_sha256": "f245fd7fd717758c8260ad6bae33cecef14a3be8ce372800b307730b7882b405",
+      "imported_sha256": "17299c22ff232d2b6636f1c3cdf8d1fb62ac7aab72f53d8f1495993f7b558e6f"
+    },
+    {
+      "imported_path": "Vendor/PowerSync/PowerRouteAdmission.cs",
+      "upstream_path": "src/Search/PowerCardValuation/PowerRouteAdmission.cs",
+      "upstream_sha256": "7890a4fdeac8113938012952c1b006cfc6188bed74e3e7acade07f040f5d80c1",
+      "imported_sha256": "facb4e01b1b4d4e97dbce15519c19f298f8c644ae3ff4245c5740758540b0092"
+    },
+    {
+      "imported_path": "Vendor/PowerSync/PowerCommitment.cs",
+      "upstream_path": "src/Search/PowerCardValuation/Commitments/PowerCommitment.cs",
+      "upstream_sha256": "a49e1f24904d26bf69836d4d47d224f2c5a5a98a027dc635c5802616d1696fc9",
+      "imported_sha256": "6b88378fac707bac58d4097fc0a652b6733ecf9d15af541c0b2da8fb6cff07b1"
+    },
+    {
+      "imported_path": "Vendor/PowerSync/PowerCommitmentLifecycle.cs",
+      "upstream_path": "src/Search/PowerCardValuation/Commitments/PowerCommitmentLifecycle.cs",
+      "upstream_sha256": "91a85e9651e1513a42ff0eb1f1458b029e1066ed45e336c4e97eb10529f0e8f7",
+      "imported_sha256": "b2c7c55a8bdbab3d8a10da199029e280f030253cf810cc794207d5c94c2b61ef"
+    },
+    {
+      "imported_path": "Vendor/PowerSync/PowerCommitmentSeatPolicy.cs",
+      "upstream_path": "src/Search/PowerCardValuation/Commitments/PowerCommitmentSeatPolicy.cs",
+      "upstream_sha256": "55ccec08cb182441d17c54fa155b6ac8894ced802b6b72871ca60cf2914ff01d",
+      "imported_sha256": "d139e9cd561be49e9fc147d4372e4c0bef0e03ebbc7e6c29296c0781ed9d5add"
+    },
+    {
+      "imported_path": "Vendor/PowerSync/PowerActivationInvestmentPolicy.cs",
+      "upstream_path": "src/Search/PowerCardValuation/Commitments/PowerActivationInvestmentPolicy.cs",
+      "upstream_sha256": "07c85125dbc6cfd09921da977fad6b564a12a66ff903d8e533df52a9077f9310",
+      "imported_sha256": "c52ee77c1b511a4436b2da19e1aaada58d8aed573fe476236cb476041f7b997c"
+    },
+    {
+      "imported_path": "Vendor/PowerSync/Cards/Ironclad/IroncladPowerRoutePolicy.cs",
+      "upstream_path": "src/Search/PowerCardValuation/Cards/Ironclad/IroncladPowerRoutePolicy.cs",
+      "upstream_sha256": "b39833ef2f3aaece17771c4defd05a27c8129726daf538c27b6966680199eac1",
+      "imported_sha256": "2f9a704b106ce8d6107a02d64e77425d3f7c87a8006d6d395725058528883dab"
+    },
+    {
+      "imported_path": "Vendor/PowerSync/Cards/Silent/SilentPowerRoutePolicy.cs",
+      "upstream_path": "src/Search/PowerCardValuation/Cards/Silent/SilentPowerRoutePolicy.cs",
+      "upstream_sha256": "8d922a06720f219ca2c1c5b01ffb9ed41e4bd0b028d5926cdac11cb1fbbc91dc",
+      "imported_sha256": "cc9c9025fdedb995ff4892ca78ed09c4f9ad3a14a8ce0ccd34c06436c71e97cd"
+    },
+    {
+      "imported_path": "Vendor/PowerSync/Cards/Defect/DefectPowerRoutePolicy.cs",
+      "upstream_path": "src/Search/PowerCardValuation/Cards/Defect/DefectPowerRoutePolicy.cs",
+      "upstream_sha256": "b7f212c15114a00e826a98f61b65ef54d3bbd503ed808b803d867dc466456403",
+      "imported_sha256": "528aa00eb1600d2c705510dffa9335ecfdca8ac3fadca0ad86961da7e30f184b"
+    },
+    {
+      "imported_path": "Vendor/PowerSync/Cards/Regent/RegentPowerRoutePolicy.cs",
+      "upstream_path": "src/Search/PowerCardValuation/Cards/Regent/RegentPowerRoutePolicy.cs",
+      "upstream_sha256": "21a0da90536bb3f2c53e39b6b794f0046c5e421d1c0d792037806c5874a9fe30",
+      "imported_sha256": "ac237222d8257a0580a4443f4fa9cac675904ac49d745f8a12bc56e2c9c38b50"
+    },
+    {
+      "imported_path": "Vendor/PowerSync/Cards/Necrobinder/NecrobinderPowerRoutePolicy.cs",
+      "upstream_path": "src/Search/PowerCardValuation/Cards/Necrobinder/NecrobinderPowerRoutePolicy.cs",
+      "upstream_sha256": "28884cb86602ce41f146c4c0ef63a83de6a07a1c060a5c849e2337b5525255dd",
+      "imported_sha256": "6e18e0464cb81edf07b3cf677877e6545dce142670c5bfd322207f776414c48e"
+    },
+    {
+      "imported_path": "Vendor/PowerSync/Cards/Colorless/ColorlessPowerRoutePolicy.cs",
+      "upstream_path": "src/Search/PowerCardValuation/Cards/Colorless/ColorlessPowerRoutePolicy.cs",
+      "upstream_sha256": "6990389a57def5ff681d42c005faf5c5d3919537aa80c6d8d1f684793de9623b",
+      "imported_sha256": "b1d55977980b27df186a591769f4f28b95f735ee47e9e215466746a777c47955"
+    }
+  ],
+  "catalog": {
+    "registered_power_counts": {
+      "total": 104,
+      "silent": 17,
+      "ironclad": 19,
+      "defect": 20,
+      "regent": 18,
+      "necrobinder": 18,
+      "colorless": 12
+    },
+    "policy_source": "exact upstream <Pool>PowerRoutePolicy data tables"
+  },
+  "production_wiring": {
+    "search": "src/CoopBots.Kernel/KernelTeamSearch.cs",
+    "adapter": "src/CoopBots.Kernel/KernelPower.cs",
+    "seat_policy": "Vendor/PowerSync/PowerCommitmentSeatPolicy.cs (normal quota)",
+    "score_invariant": "commitments never enter team evaluation; Score/Complete ordering unchanged"
+  },
+  "omitted_upstream": [
+    "PowerCardValuation per-card Reward/Penalty/Timing projection models (not production-wired upstream either)",
+    "PowerCardValuation/Projection/* per-card opening projection and trigger evidence",
+    "CombatSearchCoordinator.PowerRoutes.cs full single-player opening-power prefix portfolio (MinimumPowerRouteNodes=25000 / 10s per route)",
+    "0.41.0 engine / SimulatedCombatState deltas and RootCombatTransformationPoolSnapshot",
+    "autoplay history detection (our KernelTeamSearch only sees the action it just simulated, not engine auto-play occurrence records)"
+  ]
+}

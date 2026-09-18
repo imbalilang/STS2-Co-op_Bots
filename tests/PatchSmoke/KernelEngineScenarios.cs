@@ -27,6 +27,7 @@ internal static class KernelEngineScenarios
         new HarmonyLib.Harmony("coopbots.test.kernel.presentation").Patch(
             HarmonyLib.AccessTools.Method(typeof(MegaCrit.Sts2.Core.Localization.LocString), "GetFormattedText"),
             prefix: new HarmonyLib.HarmonyMethod(typeof(KernelEngineScenarios), nameof(FormatText)));
+        KernelPowerRouteScenarios.Run();
         KernelRoundScenarios.Run();
         var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
         var a = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));

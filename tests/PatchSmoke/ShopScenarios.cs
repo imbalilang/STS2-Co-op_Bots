@@ -35,12 +35,17 @@ internal static class ShopScenarios
         object? Choose() => planner.GetMethod("Choose", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, new object[] { inventory });
         int Index(object? choice) => choice is null ? -1 : (int)choice.GetType().GetProperty("Index")!.GetValue(choice)!;
         string Fingerprint() => (string)driver.GetMethod("Fingerprint", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, new object[] { inventory })!;
-        var card = state.CreateCard<Lift>(bot);
+        // Changed for community-elo-draft: LIFT's below-skip community Elo means
+        // the shop no longer buys it, so this fixture uses a card the Elo
+        // baseline actually values. Team-support valuation is still covered by
+        // the reward-path team-fit probes in BuildValueScenarios; this check is
+        // about the shop's card-purchase mechanics.
+        var card = state.CreateCard<Adrenaline>(bot);
         var entry = new MerchantCardEntry(bot, inventory, Array.Empty<CardModel>(), CardType.Skill);
         typeof(MerchantCardEntry).GetProperty("CreationResult")!.SetValue(entry, new CardCreationResult(card));
         typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(entry, 40);
         ((List<MerchantCardEntry>)inventory.CharacterCardEntries).Add(entry);
-        Check(Index(Choose()) == 0, "Affordable team protection should be considered for purchase.");
+        Check(Index(Choose()) == 0, "An affordable card the community Elo values should be considered for purchase.");
         bot.Gold = 20; Check(Choose() is null, "Never use the human's gold to afford a bot item."); bot.Gold = 200;
         typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(entry, 1000);
         Check(Choose() is null, "Do not buy above budget.");
@@ -83,7 +88,10 @@ internal static class ShopScenarios
             var copyRoom = new MerchantRoom(); copyState.PushRoom(copyRoom);
             var copyInventory = new MerchantInventory(copyBot); copyRoom.Inventories.Add(copyInventory);
             var copyEntry = new MerchantCardEntry(copyBot, copyInventory, Array.Empty<CardModel>(), CardType.Skill);
-            typeof(MerchantCardEntry).GetProperty("CreationResult")!.SetValue(copyEntry, new CardCreationResult(copyState.CreateCard<Lift>(copyBot)));
+            // Must match the primary fixture's card: the replayed message carries
+            // card.Key, so a peer whose stock differs in id is a legitimate
+            // rejection rather than the independent-state check under test.
+            typeof(MerchantCardEntry).GetProperty("CreationResult")!.SetValue(copyEntry, new CardCreationResult(copyState.CreateCard<Adrenaline>(copyBot)));
             typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(copyEntry, 40);
             ((List<MerchantCardEntry>)copyInventory.CharacterCardEntries).Add(copyEntry);
             Check(((Task<bool>)execute.Invoke(null, new object[] { message, copyState })!).GetAwaiter().GetResult(),

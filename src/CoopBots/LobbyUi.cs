@@ -2,6 +2,7 @@ using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
+using MegaCrit.Sts2.Core.Multiplayer.Game.Lobby;
 using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
 
 namespace CoopBots;
@@ -16,20 +17,71 @@ public static class LobbyUi
 {
     private const string PanelName = "CoopBotsPanel";
 
+    private static PanelContainer? panel;
+    private static StartRunLobby? bound;
+    private static Action? refresh;
+
+    /// <summary>
+    /// The character-select screen is one cached node that every room — and
+    /// singleplayer — reuses, so the panel is bound to whichever lobby is open
+    /// right now instead of being built once per process. Building it once left
+    /// the previous room's seat count and roster on screen after leaving a room
+    /// and hosting again, and put this multiplayer panel on the singleplayer
+    /// screen as well.
+    /// </summary>
     public static void Attach(NCharacterSelectScreen screen)
     {
-        if (screen.GetNodeOrNull<Control>(PanelName) is not null || screen.Lobby is null)
-            return;
-
         var lobby = screen.Lobby;
+        if (lobby is null || lobby.NetService.Type == NetGameType.Singleplayer)
+        {
+            Detach(screen);
+            return;
+        }
+
+        if (ReferenceEquals(bound, lobby) && panel is not null && GodotObject.IsInstanceValid(panel))
+        {
+            refresh?.Invoke();
+            return;
+        }
+
+        Detach(screen);
+        Build(screen, lobby);
+    }
+
+    /// <summary>Drops the panel and its lobby reference when the screen closes.</summary>
+    public static void Detach(NCharacterSelectScreen screen)
+    {
+        refresh = null;
+        bound = null;
+        var previous = panel;
+        panel = null;
+        // Detached from the tree before the free so the name is reusable in the
+        // same frame: the next room builds its panel right after this.
+        if (previous is not null && GodotObject.IsInstanceValid(previous))
+        {
+            previous.GetParent()?.RemoveChild(previous);
+            previous.QueueFree();
+        }
+        if (screen.GetNodeOrNull<Control>(PanelName) is { } stale)
+        {
+            screen.RemoveChild(stale);
+            stale.QueueFree();
+        }
+    }
+
+    private static void Build(NCharacterSelectScreen screen, StartRunLobby lobby)
+    {
         var zh = BotUiTheme.Chinese();
         var characters = ModelDb.AllCharacters.OrderBy(character => character.Id.Entry).ToList();
 
-        var panel = new PanelContainer
+        panel = new PanelContainer
         {
             Name = PanelName,
-            // Anchored to the right edge, height taken from the content: a fixed
-            // rect clipped the roster once the third bot was added.
+            // Anchored to the right edge and grown from the content: FitToContent
+            // replaces this rect with the card's own minimum, so the panel is
+            // exactly as wide and tall as its text instead of a fixed 446px box
+            // with an empty gutter to the right of every line. The rect here is
+            // only the shape used before that first fit.
             AnchorLeft = 1, AnchorRight = 1,
             OffsetLeft = -470, OffsetRight = -24,
             OffsetTop = 150, OffsetBottom = 150,
@@ -64,8 +116,10 @@ public static class LobbyUi
         root.AddChild(Row(zh ? "难度" : "Difficulty", difficultySelect));
 
         // What the selected tier actually changes, so the choice is not a mystery.
+        // Deliberately not autowrapped: a wrapped label reports a near-zero minimum
+        // width, which would let the content-sized card collapse into a narrow
+        // column and wrap the description instead of being as wide as the text.
         var hint = BotUiTheme.Text(string.Empty, 12, BotUiTheme.Accent);
-        hint.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         root.AddChild(hint);
 
         var add = new Button
@@ -94,14 +148,18 @@ public static class LobbyUi
         roster.AddThemeConstantOverride("separation", 4);
         root.AddChild(roster);
 
+        // Same reason as the hint: this line carries the one message the panel
+        // shows, and it is the widest thing on it, so it defines the width.
         var status = BotUiTheme.Text(string.Empty, 12, BotUiTheme.Muted);
-        status.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         root.AddChild(status);
         root.AddChild(BotUiTheme.Text($"{ModEntry.Version}"
             + (zh ? " · 所有真人需为同一版本" : " · all humans must match"), 11, BotUiTheme.Muted));
 
         void Refresh(string? message = null, bool error = false)
         {
+            // A lobby that outlived its panel can still raise one more event on
+            // the way out; the panel only ever paints the lobby it is bound to.
+            if (!ReferenceEquals(bound, lobby)) return;
             foreach (var child in roster.GetChildren())
             {
                 roster.RemoveChild(child);
@@ -131,6 +189,7 @@ public static class LobbyUi
                 : zh ? "只有房主可以添加或移除机器人" : "Only the host can add or remove bots");
             status.AddThemeColorOverride("font_color", error ? BotUiTheme.Error : BotUiTheme.Muted);
             hint.Text = Selected() is { } tier ? (zh ? tier.Describe() : tier.DescribeEnglish()) : string.Empty;
+            FitToContent();
         }
 
         BotDifficulty? Selected()
@@ -148,8 +207,28 @@ public static class LobbyUi
         };
         remove.Pressed += () => Refresh(LobbyBotService.RemoveLast(lobby, out var error) ? null : error, error: true);
         difficultySelect.ItemSelected += _ => Refresh();
-        LobbyBotService.SubscribeToPlayerChanges(lobby, () => Refresh());
+        LobbyBotService.SubscribeToPlayerChanges(lobby, () => refresh?.Invoke());
+        bound = lobby;
+        refresh = () => Refresh();
         Refresh();
+    }
+
+    /// <summary>
+    /// Shrinks the card to the exact size its content needs, so the panel reads as
+    /// a fitted card rather than a wide box with the text left-aligned inside it.
+    /// A container only reports the minimum its new children created on the next
+    /// layout pass, so the size is applied once more deferred — the same two-step
+    /// the in-combat panel uses when it collapses to its header.
+    /// </summary>
+    private static void FitToContent()
+    {
+        if (panel is null || !GodotObject.IsInstanceValid(panel)) return;
+        panel.ResetSize();
+        var target = panel;
+        Callable.From(() =>
+        {
+            if (target is not null && GodotObject.IsInstanceValid(target)) target.ResetSize();
+        }).CallDeferred();
     }
 
     private static HBoxContainer Row(string label, Control control)
@@ -169,4 +248,12 @@ public static class LobbyUi
 internal static class CharacterSelectUiPatch
 {
     private static void Postfix(NCharacterSelectScreen __instance) => LobbyUi.Attach(__instance);
+}
+
+// Leaving the room tears the lobby down but not the screen node, so the panel
+// has to let go of it here rather than wait for the screen to be freed.
+[HarmonyPatch(typeof(NCharacterSelectScreen), nameof(NCharacterSelectScreen.OnSubmenuClosed))]
+internal static class CharacterSelectClosedUiPatch
+{
+    private static void Postfix(NCharacterSelectScreen __instance) => LobbyUi.Detach(__instance);
 }

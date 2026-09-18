@@ -61,7 +61,15 @@ public static class BotRuntime
             _lastState = state;
             // Local route recommendation overlay; no-ops unless the map is open.
             MapRouteOverlay.Update(state);
-            if (!ReferenceEquals(_runIdentity, state)) { Reset(); _runIdentity = state; }
+            // A new run re-opens the fight panel collapsed. This is the run
+            // transition, not the combat one below: an expand the player made
+            // during a run has to survive the rest of that run's fights.
+            if (!ReferenceEquals(_runIdentity, state))
+            {
+                Reset();
+                _runIdentity = state;
+                BotCooperation.OnRunStart();
+            }
             var combatIdentity = state.Players.FirstOrDefault()?.Creature.CombatState;
             if (!ReferenceEquals(_combatIdentity, combatIdentity))
             {

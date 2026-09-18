@@ -57,7 +57,9 @@ internal static class HumanFinisherHints
                     var target = plan.Enemy.Monster?.Id.Entry ?? "目标";
                     var seat = state.Players.ToList().IndexOf(plan.Human) + 1;
                     var text = $"玩家 {seat}（{plan.Human.Character.Title}）：当前用 {names}（共 {plan.Energy} 能量）预计可补杀 {target}。其他敌人的攻击仍需防御。";
-                    BotCalloutSync.Publish(text, plan.Enemy.CombatId ?? 0);
+                    // The text says it; the arrow shows it: a line from each of
+                    // those hand cards to that enemy, for the peer holding them.
+                    BotCalloutSync.Publish(text, plan.Human, plan.Enemy, plan.Cards);
                     visible = true; finished = true; steps.Dispose(); steps = null;
                     return;
                 }

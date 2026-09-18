@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using CoopBots.Kernel.Vendor.PowerSync;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -18,10 +19,15 @@ public sealed class KernelTeamSearch : IDisposable
     public sealed record Action(Player Player, CardModel? Card, Creature? Target, PotionModel? Potion = null,
         IReadOnlyList<KernelChoice>? Choices = null, bool EndTurn = false);
     public sealed record Options(int Depth = 9, int Width = 12, int MaxNodes = 512, bool IncludeEndTurns = false,
-        int MaxRounds = 2);
+        int MaxRounds = 2)
+    {
+        // Focused-regression old/new switch. Production keeps the backported
+        // power-route protection on; tests flip it off on the same fixture.
+        internal bool EnablePowerRoutes { get; init; } = true;
+    }
     public sealed record Result(IReadOnlyList<Action> Actions, double Score, int ExpandedNodes,
         IReadOnlyDictionary<string, int> Boundaries, string StopReason, bool HasUncertainRisk);
-    private sealed record Node(KernelSession State, Action[] Path, double Score, bool Risky);
+    private sealed record Node(KernelSession State, Action[] Path, double Score, bool Risky, KernelPowerLedger Power);
     private readonly int thread = Environment.CurrentManagedThreadId;
     private readonly Player[] actors;
     private readonly Func<KernelSession, double> evaluate;
@@ -46,7 +52,7 @@ public sealed class KernelTeamSearch : IDisposable
         this.evaluate = evaluate;
         // Own the root: callers cannot mutate a running search through their session.
         var owned = root.Fork();
-        best = new(owned, [], Score(owned), false);
+        best = new(owned, [], Score(owned), false, KernelPowerLedger.Empty);
         steps = Expand(best).GetEnumerator();
     }
 
@@ -71,6 +77,7 @@ public sealed class KernelTeamSearch : IDisposable
     private IEnumerable<bool> Expand(Node root)
     {
         var frontier = new List<Node> { root };
+        var protect = options.EnablePowerRoutes;
         for (var depth = 0; depth < options.Depth && frontier.Count > 0; depth++)
         {
             var next = new List<Node>();
@@ -98,14 +105,18 @@ public sealed class KernelTeamSearch : IDisposable
                             yield return true;
                             continue;
                         }
-                        var node = new Node(child, [.. parent.Path, new(actor, card, target, Choices: branch.Choices)], Score(child),
-                            parent.Risky || child.LastActionHadEnvironmentalRisk);
+                        var action = new Action(actor, card, target, Choices: branch.Choices);
+                        var power = protect
+                            ? KernelPowerRouter.Advance(parent.Power, parent.State, child, action, actors)
+                            : KernelPowerLedger.Empty;
+                        var node = new Node(child, [.. parent.Path, action], Score(child),
+                            parent.Risky || child.LastActionHadEnvironmentalRisk, power);
                         if (node.Score > best.Score) best = node;
                         if ((child.HasWon || child.EnemyPhaseCompleted) && (bestResolved is null || node.Score > bestResolved.Score)) bestResolved = node;
                         next.Add(node);
                         // Bound retained memory throughout expansion, not just at end of depth.
                         if (next.Count > options.Width * 4)
-                            next = next.OrderByDescending(n => n.Score).Take(options.Width).ToList();
+                            next = TrimInterim(next, options.Width);
                         yield return true;
                     }
                 }
@@ -122,13 +133,17 @@ public sealed class KernelTeamSearch : IDisposable
                         yield return true;
                         continue;
                     }
-                    var node = new Node(child, [.. parent.Path, new(actor, null, target, potion)], Score(child),
-                        parent.Risky || child.LastActionHadEnvironmentalRisk);
+                    var potionAction = new Action(actor, null, target, potion);
+                    var potionPower = protect
+                        ? KernelPowerRouter.Advance(parent.Power, parent.State, child, potionAction, actors)
+                        : KernelPowerLedger.Empty;
+                    var node = new Node(child, [.. parent.Path, potionAction], Score(child),
+                        parent.Risky || child.LastActionHadEnvironmentalRisk, potionPower);
                     if (node.Score > best.Score) best = node;
                     if (child.HasWon && (bestResolved is null || node.Score > bestResolved.Score)) bestResolved = node;
                     next.Add(node);
                     if (next.Count > options.Width * 4)
-                        next = next.OrderByDescending(n => n.Score).Take(options.Width).ToList();
+                        next = TrimInterim(next, options.Width);
                     yield return true;
                 }
                 if (options.IncludeEndTurns)
@@ -138,8 +153,12 @@ public sealed class KernelTeamSearch : IDisposable
                     var child = parent.State.Fork();
                     if (child.EndTurn(actor, options.MaxRounds, out var boundary))
                     {
-                        var node = new Node(child, [.. parent.Path, new(actor, null, null, EndTurn: true)], Score(child),
-                            parent.Risky || child.LastActionHadEnvironmentalRisk);
+                        var endAction = new Action(actor, null, null, EndTurn: true);
+                        var endPower = protect
+                            ? KernelPowerRouter.Advance(parent.Power, parent.State, child, endAction, actors)
+                            : KernelPowerLedger.Empty;
+                        var node = new Node(child, [.. parent.Path, endAction], Score(child),
+                            parent.Risky || child.LastActionHadEnvironmentalRisk, endPower);
                         if (node.Score > best.Score) best = node;
                         if (child.EnemyPhaseCompleted)
                         {
@@ -161,15 +180,37 @@ public sealed class KernelTeamSearch : IDisposable
             frontier = SelectFrontier(next, options.Width);
         }
     }
-    // Drop exact-equivalent states (same compact key, keeping the better score),
-    // then keep one line per action category before filling by score.
+    // Intermediate trims must apply the same route protection as the final
+    // frontier; a pure top-score cut in the middle of a depth kills a delayed
+    // power line before it can pay off. When nothing carries a commitment the
+    // original score-only trim is kept so no-power behaviour is unchanged.
+    private static List<Node> TrimInterim(List<Node> candidates, int width)
+        => candidates.Any(n => !n.Power.IsEmpty)
+            ? SelectFrontier(candidates, width)
+            : candidates.OrderByDescending(n => n.Score).Take(width).ToList();
+
+    // Drop equivalent states, then keep one line per action category before
+    // filling by score. Dedup includes commitment owner+family history so route
+    // lineage is not silently merged; with commitments present the bounded
+    // upstream seat quota reserves representatives inside the same width.
     private static List<Node> SelectFrontier(List<Node> candidates, int width)
     {
         var best = new Dictionary<string, Node>(StringComparer.Ordinal);
         foreach (var node in candidates.OrderByDescending(n => n.Score))
-            if (!best.TryGetValue(node.State.CompactStateKey(), out var kept) || node.Score > kept.Score)
-                best[node.State.CompactStateKey()] = node;
+        {
+            var key = node.State.CompactStateKey() + "|" + node.Power.Signature();
+            if (!best.TryGetValue(key, out var kept) || node.Score > kept.Score)
+                best[key] = node;
+        }
         var deduped = best.Values.OrderByDescending(n => n.Score).ToList();
+        return deduped.Any(n => !n.Power.IsEmpty)
+            ? SelectProtectedFrontier(deduped, width)
+            : SelectOrdinaryFrontier(deduped, width);
+    }
+
+    // The original no-commitment selection: one line per category, then score.
+    private static List<Node> SelectOrdinaryFrontier(List<Node> deduped, int width)
+    {
         var chosen = new List<Node>();
         var used = new HashSet<Node>();
         foreach (var category in new[] { "attack", "skill", "power", "potion", "endturn", "other" })
@@ -185,6 +226,101 @@ public sealed class KernelTeamSearch : IDisposable
         }
         return chosen.OrderByDescending(n => n.Score).Take(width).ToList();
     }
+
+    private static List<Node> SelectProtectedFrontier(List<Node> deduped, int width)
+    {
+        var ordinary = deduped.Where(n => n.Power.IsEmpty).ToList();
+        var committed = deduped.Where(n => !n.Power.IsEmpty).ToList();
+        // Upstream normal seat quota; its formula already leaves at least half
+        // of the width to ordinary lines.
+        var quota = PowerCommitmentSeatPolicy.SeatQuota(width, aggressive: false);
+        var ordinaryReserve = Math.Max(1, width - quota);
+        var chosen = new List<Node>();
+        var used = new HashSet<Node>();
+        // The best ordinary score line is protected before any commitment: an
+        // immediate kill or finisher is never displaced by a delayed route.
+        foreach (var node in ordinary)
+        {
+            used.Add(node);
+            chosen.Add(node);
+            break;
+        }
+        foreach (var category in new[] { "attack", "skill", "power", "potion", "endturn", "other" })
+        {
+            if (chosen.Count >= ordinaryReserve) break;
+            var pick = ordinary.FirstOrDefault(n => Category(n) == category && !used.Contains(n));
+            if (pick is not null && used.Add(pick)) chosen.Add(pick);
+        }
+        foreach (var node in ordinary)
+        {
+            if (chosen.Count >= ordinaryReserve) break;
+            if (used.Add(node)) chosen.Add(node);
+        }
+        var commitmentBudget = Math.Min(quota, width - chosen.Count);
+        if (commitmentBudget > 0)
+        {
+            // One best node per (owner,family) key, ordered by the upstream
+            // retention rank.
+            var bestByKey = new Dictionary<KernelPowerKey, Node>();
+            foreach (var node in committed)
+                foreach (var key in node.Power.Keys)
+                {
+                    if (!bestByKey.TryGetValue(key, out var existing)
+                        || IsBetterRepresentative(node, key.OwnerId, existing))
+                        bestByKey[key] = node;
+                }
+            var ordered = bestByKey
+                .OrderByDescending(pair => RankOf(pair.Value, pair.Key.OwnerId))
+                .ToList();
+
+            var reps = new List<Node>();
+            var selected = new HashSet<Node>();
+            var representedOwners = new HashSet<ulong>();
+            void Select(Node node)
+            {
+                if (!selected.Add(node)) return;
+                reps.Add(node);
+                // A shared node represents every owner carrying a commitment on
+                // it. Counting it once stops quota from being spent twice on the
+                // same node and frees a seat for another owner's eligible route.
+                foreach (var ownerId in node.Power.OwnerIds) representedOwners.Add(ownerId);
+            }
+            // First pass: give every distinct eligible owner a seat; one node may
+            // cover several owners at once. Second pass spends any seats left.
+            foreach (var pair in ordered)
+            {
+                if (reps.Count >= commitmentBudget) break;
+                if (representedOwners.Contains(pair.Key.OwnerId)) continue;
+                Select(pair.Value);
+            }
+            foreach (var pair in ordered)
+            {
+                if (reps.Count >= commitmentBudget) break;
+                Select(pair.Value);
+            }
+            foreach (var rep in reps)
+                if (used.Add(rep)) chosen.Add(rep);
+        }
+        foreach (var node in deduped)
+        {
+            if (chosen.Count >= width) break;
+            if (used.Add(node)) chosen.Add(node);
+        }
+        return chosen.OrderByDescending(n => n.Score).ToList();
+    }
+
+    // Representative ranking mirrors the upstream retention order: realized
+    // evidence, priority, progress, net unrealized value, then score.
+    private static (int Realized, int Priority, int Progress, int Net, double Score) RankOf(Node node, ulong ownerId)
+    {
+        if (!node.Power.TryGet(ownerId, out var commitment)) return (0, 0, 0, 0, node.Score);
+        return (commitment.RealizedEvidence, (int)commitment.Priority, commitment.ProgressEvidence,
+            commitment.NetUnrealizedValue, node.Score);
+    }
+
+    // Deterministic element-wise comparison of the retention rank tuple.
+    private static bool IsBetterRepresentative(Node candidate, ulong ownerId, Node existing)
+        => RankOf(candidate, ownerId).CompareTo(RankOf(existing, ownerId)) > 0;
 
     private static string Category(Node node)
     {

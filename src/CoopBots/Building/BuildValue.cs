@@ -276,14 +276,122 @@ internal static class BuildValue
         return total;
     }
 
+    // The Elo-first policy: the community all-runs Elo baseline leads, and the
+    // legacy heuristic survives only as a bounded, clearly logged correction.
+    // These constants are tunable policy, not calibrated victory probabilities.
+    private const double EloPerPoint = 10.0;
+    private const double RulesPivot = 20.0;
+    private const double RulesScale = 0.25;
+    private const double RulesMin = -20.0;
+    private const double RulesMax = 8.0;
+    private const double DevelopmentDeckTarget = 22.0;
+    private const double DevelopmentPerCard = 1.0;
+    private const double DevelopmentMax = 8.0;
+
+    // A compiled table with a finite SKIP row is the only state in which the
+    // Elo-first branch may run. The empty placeholder keeps the exact legacy
+    // behavior instead of inventing an Elo.
+    private static bool HasBakedBaseline =>
+        BakedCardElo.CardCount > 0
+        && BakedCardElo.SkipElo > double.NegativeInfinity
+        && BakedCardElo.SkipElo < double.PositiveInfinity;
+
     /// <summary>
-    /// Adding a card: its own contribution minus the draws it takes from the
-    /// cards already in the deck. A below-average card in a small deck is worth
-    /// less than nothing, which is exactly when skipping is correct.
+    /// Numeric terms behind one Elo-first addition, for logging and tests. The
+    /// legacy value is the old heuristic total with its own affinity removed;
+    /// its bounded contribution is <see cref="Rules"/>. A guard refusal or a
+    /// missing-Elo fallback sets <see cref="UsedFallback"/> so the exact reason
+    /// is not folded into the numeric line.
+    /// </summary>
+    internal readonly record struct AddBreakdown(
+        double Elo,
+        double SkipElo,
+        double EloBase,
+        double Rules,
+        double Development,
+        double Affinity,
+        double LegacyTotal,
+        double LegacyAffinity,
+        string LegacyReason,
+        double Total,
+        bool UsedFallback,
+        bool GuardRefusal);
+
+    private readonly record struct LegacyAdd(double Total, double Affinity, string Reason);
+
+    /// <summary>
+    /// Adding a card under the community-Elo policy. The hard eligibility guards
+    /// still run first and unchanged; a card the snapshot does not cover falls
+    /// back to the legacy heuristic with the reason labeled, never to an invented
+    /// zero. The result is a real quantity compared against skipping.
+    ///
+    /// Scope note: only <c>Add</c> (reward picks and the card shop) takes this
+    /// path. Marginal, Deck, Remove and UpgradeDelta keep their algorithms.
     /// </summary>
     internal static Valuation Add(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
     {
+        var terms = AddDetailed(card, player, deckOverride);
+        if (terms.GuardRefusal) return new Valuation(terms.Total, terms.LegacyReason);
+        if (terms.UsedFallback)
+            return new Valuation(terms.Total, "elo-missing:legacy-fallback," + terms.LegacyReason);
+        return new Valuation(terms.Total, FormatTerms(terms));
+    }
+
+    private static string FormatTerms(AddBreakdown terms) =>
+        $"elo:{terms.Elo:F1},skip:{terms.SkipElo:F1},elo-base:{terms.EloBase:F2},"
+        + $"rules:{terms.Rules:F2},development:{terms.Development:F2},affinity:{terms.Affinity:F2},"
+        + $"legacy:{terms.LegacyReason}";
+
+    internal static AddBreakdown AddDetailed(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
+    {
         var deck = deckOverride ?? player.Deck.Cards.ToList();
+        // Curse, status and unplayable-resource refuse before any Elo lookup: no
+        // community prior can make a curse takeable or pay a resource the deck
+        // cannot produce. These are the same guards the marginal valuation uses,
+        // and they stay byte-for-byte in effect on this path.
+        var facts = CardProfile.Of(card);
+        if (facts.Unplayable || card.Type is CardType.Curse or CardType.Status)
+            return Guard(card.Type == CardType.Curse ? "curse" : "status", -1000);
+        if (UnplayableForMissingResource(card, deck) is { } unpayable)
+            return Guard(unpayable.Reason, 0);
+        // Card eligibility precedes the lookup: a card without a finite Elo is
+        // not rejected and is not assigned a zero, it is evaluated the old way
+        // and the reason says so.
+        if (!HasBakedBaseline || !BakedCardElo.TryGet(card.Id.Entry, out var candidateElo)
+            || !CommunityDraft.IsFinite(candidateElo))
+            return Fallback(card, player, deck, "legacy", null);
+        var legacy = AddLegacy(card, player, deck);
+        var oldWithoutAffinity = legacy.Total - legacy.Affinity;
+        var eloBase = (candidateElo - BakedCardElo.SkipElo) / EloPerPoint;
+        var rules = Math.Clamp((oldWithoutAffinity - RulesPivot) * RulesScale, RulesMin, RulesMax);
+        var development = Math.Clamp((DevelopmentDeckTarget - deck.Count) * DevelopmentPerCard, 0, DevelopmentMax);
+        var affinity = CommunityDraft.Affinity(card, deck);
+        var total = eloBase + rules + development + affinity;
+        return new AddBreakdown(candidateElo, BakedCardElo.SkipElo, eloBase, rules, development, affinity,
+            legacy.Total, legacy.Affinity, legacy.Reason, total, UsedFallback: false, GuardRefusal: false);
+    }
+
+    private static AddBreakdown Guard(string reason, double total) =>
+        new(0, 0, 0, 0, 0, 0, total, 0, reason, total, UsedFallback: true, GuardRefusal: true);
+
+    // The fallback path keeps the legacy total exactly and labels the reason.
+    private static AddBreakdown Fallback(CardModel card, Player player, IReadOnlyList<CardModel> deck,
+        string reason, double? forcedTotal)
+    {
+        if (forcedTotal is { } total)
+            return new AddBreakdown(0, 0, 0, 0, 0, 0, total, 0, reason, total, UsedFallback: true, GuardRefusal: false);
+        var legacy = AddLegacy(card, player, deck);
+        return new AddBreakdown(0, 0, 0, 0, 0, 0, legacy.Total, legacy.Affinity, legacy.Reason,
+            legacy.Total, UsedFallback: true, GuardRefusal: false);
+    }
+
+    /// <summary>
+    /// The pre-Elo heuristic, kept verbatim as a bounded auxiliary and the
+    /// missing-Elo fallback. Its own affinity is returned separately so the
+    /// Elo-first path can subtract it and never double count.
+    /// </summary>
+    private static LegacyAdd AddLegacy(CardModel card, Player player, IReadOnlyList<CardModel> deck)
+    {
         var summary = DeckStructure.Build(deck, StableEnergy(player));
         var own = MarginalCore(card, player, deck, summary);
         var average = deck.Count == 0
@@ -317,7 +425,16 @@ internal static class BuildValue
             + (dilution > 0.5 ? $",dilutes:{dilution:F1}" : "")
             + (pressure > 0.5 ? $",size:{pressure:F1}" : "")
             + (relief > 0.01 ? $",relief:{relief:F2}" : "");
-        return new Valuation(total, reason);
+        // The legacy affinity is scored separately so the Elo-first branch can
+        // remove it before adding the directional community affinity, which
+        // would otherwise count the same relation twice.
+        var legacyAffinity = Affinity(card, deck);
+        if (legacyAffinity > 0.01)
+        {
+            total += legacyAffinity;
+            reason += ",drafted-together";
+        }
+        return new LegacyAdd(total, legacyAffinity > 0.01 ? legacyAffinity : 0, reason);
     }
 
     // How much of a role the deck is genuinely short of, as a 0..1 share. This

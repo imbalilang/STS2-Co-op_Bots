@@ -31,15 +31,20 @@ internal static class BuildValueScenarios
             for (var i = 0; i < count; i++) bot.Deck.AddInternal(combat.CreateCard<T>(bot));
         }
 
-        // A starter deck has no area damage, so the first one is worth taking.
+        // A starter deck has no area damage. Under the Elo-first contract the
+        // community baseline leads: Breakthrough's below-skip Elo keeps it below
+        // skipping even though the role gap is real, and the gap stays named in
+        // the legacy reason. (Changed for the community-elo-draft contract: the
+        // pre-Elo assertion required this low-Elo card to be taken.)
         Clear(); Give<StrikeIronclad>(5); Give<DefendIronclad>(4);
         var cleave = combat.CreateCard<Breakthrough>(bot);
         var cleaveValue = BuildValue.Add(cleave, bot);
-        if (cleaveValue.Total <= 0)
-            throw new Exception($"The deck's first area attack must be worth taking: {cleaveValue.Total:F1} ({cleaveValue.Reason}).");
         if (!cleaveValue.Reason.Contains("needs-aoe"))
-            throw new Exception($"Filling a missing role must be visible in the reason: {cleaveValue.Reason}");
-        Console.WriteLine("PASS: a card that fills a missing role is worth taking.");
+            throw new Exception($"Filling a missing role must remain visible in the reason: {cleaveValue.Reason}");
+        if (cleaveValue.Total >= 0)
+            throw new Exception($"A below-skip community Elo must not be an automatic take even when it fills a role: "
+                + $"{cleaveValue.Total:F1} ({cleaveValue.Reason}).");
+        Console.WriteLine("PASS: a missing role is still named, but community Elo leads the take/skip decision.");
 
         // The same card stops being worth it once the role is saturated and the
         // deck is already large: this is what makes Skip a real candidate.
@@ -219,10 +224,13 @@ internal static class BuildValueScenarios
         var bloodWall = BuildValue.Add(routeCombat.CreateCard<BloodWall>(outsider), outsider);
         if (!bloodWall.Reason.Contains("needs-block"))
             throw new Exception($"A deck with two block cards must be shown as short of block: {bloodWall.Reason}");
-        if (bloodWall.Total <= 0)
-            throw new Exception($"A block card the deck needs must beat skipping even at 23 cards: "
+        // Changed for the community-elo-draft contract: Blood Wall sits below the
+        // skip Elo, so the bounded +8 rules correction cannot carry it past
+        // skipping on the role gap alone. The gap is still named.
+        if (bloodWall.Total >= 0)
+            throw new Exception($"A below-skip Elo block card must not beat skipping on the role gap alone: "
                 + $"{bloodWall.Total:F1} ({bloodWall.Reason}).");
-        Console.WriteLine($"PASS: a needed block card still gets in past the size pressure ({bloodWall.Total:F1}, {bloodWall.Reason}).");
+        Console.WriteLine($"PASS: a needed block card is still named, but community Elo can keep it below skip ({bloodWall.Total:F1}, {bloodWall.Reason}).");
 
         // A card nothing asked for costs more the later it is taken, and most
         // once no shop is left to remove it at — that dilution can never be
