@@ -129,9 +129,43 @@ internal static class ChoiceSeatScenarios
         if (((IEnumerable<CardModel>?)emptyPick ?? []).Any())
             Fail("an empty hand cannot produce a discarded card.");
 
+        // 5. The selector hatch is MACHINE-wide, not seat-wide: the native CardSelectCmd
+        //    bodies read `Selector` before they ask who is choosing, so while it is
+        //    installed the game answers every player's choice with the bot's brain — a
+        //    human at the table loses their own screen and their choice message is never
+        //    sent, which is what the other peers wait on. It may therefore only be
+        //    installed while EVERY seat is driven.
+        //
+        //    R2 (2026-09-22, mutated `SyncForRun` to install whenever a run exists — the
+        //    shape the bug had) — the first assertion below goes red, quoted:
+        //      System.InvalidOperationException: ChoiceSeat: a table with an ordinary human
+        //      must not have the machine-wide selector installed — it would answer that
+        //      human's own choice and never sync it to the other peers.
+        //        at ChoiceSeatScenarios.Run()
+        AutoPilot.Clear();
+        var table = new List<Player> { bot, seat };
+
+        BotCardSelector.SyncForRun(table);
+        if (CardSelectCmd.Selector is not null)
+            Fail("a table with an ordinary human must not have the machine-wide selector installed — "
+                + "it would answer that human's own choice and never sync it to the other peers.");
+
+        AutoPilot.Set(seat.NetId, true);
+        BotCardSelector.SyncForRun(table);
+        if (CardSelectCmd.Selector is null)
+            Fail("a table where every seat is driven still needs the selector for a handed-over seat's "
+                + "card reward (the reward body has no other seam).");
+
+        AutoPilot.Set(seat.NetId, false);
+        BotCardSelector.SyncForRun(table);
+        if (CardSelectCmd.Selector is not null)
+            Fail("taking the seat back must remove the selector again, not leave it for the rest of the run.");
+        AutoPilot.Clear();
+
         Console.WriteLine("PASS: the reported card-choice stalls are answered for every seat the bot "
             + "drives — a synthetic bot's potion pick and Survivor discard, and the same two on a "
-            + "handed-over real seat — while an ordinary human keeps the native screen, and an empty "
+            + "handed-over real seat — while an ordinary human keeps the native screen and the "
+            + "machine-wide selector hatch stays off any table with a human at it, and an empty "
             + "hand returns nothing instead of throwing.");
     }
 }

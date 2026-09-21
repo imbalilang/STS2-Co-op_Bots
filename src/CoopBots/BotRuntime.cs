@@ -80,8 +80,12 @@ public static class BotRuntime
             }
             // A handed-over seat resolves its card rewards through the game's own
             // selector hatch, which has to be in place before the first reward opens.
+            // Every tick, because the table can change: `SyncForRun` installs it only
+            // while EVERY seat is driven — on a mixed table the native body would
+            // otherwise answer a human's own card choice with the bot's brain, since it
+            // reads `CardSelectCmd.Selector` before it asks who is choosing.
             // Idempotent, so the per-frame cost is one null check.
-            if (AutoPilot.Any) BotCardSelector.EnsureInstalled();
+            BotCardSelector.SyncForRun(state.Players);
             var combatIdentity = state.Players.FirstOrDefault()?.Creature.CombatState;
             if (!ReferenceEquals(_combatIdentity, combatIdentity))
             {
