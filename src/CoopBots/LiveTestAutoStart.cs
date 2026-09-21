@@ -116,18 +116,24 @@ internal static class LiveTestAutoStart
             // tell whether the sentinel was unread, mis-parsed, or ignored downstream —
             // the parser is the one place that distinguishes those, and it cost a whole batch to
             // discover it was not saying.
-            // `search=tournament` makes the roll-out tournament the decision-maker for the whole
-            // fight. Read HERE, at arming time, because it is a property of how this run was
-            // launched and not of any particular combat.
+            // `search=tournament` forces the roll-out tournament as the decision-maker, and
+            // `search=search` forces the segmented search. LEAVE IT OUT for the shipped default,
+            // which since 0.38.0 is the tournament on an all-bot table. Read HERE, at arming
+            // time, because it is a property of how this run was launched and not of any
+            // particular combat.
             var search = new string(File.ReadAllLines(FlagPath)
                 .Select(line => line.Trim())
                 .FirstOrDefault(line => line.StartsWith("search=", StringComparison.OrdinalIgnoreCase))?
                 .Skip("search=".Length).ToArray() ?? []);
-            KernelCombatPlanner.TournamentDrives =
-                search.Equals("tournament", StringComparison.OrdinalIgnoreCase);
+            KernelCombatPlanner.TournamentOverride = search.ToLowerInvariant() switch
+            {
+                "tournament" => true,
+                "search" => false,
+                _ => null,
+            };
             Log.Info($"CoopBots live test: flag seed='{seed}' multiplayer={multiplayer} "
                 + $"room='{room}' encounter='{encounter}' search='{search}' "
-                + $"tournamentDrives={KernelCombatPlanner.TournamentDrives}.");
+                + $"tournamentOverride={KernelCombatPlanner.TournamentOverride?.ToString() ?? "default"}.");
             if (multiplayer)
             {
                 if (!LiveTestMultiplayerRun.Start(seed, room, encounter)) failed = true;

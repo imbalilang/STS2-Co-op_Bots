@@ -16,7 +16,7 @@ public static class ModEntry
     /// </summary>
     public static readonly string Version = ResolveVersion();
 
-    internal const string FallbackVersion = "0.37.1";
+    internal const string FallbackVersion = "0.38.0";
 
     private static string ResolveVersion()
     {

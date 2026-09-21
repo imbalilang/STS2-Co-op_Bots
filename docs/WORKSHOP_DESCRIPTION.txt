@@ -1,5 +1,5 @@
 [h1]Co-op Bots / 联机机器人[/h1]
-[b]0.37.1：修复混合局里真人选牌被 Bot 顶掉。[/b]
+[b]0.38.0：全 Bot 局不再开局沉默数分钟——改为每个动作从实盘重算。[/b]
 
 为多人房间加入 AI 队友，由房主统一调度。
 
@@ -10,11 +10,13 @@
 [*]游戏版本 v0.111.0
 [/list]
 
-[h2]0.37.1 更新[/h2]
+[h2]0.38.0 更新[/h2]
 [list]
-[*]修复：桌上一旦有席位交给 AI，真人自己的选牌（生存者弃牌、攻击 / 能力药水三选一、事件选牌）会被 Bot 顶掉，而且这次选择不会同步给其他玩家；现在只有「全部席位都交给 AI」时才启用那套自动选择钩子
-[*]代价（明说）：混合局里被交给 AI 的那个席位会跳过卡牌奖励；它的其它选牌不受影响
-[*]上一版（0.37.0）的全 Bot 模式长搜索与执行侧修复保持不变
+[*][b]全 Bot 局[/b]（所有席位都交给 AI）改为「续演锦标赛」决策：每条候选线把战斗模拟到真实终局，取最好那条的首个动作，执行后重新算——不再开局搜 3 / 8 分钟才出第一张牌
+[*]单次决策预算约 [b]1.2 秒[/b]（软上限）；日志新增 decision-ms 可查
+[*]桌上还有真人时完全不变：仍是有界搜索，不会让真人等
+[*]已知代价：单次决策同步执行，极端情况会短暂卡顿（秒级），换来的是不再有数分钟沉默；本版不宣称强度提升
+[*]上一版（0.37.1）修复了混合局里真人选牌被 Bot 顶掉的问题
 [/list]
 [url=https://github.com/imbalilang/STS2-Co-op_Bots/blob/main/CHANGELOG.md]完整变更记录[/url]
 
@@ -70,11 +72,12 @@ Configurable AI teammates for the official multiplayer lobby. The host drives ev
 [*]Game version v0.111.0.
 [/list]
 
-[h2]0.37.1 changes[/h2]
+[h2]0.38.0 changes[/h2]
 [list]
-[*]Fixed: with any seat handed to the AI, a human's own card choice (Survivor discard, Attack / Power Potion pick, event picks) was answered by the bot and never synced to the other peers. The auto-select hatch now only goes in when every seat is handed to the AI.
-[*]Cost, stated plainly: on a mixed table the handed-over seat skips its card reward. Its other choices are unaffected.
-[*]0.37.0's all-bot long search and the execution fixes are unchanged.
+[*][b]All-bot mode[/b] now decides with a roll-out tournament: each candidate line is simulated to a real terminal (a win, or a wipe), the best line's first action is played, then it replans — instead of a 3-to-8 minute opening search before the first card.
+[*]One decision costs about [b]1.2 s[/b] (soft cap); the log reports decision-ms.
+[*]Tables with a human are unchanged: still the bounded search, no waiting on a human's turn.
+[*]Cost, stated plainly: a decision runs synchronously, so the frame can hitch for up to about a second — in exchange for no minutes of silence. No strength claim.
 [/list]
 [url=https://github.com/imbalilang/STS2-Co-op_Bots/blob/main/CHANGELOG.md]Full changelog[/url]
 

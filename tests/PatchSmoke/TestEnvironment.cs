@@ -26,6 +26,13 @@ internal static class TestEnvironment
         _installed = true;
 
         TestMode.IsOn = true;
+        // PIN THE DECISION POLICY TO THE SEGMENTED SEARCH. Since 0.38.0 the shipped default is
+        // the roll-out tournament on an all-bot table, and nearly every planner fixture here
+        // drives one bot in its own combat — which IS an all-bot table. Those fixtures guard the
+        // segmented search (its deploy/replay/drift/sentinel behaviour), so they must keep
+        // running it; the tournament has its own suite in KernelRolloutScenarios, and
+        // ChoicePolicyScenarios asserts which one the default picks.
+        CoopBots.KernelCombatPlanner.TournamentOverride = false;
         typeof(MegaCrit.Sts2.Core.Modding.ModManager).GetProperty("State")!.SetValue(null,
             MegaCrit.Sts2.Core.Modding.ModManagerState.Skipped);
         var harness = new Harmony("coopbots.test.console");

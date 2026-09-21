@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using CoopBots;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Models.Cards;
@@ -216,6 +216,9 @@ if (Fact(Analyze(new Vicious()), "Draw") != 0)
 // Deliberately above CooperativeScenarios: that one currently fails first, and a check
 // registered with the later blocks would never execute in a red suite.
 AutoPilotScenarios.Run();
+// Which policy decides an all-bot fight (the 0.38.0 switch): tournament by default,
+// segmented search on a mixed table, and the override forces either.
+ChoicePolicyScenarios.Run();
 // The seat question behind the reported card-choice stalls (Survivor, choice potions):
 // answered for every seat the bot drives, declined for a seat it does not.
 ChoiceSeatScenarios.Run();

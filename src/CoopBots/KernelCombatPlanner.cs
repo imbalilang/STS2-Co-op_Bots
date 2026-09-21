@@ -537,27 +537,36 @@ internal sealed class KernelCombatPlanner
     /// </summary>
     private const bool ShadowTournamentEnabled = false;
     /// <summary>
-    /// LET THE TOURNAMENT DRIVE THE WHOLE FIGHT. When on, every decision in an all-bot combat
-    /// comes from a fresh roll-out tournament instead of from the segmented search: the bot
-    /// replans from the live board each action, and no script is committed.
+    /// WHICH POLICY DECIDES AN ALL-BOT FIGHT — the roll-out tournament (C) or the segmented
+    /// search (B). Null = the shipped default.
     ///
-    /// This is the plan's P1-04, and it is the first configuration in which the new search
-    /// actually decides anything — the shadow beside it only ever observed. Rollout cost was
-    /// measured on this machine at 43-426 ms per tournament, so a decision here stays inside
-    /// the 1.5 s budget; the per-decision cost is the thing to watch in the fight summary.
+    /// DEFAULT: THE TOURNAMENT DRIVES AN ALL-BOT TABLE (0.38.0). The user's call, and the reason
+    /// is the watcher rather than the player: B answers an all-bot fight by searching for three
+    /// minutes — up to eight with the retry ladder — BEFORE the first card, and a human who hands
+    /// every seat over still has to sit through that. C replans from the live board on every
+    /// action, so a decision costs its own budget (1200 ms, see TournamentDriveBudgetMs) instead
+    /// of minutes of silence.
     ///
-    /// FALLS BACK, never stalls: a tournament that finds no legal action, or throws, hands the
-    /// decision back to the existing planner for that tick.
+    /// false: force the segmented search. The kernel suite's planner fixtures set this — they
+    /// guard the segmented search and must keep exercising it (the ~18 assertions that went red
+    /// the one time this was a compile-time constant are that guard).
+    /// true: force the tournament. The live-test sentinel's `search=tournament` — how the preview
+    /// builds were measured before this became the default.
+    ///
+    /// A table with a human in it never takes this path: <see cref="TournamentDrives"/> requires
+    /// every seat to be driven, and the segmented search keeps its interactive budget there.
     /// </summary>
-    /// <summary>
-    /// RUNTIME switch, default OFF, set by the live-test sentinel. It is deliberately NOT a
-    /// compile-time constant: as a constant it had to be flipped to build the preview, and
-    /// flipping it turned ~18 planner assertions in the kernel suite red — the suite guards the
-    /// segmented search, so compiling that search out to ship a preview would have gutted the
-    /// coverage that protects it. A runtime switch keeps both: the suite exercises the search,
-    /// the live run exercises the tournament.
-    /// </summary>
-    internal static bool TournamentDrives { get; set; }
+    internal static bool? TournamentOverride { get; set; }
+
+    /// <summary>Is every seat in this combat answered by the bot? The gate the whole
+    /// "the kernel is authoritative" family shares — the deep opening budget, the engine
+    /// scorer, and the tournament's own eligibility.</summary>
+    internal static bool AllSeatsDriven(CombatState combat)
+        => combat.Players.All(player => AutoPilot.Drives(player.NetId));
+
+    /// <summary>Does the roll-out tournament decide THIS combat?</summary>
+    internal static bool TournamentDrives(CombatState combat)
+        => AllSeatsDriven(combat) && TournamentOverride != false;
     /// <summary>
     /// The decision point the tournament has already been asked about AND declined.
     ///
@@ -860,7 +869,7 @@ internal sealed class KernelCombatPlanner
         ConfirmedEndTurn = null;
 
         if (actors.Count == 0) { Reset(); return Status.Ready; }
-        if (TournamentDrives && combat.Players.All(player => AutoPilot.Drives(player.NetId)))
+        if (TournamentDrives(combat))
         {
             // NEVER LET A TOURNAMENT DECLINE FALL INTO THE OPENING LADDER.
             //
@@ -1103,7 +1112,13 @@ internal sealed class KernelCombatPlanner
                 // opening=False`). The previous "cheap fallback" fix addressed a flag that was
                 // never in this path. With the tournament driving, a decline must cost a per-tier
                 // search (450 ms), which is what "fall back cheaply" has to mean.
-                if (!TournamentDrives && combat.Players.All(player => AutoPilot.Drives(player.NetId)))
+                // BOTH halves matter: `TournamentDrives` is false on a MIXED table too, and a
+                // human's turn must keep the 450 ms interactive budget — the kernel suite's
+                // "Pro's INTERACTIVE wall budget must stay bounded at 450ms when a human is
+                // seated" assertion is what catches the difference (it did, on the first cut of
+                // the 0.38.0 switch: the deep budget leaked to every table that was not the
+                // tournament's).
+                if (!TournamentDrives(combat) && AllSeatsDriven(combat))
                 {
                     // Captured before the overrides: the first version of this line divided
                     // the already-overwritten budgetMs and printed "was 60000ms", which is
