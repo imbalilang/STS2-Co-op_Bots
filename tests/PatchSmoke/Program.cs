@@ -216,6 +216,9 @@ if (Fact(Analyze(new Vicious()), "Draw") != 0)
 // Deliberately above CooperativeScenarios: that one currently fails first, and a check
 // registered with the later blocks would never execute in a red suite.
 AutoPilotScenarios.Run();
+// The seat question behind the reported card-choice stalls (Survivor, choice potions):
+// answered for every seat the bot drives, declined for a seat it does not.
+ChoiceSeatScenarios.Run();
 CooperativeScenarios.Run();
 // Runs before the build-value scenarios: it publishes this build's card ids for
 // the bake scripts, and a stale generated table fails the guards below on
