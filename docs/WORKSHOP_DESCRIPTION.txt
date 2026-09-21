@@ -1,5 +1,5 @@
 [h1]Co-op Bots / 联机机器人[/h1]
-[b]0.38.0：全 Bot 局不再开局沉默数分钟——改为每个动作从实盘重算。[/b]
+[b]0.38.1：战斗外的等待大幅缩短——路线 / 商店 / 奖励 / 遗物不再一个个角色各等 2 秒。[/b]
 
 为多人房间加入 AI 队友，由房主统一调度。
 
@@ -10,13 +10,12 @@
 [*]游戏版本 v0.111.0
 [/list]
 
-[h2]0.38.0 更新[/h2]
+[h2]0.38.1 更新[/h2]
 [list]
-[*][b]全 Bot 局[/b]（所有席位都交给 AI）改为「续演锦标赛」决策：每条候选线把战斗模拟到真实终局，取最好那条的首个动作，执行后重新算——不再开局搜 3 / 8 分钟才出第一张牌
-[*]单次决策预算约 [b]1.2 秒[/b]（软上限）；日志新增 decision-ms 可查
-[*]桌上还有真人时完全不变：仍是有界搜索，不会让真人等
-[*]已知代价：单次决策同步执行，极端情况会短暂卡顿（秒级），换来的是不再有数分钟沉默；本版不宣称强度提升
-[*]上一版（0.37.1）修复了混合局里真人选牌被 Bot 顶掉的问题
+[*][b]战斗外的等待大幅缩短[/b]：地图投票 / 商店购买 / 奖励按钮 / 宝箱遗物不再一个个角色各等 2 秒，改为只在房间或战斗切换时静置一次、同一房间内按 250 毫秒推进（四席投票约 8 秒 → 约 1 秒）
+[*][b]全 Bot 局[/b]由「续演锦标赛」决策：每个动作从实盘重算，单次约 1.2 秒，不再开局沉默 3 / 8 分钟
+[*]桌上还有真人时完全不变；已知代价是单次决策同步执行，极端情况会短暂卡顿（秒级）
+[*]本版不宣称强度提升
 [/list]
 [url=https://github.com/imbalilang/STS2-Co-op_Bots/blob/main/CHANGELOG.md]完整变更记录[/url]
 
@@ -72,12 +71,11 @@ Configurable AI teammates for the official multiplayer lobby. The host drives ev
 [*]Game version v0.111.0.
 [/list]
 
-[h2]0.38.0 changes[/h2]
+[h2]0.38.1 changes[/h2]
 [list]
-[*][b]All-bot mode[/b] now decides with a roll-out tournament: each candidate line is simulated to a real terminal (a win, or a wipe), the best line's first action is played, then it replans — instead of a 3-to-8 minute opening search before the first card.
-[*]One decision costs about [b]1.2 s[/b] (soft cap); the log reports decision-ms.
-[*]Tables with a human are unchanged: still the bounded search, no waiting on a human's turn.
-[*]Cost, stated plainly: a decision runs synchronously, so the frame can hitch for up to about a second — in exchange for no minutes of silence. No strength claim.
+[*][b]Out-of-combat waits cut hard[/b]: map votes, shop purchases, reward buttons and treasure relics no longer cost 2 s each per character -- the settle is paid once per room or combat change, then actions advance at 250 ms (four seats voting: ~8 s to ~1 s).
+[*][b]All-bot mode[/b] is decided by a roll-out tournament: every action is replanned from the real board (~1.2 s each), instead of a 3-to-8 minute silence before the first card.
+[*]Tables with a human are unchanged. Cost: a decision runs synchronously, so a frame can hitch for up to about a second. No strength claim.
 [/list]
 [url=https://github.com/imbalilang/STS2-Co-op_Bots/blob/main/CHANGELOG.md]Full changelog[/url]
 

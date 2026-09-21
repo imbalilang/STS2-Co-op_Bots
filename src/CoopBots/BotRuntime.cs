@@ -106,6 +106,11 @@ public static class BotRuntime
                 // every card on top of the 1.5 s pacing, while the race this fixes only exists
                 // in the frames right after a scene changes.
                 _nextActionAt = DateTime.UtcNow.AddMilliseconds(SceneSettleMs);
+                // The non-combat block gets the same settle here. A fight ending is the other
+                // transition this gate has to survive — the terminal reward screen is what the
+                // bot races (see the block below) — and its room often does NOT change, so the
+                // room comparison alone would let the rewards screen be handled 250 ms in.
+                _nextNonCombatAt = DateTime.UtcNow.AddMilliseconds(NonCombatSettleMs);
                 _lastProgressAt = ClockMs;
                 BotCooperation.Reset();
                 HumanFinisherHints.Reset();
@@ -123,10 +128,17 @@ public static class BotRuntime
             // combat with NO event room between, the party entering act 2 at 7/87. The block
             // below the combat gate is a wall of "act on whatever exists this frame", and this
             // gate is what stops the bot from being faster than the screens it depends on.
+            //
+            // IT IS PAID ON A ROOM CHANGE, NOT ON EVERY ACTION — see NonCombatCadenceMs. The
+            // race needs the settle once, while the screens are being built; the actions after
+            // that are one per tick (a vote, a reward button, one purchase) and each used to pay
+            // the full 2 s, which is what made a four-seat table take seconds per character.
+            var roomChanged = !ReferenceEquals(_nonCombatRoom, state.CurrentRoom);
+            if (roomChanged) _nonCombatRoom = state.CurrentRoom;
             var nonCombatDue = DateTime.UtcNow >= _nextNonCombatAt;
             if (nonCombatDue)
             {
-                _nextNonCombatAt = DateTime.UtcNow.AddMilliseconds(NonCombatSettleMs);
+                _nextNonCombatAt = DateTime.UtcNow.AddMilliseconds(NonCombatDelayMs(roomChanged));
                 BotEventDriver.Tick(manager, state);
                 // Room-level proceeds are local UI, not synchronizer choices, so they sit
                 // outside BotEventDriver and everything else that talks to a synchronizer.
@@ -626,12 +638,39 @@ public static class BotRuntime
     /// <summary>How long the bot lets a freshly-entered scene settle before it acts.</summary>
     private const int SceneSettleMs = 2000;
     /// <summary>
-    /// The same 2 s for everything the bot decides OUTSIDE combat: map votes, room proceeds,
-    /// reward screens, chests, shops, events. The combat pacing below is separate — a fight has
-    /// its own 1.5 s card cadence and its own gate.
+    /// The 2 s settle, for everything the bot decides OUTSIDE combat — but only when the ROOM
+    /// changed. It exists for the transition race (the act-transition event that restores 80 %
+    /// of lost HP vanished when the bot pressed the terminal reward screen's continue while the
+    /// screens were still being built), and that race only exists right after a room changes.
     /// </summary>
     private const int NonCombatSettleMs = 2000;
+    /// <summary>
+    /// What a non-combat action waits for when the room did NOT change: the next seat's map
+    /// vote, the next reward button, the next shop purchase, the next event page.
+    ///
+    /// THE 2 s USED TO BE SPENT HERE TOO, and those actions are one per tick by construction
+    /// (one vote, one button, one purchase), so the cost was multiplied by the table: measured
+    /// 2026-09-22 from the user's report — "choosing a route, shopping, picking a relic each
+    /// take ages, character by character": four seats voting cost 8 s, a four-reward set cost
+    /// 8 s per seat, and a shop round trip (command → ack → verify, one purchase per call) cost
+    /// 2 s per purchase on top of the network latency.
+    ///
+    /// Nothing has to APPEAR between two actions inside one room — the screen is already up —
+    /// so this is UI catch-up latency, not a settle. Every driver in the block below checks its
+    /// own state before acting (continue button enabled and visible, overlay on top of the
+    /// stack, shop inventory bound and the purchase acknowledged), which is what makes a short
+    /// cadence safe here.
+    /// </summary>
+    private const int NonCombatCadenceMs = 250;
     private static DateTime _nextNonCombatAt = DateTime.MinValue;
+    /// <summary>The room the non-combat settle was last paid for. Identity, not equality:
+    /// one object per room instance, the same way `_combatIdentity` tracks a fight.</summary>
+    private static object? _nonCombatRoom;
+
+    /// <summary>Delay before the next non-combat action. Extracted so the rule — settle on a
+    /// room change, cadence otherwise — is assertable without a clock.</summary>
+    internal static int NonCombatDelayMs(bool roomChanged)
+        => roomChanged ? NonCombatSettleMs : NonCombatCadenceMs;
     private const long StallMs = 6000;
     private static DateTime _nextIdleLogAt = DateTime.MinValue;
     private static void ReportIdle(KernelCombatPlanner.Status status, bool legacy, bool humansFinished)
