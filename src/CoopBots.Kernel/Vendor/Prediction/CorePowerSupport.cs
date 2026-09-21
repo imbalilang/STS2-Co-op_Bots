@@ -1,3 +1,4 @@
+using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -13,6 +14,28 @@ using CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks;
 using CoopBots.Kernel.Vendor.Engine.InCombat.Simulation;
 
 namespace CoopBots.Kernel.Vendor;
+
+/// <summary>
+/// Pay-out multiplier the simulation must apply to every gold GAIN, keyed by NetId.
+/// </summary>
+/// <remarks>
+/// The live game pays gold through <c>PlayerCmd.GainGold</c>, which the CoopBots layer
+/// patches to TRIPLE a Cheated bot's payout (<c>BotGoldCheatPatch</c>). The simulator does
+/// not go through that command — it pays via <c>SimulatedCombatState.GainPlayerGold</c> —
+/// so without this the two sides disagree threefold for every Cheated seat, and any plan
+/// containing a gold-gain card (e.g. HandOfGreed) drifts on <c>field=gold</c> the moment
+/// it resolves.
+///
+/// The rule itself lives in the CoopBots layer (BotRegistry), which this assembly must not
+/// reference, so it arrives as a registered function. The default is 1x, which is what
+/// every non-Cheated table sees.
+/// </remarks>
+public static class SimulatedGoldGain
+{
+    public static Func<ulong, int> MultiplierResolver { get; set; } = static _ => 1;
+
+    internal static int MultiplierFor(ulong netId) => Math.Max(0, MultiplierResolver(netId));
+}
 
 internal static class CorePowerSupport
 {
@@ -150,7 +173,12 @@ internal static class CorePowerSupport
                 target,
                 historyEntryStart):
             {
-                int gold = card.DynamicVars["Gold"].IntValue;
+                // Must match what the live game actually pays the player, cheat included:
+                // PlayerCmd.GainGold triples a Cheated bot's payout before it lands, and a
+                // plan that prices the untripled number drifts on `field=gold` as soon as
+                // it resolves. See SimulatedGoldGain.
+                int gold = card.DynamicVars["Gold"].IntValue
+                    * SimulatedGoldGain.MultiplierFor(card.Owner.NetId);
                 combat.GainPlayerGold(card.Owner, gold);
                 combat.RecordLongTermResource(gold);
                 combat.RecordGrowthReward(GrowthSource.HandOfGreed);
@@ -233,9 +261,10 @@ internal static class CorePowerSupport
                 combat.Apply<FocusPower>(owner, card.DynamicVars["FocusPower"].IntValue, owner);
                 break;
             case DodgeAndRoll:
-                int blockGained = Math.Max(0, simulator.State.GetCreature(owner).Block - ownerBlockBefore);
-                if (blockGained > 0)
-                    combat.Apply<BlockNextTurnPower>(owner, blockGained, owner);
+                // Native OnPlay forwards GainBlock's modified return value. The owner's
+                // net block gain can be smaller at the cap or after block-triggered effects.
+                if (cardBlockGained > 0m)
+                    combat.Apply<BlockNextTurnPower>(owner, (int)cardBlockGained, owner);
                 break;
             case DemonForm:
                 combat.Apply<DemonFormPower>(owner, card.DynamicVars["StrengthPower"].IntValue, owner);
@@ -477,11 +506,14 @@ internal static class CorePowerSupport
         return true;
     }
 
+    // Throttle for the steam-eruption pending-choice diagnostic below.
+    private static long nextSteamEruptionLogAt;
+
     public static bool TriggerPlayerRegularSideTurnEndEffects(
         CombatPredictionSimulator simulator,
         SimulatedCombatState combat,
         IReadOnlyList<Creature> players,
-        int etherealExhaustCount = 0, IReadOnlyDictionary<Creature, int>? etherealByOwner = null)
+        int etherealExhaustCount = 0)
     {
         combat.RestoreTemporaryStrength(players);
         combat.RestoreTemporaryDexterity();
@@ -505,7 +537,7 @@ internal static class CorePowerSupport
                 combat,
                 CombatSide.Player,
                 players,
-                etherealExhaustCount, etherealByOwner))
+                etherealExhaustCount))
         {
             return false;
         }
@@ -564,7 +596,7 @@ internal static class CorePowerSupport
         TriggerTransientSideTurnEndPowers(simulator, combat, CombatSide.Enemy, enemies);
         combat.RestoreTemporaryStrength(enemies);
         TickDurations(combat);
-        return EndTurnPowerSupport.TriggerLate(simulator, combat, enemies);
+        return HookMirrors.AfterSideTurnEndLate(simulator, CombatSide.Enemy, enemies);
     }
 
     public static bool TriggerAfterBlockCleared(
@@ -632,7 +664,27 @@ internal static class CorePowerSupport
             }
             bool steamEruptionTriggered = combat.TryTriggerSteamEruptionDeath(simulator, enemy);
             if (simulator.HasPendingChoice)
+            {
+                // NAME IT. This `return false` is what turns "a line that KILLS the boss" into a
+                // boundary, and it is measured: live 2026-09-20 (4 BOT A10, WATERFALL_GIANT_BOSS)
+                // the fight carried `boundaries=end-turn:round-pending-choice×749`, ran 25 rounds
+                // and 64 scripts, and the run was lost — because the search could never see a line
+                // that resolves the fight, so its best usable line was "survive the next five
+                // rounds". That is the "the bot refuses to kill so it will not die" the user
+                // observed; it is a truncated tree, not a scoring preference (a probe over
+                // KernelTeamSearch with a deliberately catastrophic victory score still committed
+                // to the 12-action winning line).
+                if (Environment.TickCount64 >= nextSteamEruptionLogAt)
+                {
+                    nextSteamEruptionLogAt = Environment.TickCount64 + 10_000;
+                    Log.Info($"CoopBots kernel: steam-eruption transition left a pending choice "
+                        + $"(turnStart={combat.PendingTurnStartChoiceDescription}, "
+                        + $"knowledgeDemon={combat.PendingKnowledgeDemonChoice?.GetType().Name ?? "none"}); "
+                        + "the death settlement fails closed here, so every line that kills this boss "
+                        + "becomes a boundary and the search cannot see one that resolves the fight");
+                }
                 return false;
+            }
             if (steamEruptionTriggered)
                 continue;
             (newlyDead ??= []).Add(enemy);

@@ -5,8 +5,13 @@ namespace CoopBots;
 internal static class MultiHumanCooperation
 {
     // End-turn is explicit; an empty hand or zero energy does not imply the human is finished.
+    //
+    // A handed-over seat is not waited for: nobody is going to press its end-turn
+    // button, and counting it as an unfinished human would hold the team's turn open
+    // (and, with every seat handed over, decide it by accident — an empty sequence
+    // satisfies All()).
     internal static bool HumansReady(IReadOnlyList<Player> party, Func<Player, bool> ready)
-        => party.Where(p => !BotRegistry.IsBot(p.NetId) && p.Creature.IsAlive)
+        => party.Where(p => !AutoPilot.Drives(p.NetId) && p.Creature.IsAlive)
             .All(ready);
 
     // Allocate the small number of bot votes as closely as possible to the humans'
@@ -29,5 +34,5 @@ internal static class MultiHumanCooperation
     }
 
     internal static Player? LocalHuman(IReadOnlyList<Player> party, ulong localId)
-        => party.FirstOrDefault(p => p.NetId == localId && !BotRegistry.IsBot(p.NetId));
+        => party.FirstOrDefault(p => p.NetId == localId && !AutoPilot.Drives(p.NetId));
 }

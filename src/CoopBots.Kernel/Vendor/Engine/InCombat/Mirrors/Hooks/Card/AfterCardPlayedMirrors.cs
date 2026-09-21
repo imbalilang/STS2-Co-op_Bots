@@ -38,11 +38,13 @@ internal static class AfterCardPlayedMirrors
 
     public static void Invoke(AbstractModel listener, AfterCardPlayedMirrorContext context)
     {
+        using var dispatch = context.Simulator.BeginExecutionDispatch();
         Registry.Invoke(listener, context);
     }
 
     public static void InvokeLate(AbstractModel listener, AfterCardPlayedMirrorContext context)
     {
+        using var dispatch = context.Simulator.BeginExecutionDispatch();
         LateRegistry.Invoke(listener, context);
     }
 
@@ -51,6 +53,8 @@ internal static class AfterCardPlayedMirrors
         CardPlay cardPlay,
         bool completed)
     {
+        if (!simulator.StateStore.HasEntries<PaelsLegionPredictionState>())
+            return;
         foreach ((AbstractModel model, PaelsLegionPredictionState state) in
                  simulator.StateStore.ReadEntries<PaelsLegionPredictionState>())
         {
@@ -171,6 +175,13 @@ internal static class AfterCardPlayedMirrors
         if (!context.CardPlay.IsAutoPlay && context.PreviewCard.Owner == relic.Owner)
         {
             var state = context.StateStore.Get(relic, () => new CounterPredictionState(relic._cardsPlayedThisTurn));
+            if (state.Value == relic.DynamicVars.Cards.IntValue - 1
+                && context.CardPlay.PlayIndex == 0
+                && context.CardPlay.Resources.EnergySpent == 0
+                && context.CardPlay.Resources.StarsSpent == 0
+                && !context.PreviewCard.EnergyCost.CostsX && !context.PreviewCard.HasStarCostX
+                && context.Simulator.IsRecordingActionRelicTriggers)
+                context.Simulator.RecordRelicTrigger(relic, "：本张免费");
             state.Value++;
         }
     }
@@ -777,7 +788,15 @@ internal static class AfterCardPlayedMirrors
 
     private static void HandleTenderPower(TenderPower power, AfterCardPlayedMirrorContext context)
     {
-        // The card-play completion sink applies the paired Strength/Dexterity loss from this history entry.
+        if (context.PreviewCard.Owner.Creature != power.Owner)
+            return;
+        if (context.CombatState is not ICombatPredictionEffectSink effects)
+            throw new InvalidOperationException("温柔效果缺少可写的预测状态。");
+        effects.RecordTenderCardPlayed(power.Owner);
+        if (!context.Simulator.IsEnding)
+            effects.ApplyPower(typeof(StrengthPower), power.Owner, -1, power.Applier);
+        if (!context.Simulator.IsEnding)
+            effects.ApplyPower(typeof(DexterityPower), power.Owner, -1, power.Applier);
     }
 
     private static void HandleVitalSparkPower(VitalSparkPower power, AfterCardPlayedMirrorContext context)

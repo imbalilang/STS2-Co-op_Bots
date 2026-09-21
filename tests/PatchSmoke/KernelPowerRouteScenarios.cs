@@ -230,20 +230,25 @@ internal static class KernelPowerRouteScenarios
 
         var inflame = root.Hand(a).Single(c => c.Id.Entry == "INFLAME");
         var aBranch = root.Fork();
-        Check(aBranch.Play(inflame, a.Creature, out var aReason), "Inflame play: " + aReason);
+        // A Self-target power is played with NO target — the live game logs a blank
+        // `targetid:` for these cards, and upstream CombatSolver's TargetsFor yields
+        // (-1, null) for every type except AnyEnemy. Passing the owner's creature made
+        // the real gate reject the card ("invalid-target" here, "card-not-playable" at
+        // deployment in a live fight).
+        Check(aBranch.Play(inflame, null, out var aReason), "Inflame play: " + aReason);
         Check(aBranch.Power<StrengthPower>(a.Creature) == 2,
             "the real engine must apply Strength before evidence is measured.");
         var ledgerA = KernelPowerRouter.Advance(KernelPowerLedger.Empty, root, aBranch,
-            new KernelTeamSearch.Action(a, inflame, a.Creature), fixture.Party);
+            new KernelTeamSearch.Action(a, inflame, null), fixture.Party);
         Check(ledgerA.Count == 1 && ledgerA.TryGet(a.NetId, out var commitA)
             && commitA.Family == PowerCommitmentFamily.StrengthGrowth,
             "a registered power with own-branch trigger facts must create exactly one owner commitment.");
 
         var barricade = aBranch.Hand(b).Single(c => c.Id.Entry == "BARRICADE");
         var bBranch = aBranch.Fork();
-        Check(bBranch.Play(barricade, b.Creature, out var bReason), "Barricade play: " + bReason);
+        Check(bBranch.Play(barricade, null, out var bReason), "Barricade play: " + bReason);
         var ledgerAB = KernelPowerRouter.Advance(ledgerA, aBranch, bBranch,
-            new KernelTeamSearch.Action(b, barricade, b.Creature), fixture.Party);
+            new KernelTeamSearch.Action(b, barricade, null), fixture.Party);
         Check(ledgerAB.Count == 2 && ledgerAB.TryGet(a.NetId, out _) && ledgerAB.TryGet(b.NetId, out _),
             "two owners must hold independent commitments keyed by NetId.");
     }
@@ -282,9 +287,9 @@ internal static class KernelPowerRouteScenarios
         var root = KernelSession.Capture(fixture.Combat);
         var power = root.Hand(owner).Single(c => c.Id.Entry == cardId);
         var branch = root.Fork();
-        Check(branch.Play(power, owner.Creature, out var reason), $"{cardId} play: {reason}");
+        Check(branch.Play(power, null, out var reason), $"{cardId} play: {reason}");
         return KernelPowerRouter.Advance(KernelPowerLedger.Empty, root, branch,
-            new KernelTeamSearch.Action(owner, power, owner.Creature), fixture.Party);
+            new KernelTeamSearch.Action(owner, power, null), fixture.Party);
     }
 
     private static void TestNoTriggerAndUnsupportedPowers()
@@ -298,9 +303,9 @@ internal static class KernelPowerRouteScenarios
         var noAttackRoot = KernelSession.Capture(noAttack.Combat);
         var noAttackCard = noAttackRoot.Hand(a).Single(c => c.Id.Entry == "INFLAME");
         var noAttackBranch = noAttackRoot.Fork();
-        Check(noAttackBranch.Play(noAttackCard, a.Creature, out var reason), "Inflame no-trigger play: " + reason);
+        Check(noAttackBranch.Play(noAttackCard, null, out var reason), "Inflame no-trigger play: " + reason);
         var empty = KernelPowerRouter.Advance(KernelPowerLedger.Empty, noAttackRoot, noAttackBranch,
-            new KernelTeamSearch.Action(a, noAttackCard, a.Creature), noAttack.Party);
+            new KernelTeamSearch.Action(a, noAttackCard, null), noAttack.Party);
         Check(empty.IsEmpty, "a registered power with no own-branch trigger evidence must not open a commitment.");
     }
 
@@ -452,9 +457,9 @@ internal static class KernelPowerRouteScenarios
         var root = KernelSession.Capture(fixture.Combat);
         var inflame = root.Hand(bot).Single(c => c.Id.Entry == "INFLAME");
         var afterPower = root.Fork();
-        Check(afterPower.Play(inflame, bot.Creature, out var reason), "Inflame death setup: " + reason);
+        Check(afterPower.Play(inflame, null, out var reason), "Inflame death setup: " + reason);
         var active = KernelPowerRouter.Advance(KernelPowerLedger.Empty, root, afterPower,
-            new KernelTeamSearch.Action(bot, inflame, bot.Creature), fixture.Party);
+            new KernelTeamSearch.Action(bot, inflame, null), fixture.Party);
         Check(active.Count == 1, "the setup owner starts committed.");
 
         var ended = afterPower.Fork();
@@ -490,11 +495,35 @@ internal static class KernelPowerRouteScenarios
 
     private static object MakeNode(KernelSession state, KernelPowerLedger ledger, double score)
     {
+        // Anchored on the LEADING parameter types rather than a raw count. The old
+        // `.Single(Length == 5)` silently stopped matching anything once Node gained a
+        // parameter (Boundaries), so this threw "Sequence contains no matching element"
+        // -- a reflection failure that looks like a product failure but is not.
         var ctor = NodeType
             .GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-            .Single(candidate => candidate.GetParameters().Length == 5);
+            .Single(candidate =>
+            {
+                var parameters = candidate.GetParameters();
+                return parameters.Length >= 4
+                    && parameters[0].ParameterType == typeof(KernelSession)
+                    && parameters[1].ParameterType == typeof(KernelTeamSearch.Action[])
+                    && parameters[2].ParameterType == typeof(double)
+                    && parameters[3].ParameterType == typeof(bool);
+            });
         var path = Array.CreateInstance(typeof(KernelTeamSearch.Action), 0);
-        return ctor.Invoke(new object?[] { state, path, score, false, ledger });
+        // Fill positionally: the seat-fairness assertion only needs a constructible
+        // node, not a semantically complete one. Power is the 5th parameter and the
+        // turn-boundary predictions the 6th; both default to empty/ledger here.
+        var signature = ctor.GetParameters();
+        var arguments = new object?[signature.Length];
+        arguments[0] = state;
+        arguments[1] = path;
+        arguments[2] = score;
+        arguments[3] = false;
+        if (signature.Length > 4) arguments[4] = ledger;
+        if (signature.Length > 5)
+            arguments[5] = Array.CreateInstance(typeof(ValueTuple<int, string>), 0);
+        return ctor.Invoke(arguments);
     }
 
     // A shared node that carries two owners' commitments must consume ONE seat

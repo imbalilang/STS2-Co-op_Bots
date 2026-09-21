@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -39,6 +39,11 @@ public static class BotRuntime
 
     public static void Tick()
     {
+        // 无人值守实机测试的开局。必须在下面那些早退之前调用 —— 主菜单正是本方法
+        // 一路早退的状态，而开局恰恰要在那时候发生。没设 COOPBOTS_LIVE_TEST=1 时是一次
+        // 环境变量读取，正式包里不产生任何行为。
+        LiveTestAutoStart.Tick();
+        if (LiveTestMenuTicker.Armed) LiveTestAutoStart.BotTicks++;
         try
         {
             var manager = RunManager.Instance;
@@ -69,13 +74,34 @@ public static class BotRuntime
                 Reset();
                 _runIdentity = state;
                 BotCooperation.OnRunStart();
+                // The instant-mode switch is gone; this only repairs a preference it left
+                // stuck at Instant, which is a hard freeze on the PunchOff event.
+                InstantModeGuard.RepairIfStuck();
             }
+            // A handed-over seat resolves its card rewards through the game's own
+            // selector hatch, which has to be in place before the first reward opens.
+            // Idempotent, so the per-frame cost is one null check.
+            if (AutoPilot.Any) BotCardSelector.EnsureInstalled();
             var combatIdentity = state.Players.FirstOrDefault()?.Creature.CombatState;
             if (!ReferenceEquals(_combatIdentity, combatIdentity))
             {
                 _combatIdentity = combatIdentity;
                 TurnState.Clear();
-                _nextActionAt = DateTime.MinValue;
+                // SETTLE BEFORE ACTING ON A NEW SCENE.
+                //
+                // This used to be `DateTime.MinValue`, i.e. "act on the very first frame the
+                // new scene exists". Measured live 2026-09-21: after the act-1 boss the run went
+                // boss → act 2 combat with the boss's own rewards screen never handled — no
+                // CardReward/GoldReward lines between the boss and the next fight, and the party
+                // entered act 2 at 7/80 and 12/80. The bot is racing the UI: it submits as soon
+                // as a state exists, before the game has finished putting screens up, and the
+                // room-proceed driver sits ahead of the rewards driver in Tick's order.
+                //
+                // Two seconds is the user's number. It is applied AT TRANSITIONS rather than
+                // before every choice: a blanket 2 s on each action would add two seconds to
+                // every card on top of the 1.5 s pacing, while the race this fixes only exists
+                // in the frames right after a scene changes.
+                _nextActionAt = DateTime.UtcNow.AddMilliseconds(SceneSettleMs);
                 _lastProgressAt = ClockMs;
                 BotCooperation.Reset();
                 HumanFinisherHints.Reset();
@@ -83,15 +109,53 @@ public static class BotRuntime
                 KernelPlanner.Reset(newCombat: true);
                 BotChoicePlanSync.Cancel();
             }
-            // Choice handlers resolve deterministically on peers; only the host submits combat/map actions.
-            BotEventDriver.Tick(manager, state);
-            if (BotShopDriver.Tick(manager, state)) return;
+            // ALL NON-COMBAT DECISIONS ARE THROTTLED — the user's 2 s, applied here because the
+            // act-transition bug lives in this block.
+            //
+            // The transition is driven by the TERMINAL REWARD SCREEN'S CONTINUE BUTTON, which
+            // BotRoomProceedDriver presses (see the note further down about MoveToNextAct). Press
+            // it too early and the transition — including the NPC event that restores 80 % of
+            // lost HP — is gone: measured 2026-09-21, the run went boss -> rewards -> act 2
+            // combat with NO event room between, the party entering act 2 at 7/87. The block
+            // below the combat gate is a wall of "act on whatever exists this frame", and this
+            // gate is what stops the bot from being faster than the screens it depends on.
+            var nonCombatDue = DateTime.UtcNow >= _nextNonCombatAt;
+            if (nonCombatDue)
+            {
+                _nextNonCombatAt = DateTime.UtcNow.AddMilliseconds(NonCombatSettleMs);
+                BotEventDriver.Tick(manager, state);
+                // Room-level proceeds are local UI, not synchronizer choices, so they sit
+                // outside BotEventDriver and everything else that talks to a synchronizer.
+                BotEventProceedDriver.TryProceed(manager, state);
+                BotRoomProceedDriver.TryProceed(manager, state);
+                BotRewardsScreenDriver.TryDrive(manager, state);
+                BotTreasureChestDriver.TryOpenChest(manager, state);
+                if (BotShopDriver.Tick(manager, state)) return;
+            }
             if (!manager.NetService.IsConnected) { KernelPlanner.Reset(); _planStartedAt = 0; return; }
+            // Publish the planner's searching state before the panel renders, so the
+            // "searching for the optimal line" hint is on screen for exactly the frames
+            // the search is in flight.
+            BotCooperation.Searching = KernelPlanner.IsSearching;
+            BotCooperation.SearchingElapsedMs = KernelPlanner.SearchingElapsedMs;
+            BotCooperation.SearchingBudgetMs = KernelPlanner.SearchingWallBudgetMs;
+            BotCooperation.SearchingRounds = KernelPlanner.SearchingRoundsReached;
             BotCooperation.Refresh(state);
-            if (manager.NetService.Type != NetGameType.Host) { KernelPlanner.Reset(); _planStartedAt = 0; return; }
+            // Singleplayer counts as "this machine submits" — see RunAuthority, which is the
+            // one place this rule now lives. This gate used to accept only Host, so the bots
+            // did nothing for an entire automatically-played run; the same misreading then
+            // cost a whole live round in the shop (see RunAuthority's remarks).
+            if (!RunAuthority.IsSubmittingPeer(manager))
+            { KernelPlanner.Reset(); _planStartedAt = 0; return; }
             HumanFinisherHints.Invalidate();
             if (BotCooperation.Gate.Paused) HumanFinisherHints.Reset();
-            if (DateTime.UtcNow < _nextActionAt) { KernelPlanner.Reset(); _planStartedAt = 0; return; }
+            if (DateTime.UtcNow < _nextActionAt)
+            {
+                // Pacing throttles submission, not planning. Preserve an in-flight
+                // search and its deployed continuation across the short cooldown;
+                // resetting here caused one full search per card in a scripted fight.
+                _planStartedAt = 0; return;
+            }
             // A transient busy queue or running action must NOT discard an
             // in-flight kernel search. The search is expanded across frames, so
             // resetting it on every busy frame means it never completes: Poll
@@ -103,7 +167,16 @@ public static class BotRuntime
                 HumanFinisherHints.Reset();
                 _planStartedAt = 0; return;
             }
-            if (TryVoteOnMap(manager, state) || TryPickTreasureRelic(manager, state)) return;
+            // BotActChangeDriver is deliberately NOT called. Its gate was "the current
+            // room is a Boss room", which is true for the whole boss fight, and
+            // ActChangeSynchronizer.OnPlayerReady marks a seat ready as soon as its vote
+            // is accepted — so four driven seats could have marked the whole team ready
+            // and fired MoveToNextAct() mid-fight. It was also redundant: the act
+            // transition is triggered by the terminal reward screen's continue button,
+            // which BotRoomProceedDriver already presses, and NRewardsScreen's own
+            // handler calls SetLocalPlayerReady from there.
+            if (nonCombatDue
+                && (TryVoteOnMap(manager, state) || TryPickTreasureRelic(manager, state))) return;
             if (!CombatManager.Instance.IsInProgress || CombatManager.Instance.IsPaused || CombatManager.Instance.IsEnding
                 || manager.ActionQueueSynchronizer.CombatState != MegaCrit.Sts2.Core.Entities.Multiplayer.ActionSynchronizerCombatState.PlayPhase
                 || BotCooperation.Gate.Paused) { KernelPlanner.Reset(); _planStartedAt = 0; return; }
@@ -112,16 +185,32 @@ public static class BotRuntime
             if (combatIdentity is not MegaCrit.Sts2.Core.Combat.CombatState combat) return;
             Pacing.Observe(combat, combat.RoundNumber, ClockMs);
 
-            var eligible = state.Players.Where(p => BotRegistry.IsBot(p.NetId) && p.Creature.IsAlive
+            // Drives, not IsBot: a seat handed over from the room panel is planned
+            // and submitted exactly like a synthetic bot. Only the host reaches
+            // this line at all, so "who is allowed to drive whom" is already
+            // settled above and needs no second check here.
+            var eligible = state.Players.Where(p => AutoPilot.Drives(p.NetId) && p.Creature.IsAlive
                 && p.PlayerCombatState?.Phase == PlayerTurnPhase.Play
                 && !CombatManager.Instance.IsPlayerReadyToEndTurn(p)
                 && !manager.ActionQueueSet.ActionQueueIsPaused(p.NetId)).ToList();
             if (eligible.Count == 0) { KernelPlanner.Reset(); _planStartedAt = 0; return; }
             var candidates = new List<(MegaCrit.Sts2.Core.Entities.Players.Player Player, BotBrain.CombatMove Move)>();
-            // Every action is re-planned from the real board: only the first action
-            // of a search is submitted, so there is no stored script to play out
-            // (and none to go stale) between actions.
-            var botsIdle = NoAvailableCombatAction(eligible);
+            // These candidates are the LEGACY planner's input and are recomputed from the
+            // real board every tick. The kernel above is not the same: on an all-bot table
+            // it keeps a searched plan and replays it across cards and turns
+            // (KernelCombatPlanner.TryEmitFromPlan), re-searching only when the board stops
+            // matching the plan's own turn boundaries. That is safe precisely because no
+            // human can act between two of our cards — see the gate in TryEmitFromPlan.
+            // A live script step is an action even when no card is playable. The next step
+            // is usually the plan's own EndTurn precisely BECAUSE the team is out of
+            // cards, so `NoAvailableCombatAction` alone reads "time to end the turn" as
+            // "nothing to do" and the idle shortcut below skips the poll — the plan's
+            // EndTurn then never gets emitted, the cursor never advances past it, and the
+            // turn ends without the plan's own boundary bookkeeping ever being consumed.
+            // This is not a workaround for Reset() any more (Reset cannot reach the script
+            // — see KernelContinuation); it is the condition for the script's own next
+            // step to be considered an action at all.
+            var botsIdle = NoAvailableCombatAction(eligible) && !KernelPlanner.HasPendingStep;
             // The interval throttles only the idle re-check, never the action
             // itself: an in-flight search keeps its frames, and a team with a
             // playable card acts as soon as the plan is ready. Waiting the whole
@@ -129,7 +218,7 @@ public static class BotRuntime
             // feel slow in real play.
             if ((botsIdle || _idleLast) && !KernelPlanner.IsSearching
                 && !Pacing.IsDue(ClockMs, humansFinished, BotCooperation.Gate.Paused,
-                    teamDifficulty.CardIntervalMs())) { _planStartedAt = 0; return; }
+                    Math.Max(ActionSettleMs, teamDifficulty.CardIntervalMs()))) { _planStartedAt = 0; return; }
             // Stamp the start of this plan once: the search spans several frames,
             // and the next wait is shortened by how long it actually took.
             if (_planStartedAt == 0) _planStartedAt = ClockMs;
@@ -166,7 +255,14 @@ public static class BotRuntime
                 // all searches, which is exactly that state. Searching (and
                 // capturing) here cannot find anything, so skip the poll and let
                 // the potion and end-turn paths below run instead.
-                if (botsIdle)
+                // Never take the idle shortcut while a search is in flight. The guard at
+                // the top of this method already refuses to early-return in that case, so
+                // without this the flow fell straight through to Reset() — which threw
+                // the search away, reported Fallback, and let the potion path drink a
+                // bottle for a board the search had never finished thinking about. The
+                // panel had already published `Searching` for this tick, so the player
+                // watched "searching for the optimal line" while the bottle was used.
+                if (botsIdle && !KernelPlanner.IsSearching)
                 {
                     if (++_idleSkips % 40 == 0) ReportIdleIdle();
                     KernelPlanner.Reset();
@@ -200,13 +296,52 @@ public static class BotRuntime
             // card may still cover the hit, which would make the "full dose" partly
             // wasted. Lethal ones are judged now, so the throw lands before the
             // team commits its plays to an enemy the potion removes outright.
-            var earlyPotion = BotPotionPlanner.Choose(eligible, state.Players, NoPlayableCards(eligible));
-            if (earlyPotion is null && joint is null && KernelPlanner.ConfirmedPotion is { } proactivePotion)
+            // The kernel owns the combat whenever it actually produced a plan; only when it
+            // did NOT (fallback, or a completed search that recommends nothing) may the
+            // standalone planners propose anything. `candidates` below already uses this
+            // gate — the rescue heuristic did not, so it ran on every tick and could outbid
+            // a step the search had already priced and whose index it had already consumed.
+            // A SCRIPT IN FLIGHT OWNS THE ACTION — "the kernel answered Ready this tick" is not
+            // the same condition, and the difference leaks whole bottles and cards into the middle
+            // of a script.
+            //
+            // `kernelStatus != Ready` is true on EVERY tick where the previous step is still
+            // resolving (TryEmitFromPlan returns the waiting-for-step Pending there), so this gate
+            // let the standalone planners speak mid-script:
+            //   * `BotPotionPlanner` drank a bottle the script never priced;
+            //   * `BotBrain.ChooseCombatMove` proposed cards the script had not chosen;
+            //   * `TeamCombatPlanner.Choose` built a `joint` that TeamCoordinator.Select could pick
+            //     over the script's own step.
+            // Any of the three changes the hand the script's LATER steps were priced against.
+            //
+            // Measured live 2026-09-20 (A10 4-bot, BYGONE_EFFIGY_ELITE): the log reads
+            //   CoopBots potion: POWER_POTION; card-generation-tempo     ← not a kernel-plan step
+            //   plan step drift: field=R.card_generation …               ← the draw RNG diverged
+            //   plan step refused: index=17/42 card=INFLAME card-left-hand
+            // INFLAME is a POWER card, which is exactly what a Power Potion puts in hand: the bottle
+            // was drunk while the script sat at step 10/42, and seven steps later the script could
+            // not be executed. The plan was dropped and the rest of the fight went to the legacy
+            // planner — the failure the script existed to prevent.
+            //
+            // Refusals still fall back to the legacy planner as designed: a refusal CALLS
+            // DropContinuation, so HasPendingStep goes false and the planners speak on the next tick.
+            var scriptInFlight = KernelPlanner.HasPendingStep;
+            var legacyPlan = !scriptInFlight && (kernelStatus != KernelCombatPlanner.Status.Ready || joint is null);
+            var earlyPotion = legacyPlan
+                ? BotPotionPlanner.Choose(eligible, state.Players, NoPlayableCards(eligible))
+                : null;
+            // The PLAN's own potion step wins over the standalone rescue heuristic. Both
+            // are bottles, but the plan's was priced by the search AND has already consumed
+            // a plan index — taking the heuristic instead left that step unexecuted with
+            // its index advanced, so the very next tick failed the L1 check and dropped the
+            // plan. That is the "the plan resets right after drinking" symptom: not a failed
+            // check, but a step that was skipped by a second decision source.
+            if (joint is null && KernelPlanner.ConfirmedPotion is { } proactivePotion)
             {
                 if (TryUsePotion(proactivePotion.Potion, proactivePotion.Target))
                 {
-                    BotCooperation.LastAction = "主动用药：" + proactivePotion.Potion.Id.Entry;
-                    Log.Info($"CoopBots proactive potion: {proactivePotion.Potion.Id.Entry}; {proactivePotion.Reason}");
+                    BotCooperation.LastAction = "按剧本用药：" + proactivePotion.Potion.Id.Entry;
+                    Log.Info($"CoopBots scripted potion: {proactivePotion.Potion.Id.Entry}; {proactivePotion.Reason}");
                     _lastProgressAt = ClockMs;
                     _idleLast = false;
                     Pacing.MarkAction(ClockMs, _planStartedAt);
@@ -231,7 +366,6 @@ public static class BotRuntime
             // Any other outcome (fallback, or a completed search that recommends
             // nothing) must still let the legacy planner propose moves, otherwise
             // the bots can sit idle for the whole fight.
-            var legacyPlan = kernelStatus != KernelCombatPlanner.Status.Ready || joint is null;
             if (legacyPlan)
                 foreach (var player in eligible)
                 {
@@ -330,7 +464,9 @@ public static class BotRuntime
                 TeamFocus.ObserveSubmitted(combat, best.Move, BotCooperation.FocusTarget);
                 var progress = TurnState[best.Player.NetId];
                 TurnState[best.Player.NetId] = (progress.Turn, progress.Actions + 1);
-                BotCooperation.LastAction = $"{decision.Branch}：{BotRegistry.DisplayName(best.Player.NetId)} — {chosen.Title}";
+                BotCooperation.LastAction = $"{decision.Branch}："
+                    + $"{AutoPilot.Label(best.Player.NetId, best.Player.NetId == MegaCrit.Sts2.Core.Context.LocalContext.NetId ? "你" : null)}"
+                    + $" — {chosen.Title}";
                 if (joint is not null && joint.HpSaved > 0)
                     BotCooperation.LastAction += $"\n计划预计减少全队战损 {joint.HpSaved:F0} 点";
                 // The review could count "40 of 61 plays came from the legacy
@@ -369,18 +505,44 @@ public static class BotRuntime
             // Nothing left to play and every human is done: end the whole team's
             // turn in one tick. Ending one bot per interval made the team trickle
             // out over several seconds while the player waited.
-            if (eligible.Count > 0)
+            //
+            // Iterated over the driven seats rather than `eligible`. `eligible` excludes
+            // anyone already marked ready to end their turn, so on a team that was
+            // entirely ready this block did nothing AND said nothing — which is the
+            // same thing the log shows for a genuine stall. The empty case is now
+            // reported, because a turn that quietly never ends is the most expensive
+            // thing this planner can do.
+            // Phase is kept from `eligible` on purpose: without it this would also end
+            // the turn for a seat the phase gate excludes, which is a live behaviour
+            // change for mixed tables that have nothing to do with seat handover.
+            var ending = state.Players.Where(p => AutoPilot.Drives(p.NetId) && p.Creature.IsAlive
+                && p.PlayerCombatState?.Phase == PlayerTurnPhase.Play
+                && !CombatManager.Instance.IsPlayerReadyToEndTurn(p)).ToList();
+            if (ending.Count == 0)
             {
-                foreach (var ending in eligible)
+                if (Environment.TickCount64 >= _nextIdleEndLogAt)
                 {
-                    EnqueueAs.Invoke(manager.ActionQueueSynchronizer,
-                        new object[] { new EndPlayerTurnAction(ending, ending.PlayerCombatState!.TurnNumber), ending.NetId });
-                    BotCooperation.LastAction = $"{BotRegistry.DisplayName(ending.NetId)}：结束回合";
+                    _nextIdleEndLogAt = Environment.TickCount64 + 2000;
+                    Log.Info($"CoopBots end turn declined: nothing to play and no driven seat left to end "
+                        + $"(driven={state.Players.Count(p => AutoPilot.Drives(p.NetId))}, "
+                        + $"eligible={eligible.Count}, humansFinished={humansFinished}, "
+                        + $"kernel={kernelStatus}, noAction={KernelPlanner.LastNoAction})");
                 }
-                _lastProgressAt = ClockMs;
-                _idleLast = false;
+                ReportIdle(kernelStatus, legacyPlan, humansFinished);
+                _idleLast = true;
                 Pacing.MarkAction(ClockMs, _planStartedAt);
+                return;
             }
+            foreach (var seat in ending)
+            {
+                EnqueueAs.Invoke(manager.ActionQueueSynchronizer,
+                    new object[] { new EndPlayerTurnAction(seat, seat.PlayerCombatState!.TurnNumber), seat.NetId });
+                BotCooperation.LastAction = $"{AutoPilot.Label(seat.NetId)}：结束回合";
+            }
+            Log.Info($"CoopBots end turn: nothing to play; ended the turn for {ending.Count} seat(s)");
+            _lastProgressAt = ClockMs;
+            _idleLast = false;
+            Pacing.MarkAction(ClockMs, _planStartedAt);
         }
         catch (Exception error) { Report(error); _nextActionAt = DateTime.UtcNow.AddSeconds(2); }
     }
@@ -394,6 +556,7 @@ public static class BotRuntime
             .Strongest();
 
     private static long _lastProgressAt;
+    private static long _nextIdleEndLogAt;
     private static long _planStartedAt;
     // Ticks skipped because no eligible bot held a playable card. Non-zero and
     // large means the idle guard is doing its job; it should never grow while a
@@ -443,6 +606,28 @@ public static class BotRuntime
         }
         return true;
     }
+    /// <summary>
+    /// MINIMUM WAIT BEFORE EVERY CHOICE. The user's number, and their instruction was "before
+    /// every choice", not only at transitions — so it is applied as a FLOOR on the per-card
+    /// pacing interval rather than only in the scene-change branch below.
+    ///
+    /// WHAT IT COSTS: difficulty paces cards at 1500 ms (Pro). A 2000 ms floor therefore adds
+    /// 0.5 s to every Pro action, and it overrides CombatPacing's speed-up entirely — that
+    /// speed-up multiplies the interval by 0.0 once every human has finished, i.e. "the bots
+    /// are the only ones left, let them play as fast as they can think", and a floor cancels it.
+    /// Bot-only fights get measurably slower; that is the trade the user asked for, and it is
+    /// one constant to undo.
+    /// </summary>
+    private const int ActionSettleMs = 2000;
+    /// <summary>How long the bot lets a freshly-entered scene settle before it acts.</summary>
+    private const int SceneSettleMs = 2000;
+    /// <summary>
+    /// The same 2 s for everything the bot decides OUTSIDE combat: map votes, room proceeds,
+    /// reward screens, chests, shops, events. The combat pacing below is separate — a fight has
+    /// its own 1.5 s card cadence and its own gate.
+    /// </summary>
+    private const int NonCombatSettleMs = 2000;
+    private static DateTime _nextNonCombatAt = DateTime.MinValue;
     private const long StallMs = 6000;
     private static DateTime _nextIdleLogAt = DateTime.MinValue;
     private static void ReportIdle(KernelCombatPlanner.Status status, bool legacy, bool humansFinished)
@@ -510,10 +695,11 @@ public static class BotRuntime
             return false;
 
         // Let humans inspect the advice and register their preferences before bots vote.
-        if (state.Players.Where(p => !BotRegistry.IsBot(p.NetId))
+        // A handed-over seat is not a human here: waiting for it would wait forever.
+        if (state.Players.Where(p => !AutoPilot.Drives(p.NetId))
             .Any(p => !synchronizer.GetPlayerVote(p).voteReceived)) return false;
 
-        var waitingBots = state.Players.Where(p => BotRegistry.IsBot(p.NetId) && !synchronizer.GetPlayerVote(p).voteReceived).ToList();
+        var waitingBots = state.Players.Where(p => AutoPilot.Drives(p.NetId) && !synchronizer.GetPlayerVote(p).voteReceived).ToList();
         var reserved = state.Players.Select(p => synchronizer.GetPlayerVote(p))
             .Where(v => v.voteReceived && v.index.HasValue).Select(v => v.index!.Value).ToHashSet();
         var assignment = TeamCoordinator.AssignRelics(waitingBots, relics, reserved);
@@ -531,6 +717,27 @@ public static class BotRuntime
         return false;
     }
 
+    /// <summary>
+    /// Says WHY the map vote has not been cast, throttled. The map is the one decision point
+    /// where every failure mode is a bare `return false`, so a run that stalls there produces
+    /// no log at all beyond the periodic `where` line — which is exactly how round 8 spent four
+    /// minutes on an open map with `mapTravel=True` and no diagnosis. `where` already says the
+    /// screen is ready; this says which of the six waits is holding the vote up.
+    /// </summary>
+    private static void ReportMapWait(string why)
+    {
+        try
+        {
+            if (Environment.TickCount64 < _nextMapWaitLogAt) return;
+            _nextMapWaitLogAt = Environment.TickCount64 + 10_000;
+            Log.Info($"CoopBots map: waiting — {why}; "
+                + $"generation={RunManager.Instance?.MapSelectionSynchronizer?.MapGenerationCount.ToString() ?? "?"}");
+        }
+        catch (Exception error) { Report(error); }
+    }
+
+    private static long _nextMapWaitLogAt;
+
     private static bool TryVoteOnMap(RunManager manager, RunState state)
     {
         // Most rooms open the shared map as an overlay when they finish. In that
@@ -540,21 +747,69 @@ public static class BotRuntime
         if (mapScreen is null || !mapScreen.IsOpen || !mapScreen.IsTravelEnabled || mapScreen.IsTraveling)
             return false;
 
-        foreach (var player in state.Players.Where(player => BotRegistry.IsBot(player.NetId)))
+        foreach (var player in state.Players.Where(player => AutoPilot.Drives(player.NetId)))
         {
-            if (manager.MapSelectionSynchronizer.GetVote(player).HasValue)
+            if (manager.MapSelectionSynchronizer.GetVote(player) is { } alreadyVoted)
+            {
+                // The skip must be "already voted for THIS generation", not "has ever voted".
+                // A stale vote from the previous generation makes this true forever, so the
+                // seat is never re-voted and the map never advances. Measured live 2026-09-20
+                // (round 8): after the act-3 boss the map stood open with travel enabled for
+                // four minutes, `generation 4` appeared ZERO times in the whole log, and the
+                // last vote was generation 3. Behaviour is unchanged here — this only says
+                // which case it is when the generations disagree.
+                if (alreadyVoted.mapGenerationCount == manager.MapSelectionSynchronizer.MapGenerationCount)
+                    continue;
+                ReportMapWait($"stale-own-vote(gen={alreadyVoted.mapGenerationCount})");
                 continue;
+            }
 
-            var humanVotes = state.Players.Where(p => !BotRegistry.IsBot(p.NetId))
+            var humanVotes = state.Players.Where(p => !AutoPilot.Drives(p.NetId))
                 .Select(p => manager.MapSelectionSynchronizer.GetVote(p)).ToList();
-            if (humanVotes.Any(v => v?.mapGenerationCount != manager.MapSelectionSynchronizer.MapGenerationCount)) return false;
-            var bots = state.Players.Where(p => BotRegistry.IsBot(p.NetId)).ToList();
+            if (humanVotes.Any(v => v?.mapGenerationCount != manager.MapSelectionSynchronizer.MapGenerationCount))
+            { ReportMapWait("human-vote-not-this-generation"); return false; }
+            var bots = state.Players.Where(p => AutoPilot.Drives(p.NetId)).ToList();
             var humanVote = MultiHumanCooperation.Vote(humanVotes, bots.Count, bots.IndexOf(player));
-            if (!humanVote.HasValue || humanVote.Value.mapGenerationCount != manager.MapSelectionSynchronizer.MapGenerationCount)
-                return false;
+            if (!humanVote.HasValue)
+            {
+                // Nobody is left to follow. Vote() copies the humans' distribution
+                // and answers null when there is none, so a table where every seat
+                // has been handed over would abstain forever and the map would never
+                // advance — the one shape this feature exists to create. Fall back to
+                // the same route planner the human overlay draws, so each seat votes
+                // for the node its own deck actually wants.
+                if (humanVotes.Count > 0) { ReportMapWait("following-a-human-vote"); return false; }
+                // Say out loud which nodes the router is refusing to consider, and why.
+                // A silent skip is indistinguishable from "the router did not want it",
+                // and this one is not a preference — it is a room the game cannot build
+                // (see RoutePlanner.IsBuildable). Logged here rather than in the planner so
+                // it lands once per seat per map generation instead of once per frame.
+                foreach (var (skipped, why) in RoutePlanner.UnbuildableChildren(state))
+                    Log.Info($"CoopBots route: refusing to travel to {skipped} — {why}; "
+                        + "entering it throws and strands the run (vanilla, not route preference).");
+                if (RoutePlanner.Plan(state, player) is not { Path.Count: > 1 } route)
+                {
+                    // Name EVERY refused node, not just the start's children: the blocking one is
+                    // usually deeper, and a silent children-log nearly cleared the exclusion that
+                    // actually caused this stall (see RoutePlanner.UnbuildableNodes).
+                    var refused = RoutePlanner.UnbuildableNodes(state).ToList();
+                    ReportMapWait(refused.Count == 0
+                        ? "no-route(route-planner-returned-null, no-unbuildable-node-found)"
+                        : "no-route(blocked-by: " + string.Join(" ",
+                            refused.Select(r => $"{r.Coord}={r.Reason}")) + ")");
+                    return false;
+                }
+                humanVote = new MapVote
+                {
+                    mapGenerationCount = manager.MapSelectionSynchronizer.MapGenerationCount,
+                    coord = route.Path[1].coord,
+                };
+            }
+            if (humanVote.Value.mapGenerationCount != manager.MapSelectionSynchronizer.MapGenerationCount)
+            { ReportMapWait("vote-generation-race"); return false; }
             var vote = humanVote.Value;
             var action = new VoteForMapCoordAction(player, state.MapLocation, vote);
-            Log.Info($"CoopBots: queued map vote for {BotRegistry.DisplayName(player.NetId)} " +
+            Log.Info($"CoopBots: queued map vote for {AutoPilot.Label(player.NetId)} " +
                 $"from {state.MapLocation} to {vote.coord} (generation {vote.mapGenerationCount}).");
             EnqueueAs.Invoke(manager.ActionQueueSynchronizer, new object[] { action, player.NetId });
             _nextActionAt = DateTime.UtcNow.AddMilliseconds(220);
@@ -571,3 +826,7 @@ internal static class RunProcessPatch
 {
     private static void Postfix() => BotRuntime.Tick();
 }
+
+
+
+

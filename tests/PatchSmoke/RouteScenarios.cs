@@ -151,5 +151,70 @@ internal static class RouteScenarios
         if (!(maturityHigh > maturityLow + 0.5))
             throw new Exception($"Deck maturity must react to deck size and powers: {maturityLow:F2} -> {maturityHigh:F2}");
         Console.WriteLine("PASS: deck maturity reacts to size and scaling powers.");
+
+        // A room the GAME cannot build must never be a route candidate.
+        // Vanilla `RunManager.CreateRoom` builds a treasure room with
+        // `new TreasureRoom(State.CurrentActIndex)` and does NOT range-check the act, while
+        // `TreasureRoom(int actIndex)` throws unless 0 <= actIndex <= 2 (TreasureRoom.cs:25).
+        // `Glory` is the fourth act — index 3 — so a treasure node on its map throws
+        // ArgumentOutOfRangeException the moment it is entered, down the game's own click
+        // chain (NMapScreen.TravelToMapCoord <- MoveToMapCoordAction), leaving the run at
+        // room=null roomStack=0 with no way forward.
+        // Measured live 2026-09-20: it ended a 25-fight unattended run on floor 54.
+        // CHECKED (R2): making IsBuildable() always true turns this red with
+        //   System.Exception: act 4 (index 3) treasure must be excluded: vanilla
+        //   TreasureRoom throws for actIndex > 2.
+        if (RoutePlanner.IsBuildable(MapPointType.Treasure, 3))
+            throw new Exception("act 4 (index 3) treasure must be excluded: vanilla TreasureRoom throws for actIndex > 2.");
+        if (!RoutePlanner.IsBuildable(MapPointType.Treasure, 0) || !RoutePlanner.IsBuildable(MapPointType.Treasure, 1)
+            || !RoutePlanner.IsBuildable(MapPointType.Treasure, 2))
+            throw new Exception("treasure in acts 0-2 is buildable and must stay selectable; the exclusion has to stay narrow.");
+        foreach (var type in new[] { MapPointType.Monster, MapPointType.Elite, MapPointType.Boss, MapPointType.Shop,
+            MapPointType.RestSite, MapPointType.Unknown, MapPointType.Ancient })
+            if (!RoutePlanner.IsBuildable(type, 3))
+                throw new Exception($"{type} in act 4 must stay selectable; only treasure is unbuildable there.");
+        if (RoutePlanner.UnbuildableReason(MapPointType.Treasure, 3).Length == 0)
+            throw new Exception("an unbuildable room must carry a reason — every skip is logged verbatim.");
+        Console.WriteLine("PASS: only act-4 treasure is refused as unbuildable, and it carries the reason that gets logged.");
+
+        // The exclusion rides on the DP's existing reading of a non-finite value as
+        // UNREACHABLE (it skips such children). Pin that reading, not just the predicate: if
+        // the DP ever started treating non-finite as merely a bad score, the act-4 treasure
+        // exclusion would silently stop excluding anything.
+        var unreachableStart = new MapPoint(0, 0) { PointType = MapPointType.Monster };
+        var notBuildable = new MapPoint(0, 1) { PointType = MapPointType.Treasure };
+        var buildable = new MapPoint(1, 1) { PointType = MapPointType.RestSite };
+        var unreachableBoss = new MapPoint(0, 2) { PointType = MapPointType.Boss };
+        unreachableStart.AddChildPoint(notBuildable);
+        unreachableStart.AddChildPoint(buildable);
+        notBuildable.AddChildPoint(unreachableBoss);
+        buildable.AddChildPoint(unreachableBoss);
+        double Unreachable(MapPoint point) => point.PointType switch
+        {
+            // exactly what Plan(state, human) returns for a room IsBuildable() rejects
+            MapPointType.Treasure => RoutePlanner.UnreachableValue,
+            MapPointType.RestSite => 1,
+            _ => 0,
+        };
+        var avoided = RoutePlanner.Plan(unreachableStart, unreachableBoss, Unreachable);
+        if (avoided is null || avoided.Path.Count != 3 || avoided.Path[1] != buildable)
+            throw new Exception("a room the game cannot build has to be DETOURED around when another branch exists.");
+        // The discriminating half. If the sentinel is ever swapped for a finite "very bad"
+        // number, the detour above still passes (the other branch is simply better) while
+        // THIS one routes straight into the unbuildable room — which is the failure that
+        // would put a live run back into the act-4 crash.
+        // CHECKED (R2): RoutePlanner.UnreachableValue = -1000.0 turns this red with
+        //   System.Exception: the only route to the boss runs through a room the game
+        //   cannot build, so there is no route — got a 3-node path instead.
+        var trapStart = new MapPoint(0, 0) { PointType = MapPointType.Monster };
+        var trap = new MapPoint(0, 1) { PointType = MapPointType.Treasure };
+        var trapBoss = new MapPoint(0, 2) { PointType = MapPointType.Boss };
+        trapStart.AddChildPoint(trap);
+        trap.AddChildPoint(trapBoss);
+        var trapped = RoutePlanner.Plan(trapStart, trapBoss, Unreachable);
+        if (trapped is not null)
+            throw new Exception("the only route to the boss runs through a room the game cannot build, so there is no route — "
+                + $"got a {trapped.Path.Count}-node path instead. A finite \"very bad\" sentinel would route straight into it.");
+        Console.WriteLine("PASS: unbuildable rooms are detoured around, and a map whose only path leads through one has no route.");
     }
 }

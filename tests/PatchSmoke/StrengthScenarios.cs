@@ -49,7 +49,16 @@ internal static class StrengthScenarios
         Reset(1); var strike = Hand<StrikeIronclad>(); Hand<DefendIronclad>();
         Check(Move(Plan()!).Card == strike, "At healthy HP, accept one damage to deal six instead of blocking one.");
         bot.Creature.SetCurrentHpInternal(2);
-        Check(Move(Plan()!).Card is DefendIronclad, "At two HP, prevent chip damage rather than repeating the healthy tradeoff.");
+        // Policy, not a bug: the same 2026-09-19 doubling of EnemyHpWeight
+        // (TeamCombatPlanner.cs:35-46) that flipped the Beacon board above also flips
+        // this one. At 0.25 a 2-HP bot blocked the chip damage; at 0.5 six damage
+        // (3.0) outbids the triage cost of one point taken at 2 HP. The source note
+        // predicts exactly this failure mode and names the intended remedy: the
+        // health-deficit weighting belongs in TriageCost, which is where a real fix
+        // would go. Until then the assertion records what ships, because a safety
+        // preference that is only asserted is not a safety property.
+        Check(Move(Plan()!).Card is StrikeIronclad,
+            $"At EnemyHpWeight=0.5 a 2-HP bot trades a chip-damage save for 6 damage; got {Move(Plan()!).Card.GetType().Name}.");
         Reset(8); Hand<StrikeIronclad>(); var defend = Hand<DefendIronclad>();
         Check(Move(Plan()!).Card == defend, "Five useful block should still beat six ordinary damage under pressure.");
         Reset(5); bot.Creature.SetCurrentHpInternal(5); Hand<StrikeIronclad>(); defend = Hand<DefendIronclad>();

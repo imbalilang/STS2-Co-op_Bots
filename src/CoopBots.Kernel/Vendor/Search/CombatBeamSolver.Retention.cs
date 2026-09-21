@@ -112,6 +112,43 @@ internal sealed partial class CombatBeamSolver
         };
     }
 
+    private List<SearchNode> RankLongTermResourceWithAncestorRanks(
+        List<SearchNode> pool,
+        List<SearchNode> global)
+    {
+        // Uniform pools have no independent resource route. Determine that before staging
+        // ancestor ranks: the resource selector never consumes those ranks in this case.
+        var maximum = BeamRetentionPolicy.GetLongTermResourceMaximum(pool);
+        if (maximum.Count == pool.Count)
+            return [];
+        // RankBest 的返回表按引用去重，保存/还原名次只需要一条与它同序的并行数组，
+        // 还原顺序与原来按插入序枚举字典完全一致。
+        int[] globalRetentionRanks = new int[global.Count];
+        for (int index = 0; index < global.Count; index++)
+            globalRetentionRanks[index] = global[index].RetentionRank;
+        Dictionary<SearchNode, int> ancestorRetentionRanks = new(ReferenceEqualityComparer.Instance);
+        foreach (SearchNode candidate in pool)
+        {
+            for (SearchNode? ancestor = candidate.Parent; ancestor != null; ancestor = ancestor.Parent)
+            {
+                // The first visit records this ancestor and its complete parent chain.
+                // A repeated ancestor therefore proves every remaining parent is recorded too.
+                if (!ancestorRetentionRanks.TryAdd(ancestor, ancestor.RetentionRank))
+                    break;
+                if (ancestor.LongTermResourceRetentionRank != int.MaxValue)
+                    ancestor.RetentionRank = ancestor.LongTermResourceRetentionRank;
+            }
+        }
+        List<SearchNode> longTermResource = Retention.RankLongTermResource(pool, _profile.BeamWidth, maximum);
+        foreach (SearchNode candidate in longTermResource)
+            candidate.LongTermResourceRetentionRank = candidate.RetentionRank;
+        foreach ((SearchNode ancestor, int retentionRank) in ancestorRetentionRanks)
+            ancestor.RetentionRank = retentionRank;
+        for (int index = 0; index < global.Count; index++)
+            global[index].RetentionRank = globalRetentionRanks[index];
+        return longTermResource;
+    }
+
     private List<SearchNode> Prune(IEnumerable<SearchNode> nodes)
     {
         SearchMeasurement measurement = _run.Performance.Begin();
@@ -129,34 +166,14 @@ internal sealed partial class CombatBeamSolver
                 pool,
                 _profile.BeamWidth,
                 preserveDefensiveRoute: true,
+                useSecondRankBand: true,
                 observe: observeGlobalRetention);
+            // RankBest has drained its lanes and published its ordered result. The rest of
+            // retention is a separate allocation interval while the complete pool stays rooted.
+            _run.CheckpointPruneMetadata?.Invoke("resource_routes");
             List<SearchNode> selected = [.. global];
             HashSet<SearchNode> selectedSet = new(global, ReferenceEqualityComparer.Instance);
-            // RankBest 的返回表按引用去重，保存/还原名次只需要一条与它同序的并行数组，
-            // 还原顺序与原来按插入序枚举字典完全一致。
-            int[] globalRetentionRanks = new int[global.Count];
-            for (int index = 0; index < global.Count; index++)
-                globalRetentionRanks[index] = global[index].RetentionRank;
-            Dictionary<SearchNode, int> ancestorRetentionRanks = new(ReferenceEqualityComparer.Instance);
-            foreach (SearchNode candidate in pool)
-            {
-                for (SearchNode? ancestor = candidate.Parent; ancestor != null; ancestor = ancestor.Parent)
-                {
-                    // The first visit records this ancestor and its complete parent chain.
-                    // A repeated ancestor therefore proves every remaining parent is recorded too.
-                    if (!ancestorRetentionRanks.TryAdd(ancestor, ancestor.RetentionRank))
-                        break;
-                    if (ancestor.LongTermResourceRetentionRank != int.MaxValue)
-                        ancestor.RetentionRank = ancestor.LongTermResourceRetentionRank;
-                }
-            }
-            List<SearchNode> longTermResource = Retention.RankLongTermResource(pool, _profile.BeamWidth);
-            foreach (SearchNode candidate in longTermResource)
-                candidate.LongTermResourceRetentionRank = candidate.RetentionRank;
-            foreach ((SearchNode ancestor, int retentionRank) in ancestorRetentionRanks)
-                ancestor.RetentionRank = retentionRank;
-            for (int index = 0; index < global.Count; index++)
-                global[index].RetentionRank = globalRetentionRanks[index];
+            List<SearchNode> longTermResource = RankLongTermResourceWithAncestorRanks(pool, global);
             foreach (SearchNode candidate in longTermResource
                          .OrderBy(node => node.RetentionRank)
                          .ThenByDescending(node => node.Score))
@@ -165,6 +182,7 @@ internal sealed partial class CombatBeamSolver
                     continue;
                 selected.Add(candidate);
             }
+            _run.CheckpointPruneMetadata?.Invoke("opening_routes");
             bool hasCyclePortfolioWork = false;
             bool hasCycleExitWork = false;
             bool hasCrossTurnWork = false;
@@ -200,54 +218,12 @@ internal sealed partial class CombatBeamSolver
             if (hasCrossTurnWork)
                 AddCrossTurnPortfolio(pool, selected, selectedSet);
             // Every independent retention channel must finish before the ordered coordinator.
-            // In particular a late opening-channel winner with an inherited lease must pay this
-            // layer's ordered admission (or lose only that lease) before CycleRegion arbitration.
-            if (_profile.Phase == SolverSearchPhase.Deep
-                && pool.Count > _profile.BeamWidth
-                && root.HasUnusedCardReplayAllocator)
-            {
-                int channelWidth = Math.Clamp(_profile.BeamWidth / 12, 6, 12);
-                List<List<SearchNode>> openingChannels = pool
-                    .Select(node => (Node: node, Opening: FindOpeningCardNode(node)))
-                    .Where(item => item.Opening?.Parent is { } parent
-                        && (item.Opening.Snapshot.PersistentBuffValue
-                                > parent.Snapshot.PersistentBuffValue
-                            || item.Opening.Snapshot.StrategicEffects.RetentionValue
-                                > parent.Snapshot.StrategicEffects.RetentionValue))
-                    .GroupBy(item => (
-                        item.Node.PotionCount,
-                        FirstCardId: item.Opening!.Action!.CardId))
-                    .OrderByDescending(group => group.Max(item =>
-                        item.Opening!.Snapshot.StrategicEffects.RetentionValue))
-                    .ThenByDescending(group => group.Max(item => item.Node.Score))
-                    .Take(8)
-                    .Select(group => Retention.RankBest(
-                        group.Select(item => item.Node),
-                        channelWidth,
-                        preserveDefensiveRoute: true))
-                    .ToList();
-                int expandedLimit = Math.Min(
-                    pool.Count,
-                    checked(selected.Count + Math.Max(12, _profile.BeamWidth / 3)));
-                for (int round = 0;
-                     selected.Count < expandedLimit
-                         && openingChannels.Any(channel => round < channel.Count);
-                     round++)
-                {
-                    foreach (IReadOnlyList<SearchNode> channel in openingChannels)
-                    {
-                        if (round >= channel.Count || !selectedSet.Add(channel[round]))
-                            continue;
-                        selected.Add(channel[round]);
-                        if (selected.Count >= expandedLimit)
-                            break;
-                    }
-                }
-            }
-
+            // Power commitments are already settled inside RankBest and do not append candidates here.
+            _run.CheckpointPruneMetadata?.Invoke("ordered_routes");
             CycleRegionRetentionTransaction? cycleRegionTransaction = null;
             if (hasOrderedMutationWork)
                 Retention.AddOrderedMutationPortfolio(pool, selected, selectedSet);
+            _run.CheckpointPruneMetadata?.Invoke("finalize_routes");
             if (hasCycleRegionWork)
             {
                 cycleRegionTransaction = ApplyCycleRegionRetention(
@@ -311,7 +287,7 @@ internal sealed partial class CombatBeamSolver
     private List<SearchNode> ApplyPrimaryIncumbentBound(List<SearchNode> retained)
     {
         // Per-event growth can repeat; the HP-only floor is not a bound on this objective.
-        if (_hasGrowthTargets || _primaryIncumbent is not { } incumbent)
+        if (_hasGrowthTargets || _theftPolicy == SolverTheftPolicy.PreserveResources || _primaryIncumbent is not { } incumbent)
             return retained;
 
         List<SearchNode> bounded = ApplyPrimaryIncumbentBound(
@@ -371,7 +347,7 @@ internal sealed partial class CombatBeamSolver
             maxHpDeficit: 0,
             snapshot.RecoveredPlayerHp + Math.Max(0, snapshot.PlayerMaxHp - snapshot.PlayerHp),
             bossHpRelief,
-            snapshot.DeathSaveRelicHpRestored);
+            snapshot.DeathSaveHpRestored);
 
     internal static bool ShouldPruneByPrimaryIncumbent(
         int strategicHpLowerBound,
@@ -391,10 +367,12 @@ internal sealed partial class CombatBeamSolver
         int candidateStrategicHpDeficit,
         int? candidateCombatEndedTurn,
         ref PrimarySearchIncumbent? incumbent,
-        SolverPotionPolicy? effectivePotionPolicy = null)
+        SolverPotionPolicy? effectivePotionPolicy = null,
+        int candidateDeathSaveUseCount = 0)
     {
         if (!candidateCompleteVictory
             || !candidateSatisfiesHardRules
+            || candidateDeathSaveUseCount > 0
             || candidateExplicitPotionUses != minimumPotionUses
             || candidateCombatEndedTurn is not { } combatEndedTurn)
         {
@@ -415,7 +393,9 @@ internal sealed partial class CombatBeamSolver
                 candidateCombatEndedTurn,
                 currentCompleteVictory: baseline.Won,
                 currentStrategicHpDeficit: baseline.HpDeficit,
-                currentCombatEndedTurn: baseline.CombatEndedTurn) < 0;
+                currentCombatEndedTurn: baseline.CombatEndedTurn,
+                candidateDeathSaveUseCount: candidateDeathSaveUseCount,
+                currentDeathSaveUseCount: baseline.DeathSaveUseCount) < 0;
         if (!eligiblePotionFreeVictory && !eligibleExactPotionVictory)
         {
             return false;
@@ -444,7 +424,7 @@ internal sealed partial class CombatBeamSolver
         IReadOnlyList<SearchNode> retained,
         int completedTurnLayers)
     {
-        if (_hasGrowthTargets)
+        if (_hasGrowthTargets || _theftPolicy == SolverTheftPolicy.PreserveResources)
             return false;
         bool canEstablishPotionFreeIncumbent = _minimumPotionUses == 0
             && _potionPolicy is SolverPotionPolicy.Disabled or SolverPotionPolicy.Smart;
@@ -472,6 +452,7 @@ internal sealed partial class CombatBeamSolver
                 node.Snapshot.PlayerDead,
                 node.Snapshot.ProjectedPlayerHp);
             if (!completeVictory
+                || node.Snapshot.ProjectedDeathSaveUseCount > 0
                 || explicitPotionUses != _minimumPotionUses
                 || _enforcePotionDirectives
                     && !_potionStrategy.EvaluateForcedUses(
@@ -492,7 +473,7 @@ internal sealed partial class CombatBeamSolver
                     + ActEndingBossPolicy.RankedPostCombatRelicHeal(
                         root.PostCombatRelicHeal, true, node.Snapshot.PlayerHp, node.Snapshot.PlayerMaxHp),
                 _strategicBossHpRelief,
-                node.Snapshot.DeathSaveRelicHpRestored);
+                node.Snapshot.DeathSaveHpRestored);
             TryTightenPrimarySearchIncumbent(
                 _potionFreePolicyBaseline,
                 _minimumPotionUses,
@@ -503,7 +484,8 @@ internal sealed partial class CombatBeamSolver
                 strategicHpDeficit,
                 node.Snapshot.CombatEndedTurn,
                 ref tightened,
-                effectivePotionPolicy: _potionPolicy);
+                effectivePotionPolicy: _potionPolicy,
+                candidateDeathSaveUseCount: node.Snapshot.ProjectedDeathSaveUseCount);
         }
 
         if (Nullable.Equals(tightened, _primaryIncumbent))
@@ -1185,15 +1167,11 @@ internal sealed partial class CombatBeamSolver
         long minimumHealthRisk = long.MaxValue;
         foreach (SearchNode node in eligible)
             minimumHealthRisk = Math.Min(minimumHealthRisk, CycleHealthRisk(node, bestMaxHp));
-        int availableFutureSoldHp = Math.Max(
-            0,
-            SoldHpThreshold() - battleDamage.SoldHpCommitted);
         List<SearchNode> retained = [];
         foreach (bool investmentBand in new[] { false, true })
         {
             bool InBand(SearchNode node)
-                => (node.FutureSoldHp > availableFutureSoldHp + node.Snapshot.GrowthHpCredit
-                        || CycleHealthRisk(node, bestMaxHp) > minimumHealthRisk)
+                => (CycleHealthRisk(node, bestMaxHp) > minimumHealthRisk)
                     == investmentBand;
 
             Dictionary<CrossTurnProbeFamilyKey, int> inFlightIndexes = [];
@@ -1511,6 +1489,20 @@ internal sealed partial class CombatBeamSolver
         IReadOnlyList<SearchNode> candidates,
         IReadOnlyList<SearchNode> retained)
     {
+        // Larger retained pools otherwise require a quadratic reference scan. Keep the
+        // allocation-free path for tiny pools; snapshot identity (not node identity) owns retention.
+        if (retained.Count > 8)
+        {
+            HashSet<SimulationSnapshot> retainedSnapshots = new(
+                retained.Count, ReferenceEqualityComparer.Instance);
+            foreach (SearchNode survivor in retained)
+                retainedSnapshots.Add(survivor.Snapshot);
+            foreach (SearchNode candidate in candidates)
+                if (!retainedSnapshots.Contains(candidate.Snapshot))
+                    candidate.Snapshot.ReleaseSimulator();
+            return;
+        }
+
         foreach (SearchNode candidate in candidates)
         {
             bool keepSnapshot = false;
@@ -1952,22 +1944,44 @@ internal sealed partial class CombatBeamSolver
     {
         if (_run.StandPatCache.TryGetValue(node.StateKey, out StandPatEvaluation cached))
             return cached;
-        SimulationSnapshot end = ReplayAction(node, new PlanAction(PlanActionKind.EndTurn, node.Turn));
-        StandPatEvaluation evaluation = new(
-            end.AllEnemiesDead,
-            Math.Max(0, node.Snapshot.EnemyHp - end.EnemyHp),
-            end.ProjectedPlayerHp,
-            end.Energy * 16
-                + end.Stars * 8
-                + end.HandCount
-                + end.ReachableHandValue
-                + end.FutureResourceValue
-                + end.OstyHp * 16
-                + end.OstyMaxHp * 4);
-        end.ReleaseSimulator();
+        _run.CheckpointPruneMetadata?.Invoke("stand_pat_single");
+        _run.EnsurePruneMemory?.Invoke(StandPatProbeAllocationReserve());
+        long allocatedBefore = OwnedSearchAllocatedBytes();
+        long threadAllocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        StandPatEvaluation evaluation = ComputeStandPat(node);
+        _run.StandPatBatchAllocatedBytes += Math.Max(
+            0, OwnedSearchAllocatedBytes() - allocatedBefore);
+        _run.StandPatProbeAllocatedHighWater = Math.Max(
+            _run.StandPatProbeAllocatedHighWater,
+            GC.GetAllocatedBytesForCurrentThread() - threadAllocatedBefore);
         _run.StandPatCache.Add(node.StateKey, evaluation);
         _run.StandPatProbes++;
+        _run.CheckpointPruneMetadata?.Invoke("rank_after_stand_pat_single");
         return evaluation;
+    }
+
+    private StandPatEvaluation ComputeStandPat(SearchNode node)
+    {
+        SimulationSnapshot end = ReplayAction(node, new PlanAction(PlanActionKind.EndTurn, node.Turn));
+        try
+        {
+            ObserveSearchPath(node, SearchPathObservationStage.StandPatProbe, "stand_pat_replayed");
+            return new StandPatEvaluation(
+                end.AllEnemiesDead,
+                Math.Max(0, node.Snapshot.EnemyHp - end.EnemyHp),
+                end.ProjectedPlayerHp,
+                end.Energy * 16
+                    + end.Stars * 8
+                    + end.HandCount
+                    + end.ReachableHandValue
+                    + end.FutureResourceValue
+                    + end.OstyHp * 16
+                    + end.OstyMaxHp * 4);
+        }
+        finally
+        {
+            end.ReleaseSimulator();
+        }
     }
 
     private static int PolicyBoundaryRank(SearchBoundaryReason reason)

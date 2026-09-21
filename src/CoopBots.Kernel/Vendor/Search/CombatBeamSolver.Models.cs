@@ -24,39 +24,6 @@ namespace CoopBots.Kernel.Vendor;
 
 internal sealed partial class CombatBeamSolver
 {
-    private readonly record struct TranspositionLabel(
-        int PotionCount,
-        int PotionStrategicCost,
-        int FutureSoldHp,
-        int CumulativePlayerHpLost,
-        int ActionCount,
-        double Score);
-
-    private sealed class TranspositionFrontier(TranspositionLabel first)
-    {
-        private readonly List<TranspositionLabel> _labels = [first];
-
-        public bool TryAccept(TranspositionLabel next)
-        {
-            foreach (TranspositionLabel current in _labels)
-            {
-                if (Dominates(current, next))
-                    return false;
-            }
-            _labels.RemoveAll(current => Dominates(next, current));
-            _labels.Add(next);
-            return true;
-        }
-
-        private static bool Dominates(TranspositionLabel left, TranspositionLabel right)
-            => left.PotionCount <= right.PotionCount
-                && left.PotionStrategicCost <= right.PotionStrategicCost
-                && left.FutureSoldHp <= right.FutureSoldHp
-                && left.CumulativePlayerHpLost <= right.CumulativePlayerHpLost
-                && left.ActionCount <= right.ActionCount
-                && left.Score >= right.Score;
-    }
-
     private readonly record struct StandPatEvaluation(
         bool AllEnemiesDead,
         int DelayedDamage,
@@ -128,16 +95,35 @@ internal sealed partial class CombatBeamSolver
         bool measurePhasePerformance,
         SearchFramePressureSignal framePressureSignal)
     {
+        public NoveltySearchRun? Novelty;
         public Guid PathDiagnosticsSolverId;
         public int PathDiagnosticsBoundaryId;
+        public long RoutingChoiceSummaryBuilds;
+        public long RoutingChoiceSummaryHits;
+        public long RoutingChoiceSummaryBypasses;
+        public long PowerValuationCandidates;
+        public long PowerFrontierEvaluations;
+        public int PowerCommitmentsCreated;
+        public int PowerCommitmentsAdmitted;
+        public int PowerCommitmentsExpired;
+        public int PowerCommitmentsRealized;
+        public int PowerCommitmentSeatsPeak;
         public readonly SearchPerformanceMetrics Performance = new(measurePhasePerformance);
         public readonly SearchWorkPacer WorkPacer = new(framePressureSignal);
         public readonly OwnedExpansionBatch<SimulationSnapshot, RawCardCandidate, SearchNode>.Pool
             ExpansionBatchPool = new(static snapshot => snapshot.ReleaseSimulator());
         public readonly SnapshotListBuffer<PredictedCard> SnapshotLiveCards = new();
+        public ParallelExpansionExecutor? ActiveParallelExpansion;
         public Dictionary<StateFingerprint, TranspositionFrontier> Transpositions = [];
         public Dictionary<StateFingerprint, TranspositionFrontier> ExpandedTranspositions = [];
         public Dictionary<StateFingerprint, StandPatEvaluation> StandPatCache = [];
+        // Only the coordinator owns a prune checkpoint; probe lanes never receive it.
+        public Action<long>? EnsurePruneMemory;
+        public Action<string>? CheckpointPruneMetadata;
+        public long StandPatProbeAllocatedHighWater;
+        public long StandPatBatchAllocatedBytes;
+
+        public readonly PotionStrategicCostLookup PotionStrategicCosts = new();
         public Dictionary<(StateFingerprint State, int RoundIndex), ThreatProjection> ThreatProjectionCache = [];
         public Dictionary<PredictionRiskSignature, CoverageSummary> CoverageCache = [];
         // This ledger is search semantics rather than a rebuildable cache. In particular, a
@@ -184,11 +170,6 @@ internal sealed partial class CombatBeamSolver
         public int OrderedMutationColdAtomicCommitted;
         public int OrderedMutationColdAtomicRejected;
         public int Expanded;
-        public DeferredTurnFrontier? DeferredFrontier;
-        public int DeferredFrontierCaptured;
-        public int DeferredFrontierRestored;
-        public int DeferredFrontierReplayRoots;
-        public int DeferredFrontierReplayActions;
         public int DominatedActionsPruned;
         public int TopQueueActionsDropped;
         public int ActionAdmissionRepresentativesProtected;
@@ -202,6 +183,23 @@ internal sealed partial class CombatBeamSolver
         public int HpInvestmentBranchesProtected;
         public int ReplayCount;
         public int ForkCount;
+        public int RoundReplayPrefixCaptures;
+        public int RoundReplayPrefixReuses;
+        public int ExecutionChoiceCaptures;
+        public int ExecutionChoiceReuses;
+        public int CardChoicePrefixAttempts;
+        public int CardChoicePrefixCaptures;
+        public int CardChoicePrefixReuses;
+        public int CardChoicePrefixFallbacks;
+        public int PotionChoicePrefixForks;
+        public int PotionChoicePrefixCaptures;
+        public int PotionChoicePrefixReuses;
+        public int PotionChoicePrefixFallbacks;
+        // Lane-local scheduling hint, never combat state or candidate policy. Learn only
+        // after an initial EndTurn probe reached the stable post-draw boundary and
+        // produced a choice layer.
+        public bool HasObservedPostDrawRoundChoice;
+        public HashSet<string>? ObservedHandDrawShuffleChoiceSources;
         public int TransitionCount;
         public int ReusedNodeSnapshots;
         public int TranspositionBranchesPruned;
@@ -236,8 +234,7 @@ internal sealed partial class CombatBeamSolver
         public int DeferredRoundChoiceFiniteQuotaFallbacks;
         public int DeferredRoundChoiceFinitePrimaryLayers;
         public int DeferredRoundChoiceFinitePendingFallbacks;
-        // Retained as zero-valued compatibility telemetry after nested choice replay moved to the
-        // deterministic coordinator-owned two-phase collector.
+        // Choice preparation/replay/continuation jobs on the same fixed expansion lanes.
         public int ParallelRoundChoiceReplayWaves = 0;
         public int ParallelRoundChoiceReplayWorkItems = 0;
         public int MaxParallelRoundChoiceReplayConcurrency = 0;
@@ -273,7 +270,10 @@ internal sealed partial class CombatBeamSolver
         {
             ExpansionBatchPool.Clear();
             SnapshotLiveCards.Clear();
-            StandPatCache = [];
+            // A running prune may have skipped cached representatives when preparing its
+            // pending probes. Keep these scalar answers through its drained checkpoints.
+            if (EnsurePruneMemory == null)
+                StandPatCache = [];
             ThreatProjectionCache = [];
             CoverageCache = [];
         }
@@ -336,7 +336,7 @@ internal sealed partial class CombatBeamSolver
         int PlayerMaxHp,
         int CumulativePlayerHpLost,
         int RecoveredPlayerHp,
-        int DeathSaveRelicHpRestored,
+        int DeathSaveHpRestored,
         int LongTermResourceValue,
         int AngerCopiesGenerated,
         int PlayerBlock,
@@ -377,7 +377,7 @@ internal sealed partial class CombatBeamSolver
                 snapshot.PlayerMaxHp,
                 snapshot.CumulativePlayerHpLost,
                 snapshot.RecoveredPlayerHp,
-                snapshot.DeathSaveRelicHpRestored,
+                snapshot.DeathSaveHpRestored,
                 snapshot.LongTermResourceValue,
                 snapshot.AngerCopiesGenerated,
                 snapshot.PlayerBlock,

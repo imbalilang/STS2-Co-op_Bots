@@ -148,6 +148,34 @@ internal readonly record struct PotionFreePolicyBaseline(
     bool Won,
     int HpDeficit,
     int PlayerHp,
-    int? CombatEndedTurn);
+    int? CombatEndedTurn)
+{
+    public int DeathSaveUseCount { get; init; }
+}
 
 internal sealed class PotionPolicyUnsatisfiedException(string message) : InvalidOperationException(message);
+
+// One solver owns this small table of canonical, immutable policy values. Misses use
+// the original catalog lookup, including its missing/duplicate-ID failure behavior.
+// It holds no branch objects and is never shared by concurrently executing solvers.
+internal sealed class PotionStrategicCostLookup
+{
+    private readonly Dictionary<(string Id, bool RenewableRock), int> _costs = [];
+    public long Hits { get; private set; }
+    public long Misses { get; private set; }
+    public int Count => _costs.Count;
+
+    public int Get(string potionId, bool renewablePotionShapedRock)
+    {
+        var key = (potionId, renewablePotionShapedRock);
+        if (_costs.TryGetValue(key, out int cost))
+        {
+            Hits++;
+            return cost;
+        }
+        Misses++;
+        cost = PotionUsePolicy.StrategicHpCost(potionId, renewablePotionShapedRock);
+        _costs.Add(key, cost);
+        return cost;
+    }
+}

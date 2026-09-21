@@ -9,13 +9,15 @@ var harmony = new Harmony("cn.xiwa.sts2.coopbots.smoke");
 LobbyBotService.ValidateRuntimeSchema();
 harmony.PatchAll(typeof(ModEntry).Assembly);
 
-// Focused building-policy-v2 core gate: mechanism dependencies, continuous
-// size relief, structure bottlenecks and contextual upgrades. TestEnvironment
-// installs the headless model database the scenarios need; the same Run() is
-// also called in the normal suite below.
-if (args.Contains("--building-policy-only"))
+// Permanent deck-edit entry regressions only: drives BotBrain.SelectCards
+// against real game models without running the wider patch/combat suite. The
+// patches above are still required because the models only load headlessly with
+// them applied.
+if (args.Contains("--building-edits-only"))
 {
-    BuildingPolicyScenarios.Run();
+BuildValueScenarios.Run();
+BuildingPolicyScenarios.Run();
+    CommunityDraftScenarios.Run();
     return;
 }
 
@@ -30,16 +32,68 @@ if (args.Contains("--community-draft-only"))
     return;
 }
 
+// Focused building-policy-v2 core gate: mechanism dependencies, continuous
+// size relief, structure bottlenecks and contextual upgrades. TestEnvironment
+// installs the headless model database the scenarios need before any model is
+// constructed; the same Run() is also called in the normal suite below.
+if (args.Contains("--building-policy-only"))
+{
+    TestEnvironment.Ensure();
+    BuildingPolicyScenarios.Run();
+    CommunityDraftScenarios.Run();
+    return;
+}
+
 // Focused team-economy gate: the combat-start snapshot, bounded team bonus,
 // bounded two-purchase shop comparison and the shared removal plan, followed by
 // the existing build/shop/coordinator regressions they touch.
 if (args.Contains("--team-economy-only"))
 {
+    TestEnvironment.Ensure();
     TeamEconomyScenarios.Run();
     BuildValueScenarios.Run();
     BuildingPolicyScenarios.Run();
     ShopScenarios.Run();
     CoordinatorScenarios.Run();
+    return;
+}
+
+#if KERNEL_TESTS
+// Focused power-route backport gate: TestEnvironment installs the headless
+// model database/presentation stubs the full suite normally sets up in
+// CooperativeScenarios, then KernelEngineScenarios runs
+// KernelPowerRouteScenarios plus the existing kernel scenario regressions.
+if (args.Contains("--kernel-power-only"))
+{
+    TestEnvironment.Ensure();
+    KernelEngineScenarios.Run();
+    return;
+}
+
+// MEASUREMENT ONLY, not a gate and not part of any suite: the cost of one joint
+// full-bot search in the production opening shape, with the peak managed heap
+// sampled rather than inferred from the cumulative allocation number. See
+// SearchCostProbe for why the peak is the number that matters on an 8 GB box.
+if (args.Contains("--perf-probe"))
+{
+    TestEnvironment.Ensure();
+    if (args.Contains("--list-encounters"))
+    {
+        SearchCostProbe.ListEncounters(Array.IndexOf(args, "--list-encounters") + 1 < args.Length
+            ? args[Array.IndexOf(args, "--list-encounters") + 1] : "");
+        return;
+    }
+    SearchCostProbe.Run(args);
+    return;
+}
+#endif
+
+// Dedicated capture checks: default-off writer, real model serialization and
+// the selection linkage. Runs after Harmony setup and does not touch the combat
+// suite.
+if (args.Contains("--building-capture-only"))
+{
+    BuildDecisionCaptureScenarios.Run(args);
     return;
 }
 
@@ -159,6 +213,9 @@ if (gate.Paused) throw new Exception("New combat leaked the previous encounter's
 PacingScenarios.Run();
 if (Fact(Analyze(new Vicious()), "Draw") != 0)
     throw new Exception("Conditional Vicious draw must not count as immediate draw.");
+// Deliberately above CooperativeScenarios: that one currently fails first, and a check
+// registered with the later blocks would never execute in a red suite.
+AutoPilotScenarios.Run();
 CooperativeScenarios.Run();
 // Runs before the build-value scenarios: it publishes this build's card ids for
 // the bake scripts, and a stale generated table fails the guards below on

@@ -29,6 +29,7 @@ internal static class AfterCardExhaustedMirrors
 
     public static void Invoke(AbstractModel listener, AfterCardExhaustedMirrorContext context)
     {
+        using var dispatch = context.Simulator.BeginExecutionDispatch();
         Registry.Invoke(listener, context);
     }
 
@@ -71,12 +72,12 @@ internal static class AfterCardExhaustedMirrors
 
     private static void HandleDarkEmbracePower(DarkEmbracePower power, AfterCardExhaustedMirrorContext context)
     {
+        context.Simulator.AcknowledgeExecutionDispatch();
         if (context.PreviewCard.Owner.Creature == power.Owner && power.Owner.Player is { } player)
         {
             if (context.CausedByEthereal)
             {
-                // Ethereal exhaust only records the count here in vanilla; the actual draw happens
-                // later in end-turn cleanup, which this simulation path does not include.
+                context.StateStore.Get(power, () => new DarkEmbracePredictionState(power)).EtherealCount++;
             }
             else
             {
@@ -167,6 +168,13 @@ internal static class AfterCardExhaustedMirrors
         // StS2 v0.108.0 added Midnight's global exhaust listener; mutate only the predicted instance.
         context.State.FindCard(card)?.MutablePreview.EnergyCost.AddThisCombat(-1);
     }
+}
+
+internal sealed class DarkEmbracePredictionState(DarkEmbracePower power) : IPredictionStateForkable
+{
+    public int EtherealCount { get; set; } = power.GetInternalData<DarkEmbracePower.Data>().etherealCount;
+
+    public object Fork(PredictionForkContext context) => MemberwiseClone();
 }
 
 internal sealed class BurningSticksPredictionState(BurningSticks relic) : IPredictionStateForkable

@@ -4,6 +4,8 @@ namespace CoopBots.Kernel.Vendor.Engine.InCombat.Simulation;
 
 internal readonly record struct RecordedRelicTrigger(string RelicId, string Summary);
 internal readonly record struct RecordedKill(uint CombatId, string TargetId, CombatDamageSource Source);
+internal readonly record struct RecordedHealthChange(int ActionIndex, string Kind, uint? Target,
+    CombatDamageSource Source, decimal Requested, decimal Modified, int Before, int After);
 
 /// <summary>
 /// Enabled only for the single final-route replay. Normal Beam expansion keeps this null, so
@@ -14,6 +16,11 @@ internal sealed class ActionRelicTriggerRecorder
     private readonly Dictionary<int, List<RecordedRelicTrigger>> _triggers = [];
     private readonly Dictionary<int, List<RecordedKill>> _kills = [];
     private int _actionIndex = -1;
+    private List<RecordedHealthChange>? _healthChanges;
+    public IReadOnlyList<RecordedHealthChange> HealthChanges => _healthChanges ?? [];
+    public void RecordHealth(string kind, uint? target, CombatDamageSource source,
+        decimal requested, decimal modified, int before, int after)
+        => (_healthChanges ??= []).Add(new(_actionIndex, kind, target, source, requested, modified, before, after));
 
     public void BeginAction(int actionIndex) => _actionIndex = actionIndex;
 

@@ -1,21 +1,22 @@
 # CoopBots 源码包说明
 
-本源码包对应 `CoopBots 0.36.4`，只包含继续开发、构建和测试所需的文本源码与配置。
+本文档描述**源码包**包含与排除了什么。它对应**已发布版本 `CoopBots 0.37.0`**；
+工作树里的开发版本会领先于它（权威是 `src/CoopBots/mod_manifest.json`），发版时同步版本号。
 
 ## 包含内容
 
 - `src/CoopBots/`：MOD C# 源码、项目文件和 Mod 清单。
-- `src/CoopBots.Kernel/`：接入 CombatSolver 的模拟内核实验项目；`Vendor/` 为上游导入源码，来源见 `UPSTREAM.json` 与 `INTEGRATION.md`。
+- `src/CoopBots.Kernel/`：接入 CombatSolver 的模拟内核实验项目；`Vendor/` 为上游导入源码，来源见 `UPSTREAM.json` / `POWER_SYNC.json` 与 `INTEGRATION.md`，偏离见 `VENDOR_DEVIATIONS.md`。
 - `tests/PatchSmoke/`：补丁挂载与多人协作回归测试源码；`DraftSim/` 是本地调参与构筑校验用的模拟器测试线，**不属于 MOD 包体**，构建脚本也不会把它打进发布包。
 - `scripts/`：macOS/Linux 与 Windows 构建脚本、CombatSolver 内核导入器、Spire Codex 数据抓取脚本。
-- `CombatSolver-0.33.9/`：用于算法研究的参考项目源码、测试、文档、开发约束与第三方声明。
-- `README.md`（简介、构建与许可）、`CHANGELOG.md`（完整版本变更记录）、`.gitignore` 和本说明。
+- `README.md`（简介、构建与许可）、`AGENT.md`（代理运作规范）、`CHANGELOG.md`（完整版本变更记录）、`.gitignore` 和本说明。
 
 ## 已排除内容
 
-- 所有 `bin/`、`obj/`、仓库根发行包目录和 `.git/` 目录；作为开发文档的 `docs/releases/` 会保留。
-- `work/` 中的本地 .NET SDK、反编译工具、缓存和重复解压目录。
+- 所有 `bin/`、`obj/`、仓库根发行包目录和 `.git/` 目录。
+- `work/` 中的本地 .NET SDK、PowerShell 便携版、反编译工具、缓存与实验数据。
 - `outputs/` 中的 DLL、历史安装包和其他发行物。
+- `third_party/` 下的第三方参考副本（`CombatSolver-main/`、`CombatSolver-upstream-main/`、`StS2.RandomForeseer-0.13.14/` 及参考包）——它们**不是我们的**，只在本工作区保留供来源核对，见 `THIRD_PARTY_NOTICES.md`。
 - 所有 DLL、PDB、EXE、ZIP、RAR、DYLIB、SO 和系统元数据文件。
 
 ## 构建环境

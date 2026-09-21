@@ -11,81 +11,12 @@ using CoopBots.Kernel.Vendor.Engine.InCombat.Simulation;
 
 namespace CoopBots.Kernel.Vendor;
 
-internal readonly record struct CardPlayPowerSuppression(
-    Creature Owner,
-    int? PhantomBlades,
-    int? Lethality,
-    int? Unmovable);
-
 internal sealed partial class SimulatedCombatState
 {
-    private sealed class HistorySensitiveCardModifierScope(
-        SimulatedCombatState owner,
-        CardPlayPowerSuppression suppression) : IDisposable
-    {
-        private bool _disposed;
+    public void RecordPoweredCardBlockGained(Creature owner)
+        => (_blockCardsPlayedThisTurn ??= [])[owner] = GetBlockCardsPlayedThisTurn(owner) + 1;
 
-        public void Dispose()
-        {
-            if (_disposed)
-                return;
-            _disposed = true;
-            owner.RestoreHistorySensitiveCardModifiers(suppression);
-        }
-    }
-
-    IDisposable ICombatPredictionCardExecutionSink.BeginHistorySensitiveCardModifierScope(
-        PredictedCard card)
-        => new HistorySensitiveCardModifierScope(
-            this,
-            SuppressHistorySensitiveCardModifiers(card));
-
-    public CardPlayPowerSuppression SuppressHistorySensitiveCardModifiers(PredictedCard card)
-    {
-        Creature owner = card.Preview.Owner.Creature;
-        int? phantomBlades = null;
-        int? lethality = null;
-        int? unmovable = null;
-
-        int phantomAmount = GetAmount<PhantomBladesPower>(owner);
-        if (phantomAmount > 0
-            && card.Preview.Tags.Contains(CardTag.Shiv)
-            && GetShivsPlayedThisTurn(owner) > 0)
-        {
-            phantomBlades = phantomAmount;
-            SetAmount<PhantomBladesPower>(owner, 0);
-        }
-
-        int lethalityAmount = GetAmount<LethalityPower>(owner);
-        if (lethalityAmount > 0
-            && card.Preview.Type == CardType.Attack
-            && GetAttacksPlayedThisTurn(owner) > 0)
-        {
-            lethality = lethalityAmount;
-            SetAmount<LethalityPower>(owner, 0);
-        }
-
-        int unmovableAmount = GetAmount<UnmovablePower>(owner);
-        if (unmovableAmount > 0 && GetBlockCardsPlayedThisTurn(owner) >= unmovableAmount)
-        {
-            unmovable = unmovableAmount;
-            SetAmount<UnmovablePower>(owner, 0);
-        }
-
-        return new CardPlayPowerSuppression(owner, phantomBlades, lethality, unmovable);
-    }
-
-    public void RestoreHistorySensitiveCardModifiers(CardPlayPowerSuppression suppression)
-    {
-        if (suppression.PhantomBlades is { } phantomBlades)
-            SetAmount<PhantomBladesPower>(suppression.Owner, phantomBlades);
-        if (suppression.Lethality is { } lethality)
-            SetAmount<LethalityPower>(suppression.Owner, lethality);
-        if (suppression.Unmovable is { } unmovable)
-            SetAmount<UnmovablePower>(suppression.Owner, unmovable);
-    }
-
-    public void RecordCardPlayed(PredictedCard card, bool gainedBlock)
+    public void RecordCardPlayed(PredictedCard card)
     {
         RecordHistoryCourseAttack(card);
         Creature owner = card.Preview.Owner.Creature;
@@ -95,9 +26,6 @@ internal sealed partial class SimulatedCombatState
             if (card.Preview.Tags.Contains(CardTag.Shiv))
                 (_shivsPlayedThisTurn ??= [])[owner] = GetShivsPlayedThisTurn(owner) + 1;
         }
-        if (gainedBlock)
-            (_blockCardsPlayedThisTurn ??= [])[owner] = GetBlockCardsPlayedThisTurn(owner) + 1;
-
         foreach (Creature creature in Creatures)
         {
             SlowPower? slow = GetPower<SlowPower>(creature);
@@ -159,7 +87,7 @@ internal sealed partial class SimulatedCombatState
         return value;
     }
 
-    private int GetBlockCardsPlayedThisTurn(Creature owner)
+    public int GetBlockCardsPlayedThisTurn(Creature owner)
     {
         if (_blockCardsPlayedThisTurn?.TryGetValue(owner, out int value) == true)
             return value;

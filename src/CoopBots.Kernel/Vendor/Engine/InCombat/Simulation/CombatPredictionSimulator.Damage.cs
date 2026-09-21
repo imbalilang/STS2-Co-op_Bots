@@ -60,7 +60,7 @@ internal sealed partial class CombatPredictionSimulator
         PredictedCard? cardSource,
         CardPlay? cardPlay)
     {
-        if (dealer?.IsDead == true || targets.Count == 0)
+        if (dealer != null && State.GetCreature(dealer).IsDead || targets.Count == 0)
         {
             // Vanilla returns empty DamageResult shells when the dealer is dead. The simulator
             // only uses damage results to update prediction state, so no-op results are omitted.
@@ -99,7 +99,7 @@ internal sealed partial class CombatPredictionSimulator
         PredictedCard? cardSource,
         CardPlay? cardPlay)
     {
-        if (dealer?.IsDead == true)
+        if (dealer != null && State.GetCreature(dealer).IsDead)
             return [];
         CombatDamageSource source = ResolveDamageSource(cardSource);
         if (!TryDamageTarget(
@@ -195,7 +195,10 @@ internal sealed partial class CombatPredictionSimulator
             return false;
 
         var unblockedDamageTargetState = State.GetCreature(unblockedDamageTarget);
+        int hpBefore = unblockedDamageTargetState.CurrentHp;
         var unblockedDamageResult = unblockedDamageTargetState.LoseHp(unblockedDamage, props);
+        ActionRelicTriggers?.RecordHealth("damage", unblockedDamageTarget.CombatId, source,
+            amount, unblockedDamage, hpBefore, unblockedDamageTargetState.CurrentHp);
         var wasBlockBroken = originalTargetState.Block <= 0 && blockedDamage > 0m;
         var wasFullyBlocked = !props.HasFlag(ValueProp.Unblockable) &&
             (blockedDamage > 0m || originalTargetState.Block > 0) &&
@@ -231,9 +234,12 @@ internal sealed partial class CombatPredictionSimulator
         if (HasPendingChoice)
             return false;
 
+        int redirectedHpBefore = originalTargetState.CurrentHp;
         var damageResult = originalTargetDamage > 0m
             ? originalTargetState.LoseHp(originalTargetDamage, props)
             : new DamageResult(originalTarget, props);
+        ActionRelicTriggers?.RecordHealth("redirected_damage", originalTarget.CombatId, source,
+            unblockedDamageResult.OverkillDamage, originalTargetDamage, redirectedHpBefore, originalTargetState.CurrentHp);
         damageResult.BlockedDamage = (int)blockedDamage;
         damageResult.WasBlockBroken = wasBlockBroken;
         damageResult.WasFullyBlocked = wasFullyBlocked;
@@ -415,7 +421,8 @@ internal sealed partial class CombatPredictionSimulator
                 ? primarySemantics.IsPrimaryEnemy(creature)
                 : creature.IsPrimaryEnemy;
 
-            // Solver-owned combat states remove powers after running the complete predicted death-hook chain.
+            // Enemy powers are cleaned by the deferred death pass; player powers are cleaned
+            // in HandlePlayerDeath before orb and pet teardown.
 
             if (creature.Side == CombatSide.Enemy)
             {
@@ -462,6 +469,9 @@ internal sealed partial class CombatPredictionSimulator
     // Mirrors the player-death flow in CreatureCmd.KillWithoutCheckingWinCondition.
     private bool HandlePlayerDeath(Player player)
     {
+        if (State.CombatState is SimulatedCombatState combat)
+            combat.RemovePowersAfterDeath(player.Creature);
+
         var playerState = State.GetPlayerCombatState(player);
         playerState.OrbQueue.Clear();
 

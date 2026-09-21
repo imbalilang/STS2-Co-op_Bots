@@ -25,6 +25,15 @@ internal sealed record SimConfig
     public ulong Seed { get; init; } = 20260915UL;
 
     /// <summary>
+    /// Party size the reference fight is scaled for.
+    ///
+    /// This mod exists to fill multiplayer lobbies, so the default is a full party
+    /// rather than a solo run. It is a scaling input on both sides of the
+    /// comparison and not a cosmetic detail — see <see cref="ReferenceFor"/>.
+    /// </summary>
+    public int Players { get; init; } = 4;
+
+    /// <summary>
     /// Ascension 10 is every level 1..10 switched on (AscensionManager.maxAscensionAllowed = 10,
     /// AscensionLevel is a cumulative enum). The levels that touch drafting are applied by
     /// <see cref="Ascension10"/>; the two that only change combat (ToughEnemies, DeadlyEnemies)
@@ -91,11 +100,17 @@ internal sealed record SimConfig
     // average is roughly a third of the peak; 11 is where a deck that really won
     // really gets through the fight. Acts 1-2 scale by boss HP, which tracks how
     // much smaller both the fight and the deck still are.
+    // The par fields here are character-agnostic placeholders — ReferenceFor
+    // overwrites them per character and per act. They are set to the pooled values
+    // rather than zero on purpose: a zero par makes every ratio infinite, which
+    // saturates every component at maximum and silently turns the score into a
+    // constant. A caller that reaches for this array directly now gets a blunt but
+    // sane answer instead of a meaningless one.
     internal static readonly ReferenceFight[] DefaultReferences =
     [
-        new("act 1 boss", EnemyHp: 220, IncomingPerTurn: 6, ParDamagePerTurn: 0, ParBlockPerTurn: 0, ParUpgrades: 0, ParEfficiency: 0, PlayerHp: 75),
-        new("act 2 boss", EnemyHp: 370, IncomingPerTurn: 9, ParDamagePerTurn: 0, ParBlockPerTurn: 0, ParUpgrades: 0, ParEfficiency: 0, PlayerHp: 75),
-        new("act 3 boss", EnemyHp: 480, IncomingPerTurn: 11, ParDamagePerTurn: 0, ParBlockPerTurn: 0, ParUpgrades: 0, ParEfficiency: 0, PlayerHp: 75),
+        new("act 1 boss", EnemyHp: 220, IncomingPerTurn: 6, ParDamagePerTurn: 18.2, ParBlockPerTurn: 8.8, ParUpgrades: 12, ParEfficiency: 0.90, PlayerHp: 75),
+        new("act 2 boss", EnemyHp: 370, IncomingPerTurn: 9, ParDamagePerTurn: 18.2, ParBlockPerTurn: 8.8, ParUpgrades: 12, ParEfficiency: 0.90, PlayerHp: 75),
+        new("act 3 boss", EnemyHp: 480, IncomingPerTurn: 11, ParDamagePerTurn: 18.2, ParBlockPerTurn: 8.8, ParUpgrades: 12, ParEfficiency: 0.90, PlayerHp: 75),
     ];
 
     internal static SimConfig Default => new();
@@ -107,6 +122,9 @@ internal sealed record SimConfig
     /// the act's boss HP, which is a proxy for how much smaller the deck still is.
     /// Without that, an act-1 deck would be judged against a finished deck's output
     /// and every run would look like it was getting better only because it grew.
+    ///
+    /// The party size scales the fight on both sides, because leaving it out is not
+    /// a neutral omission. See <see cref="MultiplayerScaling"/>.
     /// </summary>
     internal ReferenceFight ReferenceFor(string character, int act)
     {
@@ -114,10 +132,17 @@ internal sealed record SimConfig
         var reference = References[index];
         var par = Par.TryGetValue(character, out var found) ? found : PooledPar;
         var scale = reference.EnemyHp / References[^1].EnemyHp;
+        var multiplayer = MultiplayerScaling(act);
         return reference with
         {
-            ParDamagePerTurn = par.Damage * scale,
-            ParBlockPerTurn = par.Block * scale,
+            // The boss's HP is what the *party* has to chew through, and every
+            // player has to carry their share of it.
+            EnemyHp = reference.EnemyHp * multiplayer,
+            // What one player has to block, which also falls with a larger party:
+            // a boss that hits one target spreads its damage over more people.
+            IncomingPerTurn = reference.IncomingPerTurn * IncomingShare(Players),
+            ParDamagePerTurn = par.Damage * scale * multiplayer,
+            ParBlockPerTurn = par.Block * scale * IncomingShare(Players),
             // Card-count and efficiency par are per deck, not per turn: a deck is
             // not "less upgraded" for having fewer turns in front of it.
             ParUpgrades = par.Upgrades,
@@ -125,6 +150,50 @@ internal sealed record SimConfig
             PlayerHp = PlayerHpFor(character),
         };
     }
+
+    /// <summary>
+    /// The per-player HP multiplier the game applies in a party
+    /// (Creature.ScaleHpForMultiplayer: hp * playerCount * GetMultiplayerScaling).
+    ///
+    /// The playerCount factor is spread back over the party, so what one player
+    /// actually has to deal with is the scaling term alone — 1.1 in act 1, 1.2 in
+    /// act 2, and 1.3 against the act-3 boss. A four-player party therefore faces
+    /// the act-3 boss at 1.3x the solo HP *per player*, and this reference used the
+    /// solo number outright: the par values below, which were measured from solo
+    /// decks, understated what a multiplayer deck has to produce by 30% in the last
+    /// act. Solo runs get exactly 1.
+    /// </summary>
+    private double MultiplayerScaling(int act)
+    {
+        if (Players <= 1) return 1.0;
+        return act switch
+        {
+            0 => 1.1,
+            1 => 1.2,
+            _ => 1.3,
+        };
+    }
+
+    /// <summary>
+    /// The share of the boss's damage one player ends up absorbing, used to scale
+    /// the block demand.
+    ///
+    /// Weaker ground than the HP scaling above, and deliberately split out so it
+    /// can be argued with. The game does not divide attack damage: a
+    /// SingleAttackIntent resolves its damage per target, so the player a boss
+    /// swings at takes the whole hit. What falls with party size is how often that
+    /// is you, and real run histories agree — a six-player A10 win shows each
+    /// player taking 97-279 damage over the run against 359-526 for a solo win, so
+    /// per-player damage is well down but nowhere near the 1/6 that dividing the
+    /// hit would imply.
+    ///
+    /// 1/sqrt(n) is the middle of that: 1/2 at four players, between the 1/4 that
+    /// dividing would give and the 1 that ignoring the party would give. It keeps
+    /// the spike a targeted player still has to block, which a flat 1/n would
+    /// throw away.
+    /// </summary>
+    private static double IncomingShare(int players)
+        => players <= 1 ? 1.0 : 1.0 / Math.Sqrt(players);
 
     /// <summary>
     /// HP the deck has for this one fight, which is the whole survival budget: the
@@ -166,9 +235,36 @@ internal sealed record SimConfig
         ["REGENT"] = new(Damage: 10.4, Block: 11.2, Upgrades: 11, Efficiency: 0.82),
     };
 
-    /// <summary>Short identity of this configuration, used to name report files.</summary>
+    /// <summary>
+    /// Identity of this configuration, used to name report files.
+    ///
+    /// The fingerprint covers the knobs that live in this file — scaring, for
+    /// instance, an A10 sweep and an ascension-0 sweep apart, which the previous
+    /// label could not. It deliberately does NOT cover the drafting constants in
+    /// <c>BuildValue</c>, which is where most experiments are actually made, so it
+    /// is not on its own enough to stop two different builds writing to one file.
+    /// That is what <see cref="DraftSimHarness"/>'s no-overwrite rule is for.
+    /// </summary>
     public string Label(string prefix)
-        => $"{prefix}-{string.Join('+', Characters)}-runs{RunsPerCharacter}-seed{Seed}";
+        => $"{prefix}-{string.Join('+', Characters)}-runs{RunsPerCharacter}-seed{Seed}"
+            + (Ascension10 ? string.Empty : "-a0")
+            + $"-cfg{Fingerprint()}";
+
+    private string Fingerprint()
+    {
+        try
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(this);
+            var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(json));
+            return Convert.ToHexString(hash, 0, 2).ToLowerInvariant();
+        }
+        catch
+        {
+            // A label that cannot be fingerprinted is still a label; the
+            // no-overwrite rule is what keeps the reports honest either way.
+            return "0000";
+        }
+    }
 }
 
 /// <summary>

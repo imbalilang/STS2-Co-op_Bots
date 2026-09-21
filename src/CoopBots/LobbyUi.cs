@@ -140,7 +140,44 @@ public static class LobbyUi
         actions.AddChild(add);
         actions.AddChild(remove);
         root.AddChild(actions);
+
+        // Handing a seat over is a control decision, not a roster change: the seat
+        // keeps its player, its net id and its character, and only stops being
+        // answered by the person sitting in it. Host-only for the same reason the bot
+        // buttons are — only the host submits actions, so only the host can answer
+        // for a seat nobody is sitting at.
+        var handover = new Button
+        {
+            Text = zh ? "让 Bot 代替我（旁观）" : "Hand my seat to a bot (watch)",
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+            ToggleMode = true,
+            TooltipText = zh
+                ? "由 Bot 操作你这一席，你只旁观；再点一次收回。只有房主可用。"
+                : "The bot answers for your seat while you watch. Host only.",
+        };
+        root.AddChild(handover);
         root.AddChild(new HSeparator());
+
+        // The "极速 / Instant mode" switch was REMOVED on 2026-09-20. It set
+        // PrefsSave.FastMode = Instant, and at Instant the game's Cmd.Wait returns a
+        // completed task instead of waiting (Cmd.cs:36-43). PunchOff's ambient animation
+        // loop is built on that wait:
+        //
+        //     while (!ct.IsCancellationRequested) { await Cmd.Wait(0.1f);
+        //         vfxContainer.AddChild(NHitSparkVfx.Create(...)); await Cmd.Wait(1.2f); }
+        //
+        // With no wait the loop never yields: it allocates a VFX node per iteration until
+        // Godot's element limit is exhausted, then logs a full backtrace per iteration —
+        // 1.3 GB of log and a hard freeze inside one frame. The loop is cancelled by
+        // picking an event option, which needs a frame, so it deadlocks.
+        //
+        // It is the GAME's bug (the dev console's `instant` command sets the same
+        // preference), but this switch is what put players into that state. See
+        // InstantModeGuard for the repair applied to anyone who already had it on.
+
+        // Refresh paints the toggles from state, and painting must not read back as a
+        // click: without this the panel would re-enter its own handler.
+        var syncing = false;
 
         var rosterTitle = BotUiTheme.Text(string.Empty, 12, BotUiTheme.Muted);
         root.AddChild(rosterTitle);
@@ -189,6 +226,16 @@ public static class LobbyUi
                 : zh ? "只有房主可以添加或移除机器人" : "Only the host can add or remove bots");
             status.AddThemeColorOverride("font_color", error ? BotUiTheme.Error : BotUiTheme.Muted);
             hint.Text = Selected() is { } tier ? (zh ? tier.Describe() : tier.DescribeEnglish()) : string.Empty;
+
+            var me = lobby.NetService.NetId;
+            var mine = AutoPilot.IsAutopiloted(me);
+            handover.Disabled = !AutoPilot.CanToggle(me, host);
+            handover.Text = mine
+                ? zh ? "收回我的席位" : "Take my seat back"
+                : zh ? "让 Bot 代替我（旁观）" : "Hand my seat to a bot (watch)";
+            syncing = true;
+            handover.ButtonPressed = mine;
+            syncing = false;
             FitToContent();
         }
 
@@ -206,6 +253,14 @@ public static class LobbyUi
                 error: true);
         };
         remove.Pressed += () => Refresh(LobbyBotService.RemoveLast(lobby, out var error) ? null : error, error: true);
+        handover.Toggled += on =>
+        {
+            if (syncing) return;
+            AutoPilot.Set(lobby.NetService.NetId, on);
+            Refresh(on
+                ? zh ? "这一席现在由 Bot 操作，你可以旁观了" : "This seat is now played by a bot; you can watch"
+                : zh ? "已收回你的席位" : "Your seat is yours again");
+        };
         difficultySelect.ItemSelected += _ => Refresh();
         LobbyBotService.SubscribeToPlayerChanges(lobby, () => refresh?.Invoke());
         bound = lobby;

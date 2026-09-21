@@ -7,7 +7,7 @@
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 
-$root = 'B:\slay-the-spire-2-mod-mod'
+$root = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $root 'cover.png'
 $out = Join-Path $root 'work\workshop\preview.jpg'
 

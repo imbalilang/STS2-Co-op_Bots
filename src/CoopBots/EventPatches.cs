@@ -43,23 +43,35 @@ public static class BotEventDriver
             return;
         }
 
-        foreach (var player in state.Players.Where(player => BotRegistry.IsBot(player.NetId)))
+        foreach (var player in state.Players.Where(player => AutoPilot.Drives(player.NetId)))
         {
             var eventModel = synchronizer.GetEventForPlayer(player);
             if (eventModel.IsFinished || eventModel.CurrentOptions.Count == 0)
                 continue;
 
-            var bots = state.Players.Where(p => BotRegistry.IsBot(p.NetId)).ToList();
-            var humanVote = isShared ? MultiHumanCooperation.Vote(state.Players.Where(p => !BotRegistry.IsBot(p.NetId))
-                .Select(p => synchronizer.GetPlayerVote(p)).ToList(), bots.Count, bots.IndexOf(player)) : null;
-            var optionIndex = isShared ? (humanVote.HasValue ? (int)humanVote.Value : -1)
-                : ChooseEventOption(player, eventModel);
+            // The card select inside an event (upgrade / remove / transform) goes
+            // through CardSelectCmd, which is already widened.
+            var bots = state.Players.Where(p => AutoPilot.Drives(p.NetId)).ToList();
+            var humanVotes = state.Players.Where(p => !AutoPilot.Drives(p.NetId))
+                .Select(p => synchronizer.GetPlayerVote(p)).ToList();
+            var humanVote = isShared ? MultiHumanCooperation.Vote(humanVotes, bots.Count, bots.IndexOf(player)) : null;
+            int optionIndex;
+            if (!isShared) optionIndex = ChooseEventOption(player, eventModel);
+            else if (humanVote.HasValue) optionIndex = (int)humanVote.Value;
+            else if (humanVotes.Count == 0)
+                // Every seat is handed over, so there is no human distribution to copy
+                // and Vote() answers null. Without this the shared vote abstains
+                // forever and the event never resolves — the same shape as the map
+                // vote in TryVoteOnMap. Fall back to the scorer the per-player events
+                // already use, so each seat answers for its own deck.
+                optionIndex = ChooseEventOption(player, eventModel);
+            else optionIndex = -1;
             if (optionIndex < 0 || optionIndex >= eventModel.CurrentOptions.Count)
                 continue;
 
             if (isShared)
             {
-                if (state.Players.Where(p => !BotRegistry.IsBot(p.NetId)).Any(p => !synchronizer.GetPlayerVote(p).HasValue))
+                if (state.Players.Where(p => !AutoPilot.Drives(p.NetId)).Any(p => !synchronizer.GetPlayerVote(p).HasValue))
                     continue;
                 if (synchronizer.GetPlayerVote(player) == (uint)optionIndex)
                     continue;

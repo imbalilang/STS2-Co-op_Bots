@@ -28,7 +28,13 @@ public sealed record KernelChoice(ulong Owner, string Source, string Effect, Pil
 
 public sealed partial class KernelSession
 {
-    public sealed record CardBranch(KernelSession State, IReadOnlyList<KernelChoice> Choices, string Boundary);
+    /// <summary>
+    /// <paramref name="ChoiceOrdinals"/> is the branch's bounded choice vector. It is
+    /// carried alongside the resolved <paramref name="Choices"/> so a finished plan can
+    /// be replayed deterministically without re-enumerating the choice space.
+    /// </summary>
+    public sealed record CardBranch(KernelSession State, IReadOnlyList<KernelChoice> Choices, string Boundary,
+        IReadOnlyList<int> ChoiceOrdinals);
     private int[]? choiceOrdinals;
     private int choicePosition;
     private readonly List<int> choiceCounts = new();
@@ -53,8 +59,62 @@ public sealed partial class KernelSession
                 var next = used.Take(i + 1).ToArray(); next[i] = alternative;
                 if (seen.Add(string.Join(",", next))) queue.Enqueue(next);
             }
-            yield return new(child, child.resolvedChoices.ToArray(), success ? "" : boundary);
+            yield return new(child, child.resolvedChoices.ToArray(), success ? "" : boundary, vector);
         }
+    }
+
+    /// <summary>
+    /// Replays one recorded plan action on this branch, driving card choices from the
+    /// recorded bounded vector instead of re-enumerating the choice space.
+    /// </summary>
+    /// <remarks>
+    /// This exists so the per-action predicted states of a finished plan can be
+    /// recovered AFTER the search, by replaying only the chosen path from the captured
+    /// root. Recording them per search node instead would pay a full state render across
+    /// the whole tree rather than once per action that is actually deployed.
+    ///
+    /// A false return means the path no longer replays — the caller must treat the plan
+    /// as unverified rather than as verified-and-matching.
+    /// </remarks>
+    public bool ReplayPlanned(KernelTeamSearch.Action action, int maxRounds, out string boundary)
+    {
+        using var isolation = SimulationNotificationIsolation.Enter();
+        // Reset the choice gate per action: the vector is positional and starts at zero
+        // for every play. An action with no recorded vector has no bounded choice to
+        // drive, which is the same "no plan" state the search itself ran with.
+        // An EMPTY vector is NOT the same as no vector. CardBranches seeds its queue with
+        // the empty vector (queue.Enqueue([])), so a card whose first branch simply used
+        // the DEFAULT choice index carries `[]`, not null — the search ran that branch
+        // with choiceOrdinals = [] and let the cursor fall back to index 0. Treating `[]`
+        // as null here disabled the cursor entirely, ManualPlay returned false, and the
+        // step failed with `pending-choice`. One SURVIVOR in the path was therefore
+        // enough to empty ActionStates for a whole 104-action route.
+        choiceOrdinals = action.ChoiceOrdinals is { } ordinals ? ordinals.ToArray() : null;
+        choicePosition = 0;
+        if (action.EndTurn) return EndTurn(action.Player, maxRounds, out boundary);
+        if (action.Potion is { } potion) return UsePotion(potion, action.Target, out boundary);
+        if (action.Card is { } plannedCard)
+        {
+            // Resolve by IDENTITY first, never by the stored instance. For a generated card
+            // (Shiv, Mirage…) that instance is a fresh simulated object whose Original is a
+            // new CardModel, and Play's FindCard matches by plain reference equality — so
+            // handing it straight through failed every such step with `unplayable`, which
+            // is how one Shiv in a path emptied the sentinel for the whole route.
+            //
+            // The instance fallback covers actions that carry no key at all; upstream's
+            // FindCardForDeployment has the same two-step shape.
+            var resolved = FindSimulatedCardByKey(
+                    action.Player, action.CardStateKey, action.CardStateOccurrence)
+                ?? simulator.State.FindCard(plannedCard);
+            if (resolved is null)
+            {
+                boundary = "planned-card-not-found";
+                return false;
+            }
+            return Play(resolved.Original, action.Target, out boundary);
+        }
+        boundary = "empty-action";
+        return false;
     }
 
     private TurnStartChoiceCursor ChoiceCursor(MegaCrit.Sts2.Core.Entities.Players.Player owner)

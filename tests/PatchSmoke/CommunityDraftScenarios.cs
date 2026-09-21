@@ -134,6 +134,48 @@ internal static class CommunityDraftScenarios
         }
         Console.WriteLine("PASS: rules, development and affinity stay inside their documented bounds on every fixture.");
 
+        // The legacy apparatus is a single scalar, so a card the deck has a
+        // demonstrated use for ("this deck has no block", "the mechanism's trigger
+        // is already here") was priced exactly like generic filler. The fit
+        // channel prices the same legacy total against a lower break-even, so a
+        // fitted card clears skipping at a lower legacy score; the ceiling
+        // deliberately does not move, so a saturated legacy score is still bounded
+        // by the same +8.
+        //
+        // 2026-09-19: the fit channel used to be a steeper slope (0.5) on the same
+        // pivot. A fitted card's legacy total normally sits below that pivot, so
+        // the steeper slope doubled its penalty instead of lifting it - a fitted
+        // card scored strictly worse than the same card unfitted. The last check
+        // here is the regression guard for that inversion.
+        // DEFLECT, not DEFEND_SILENT: the basic cards are outside the community
+        // snapshot, so they take the fallback path and never reach this scale at
+        // all. That hole is real and is reported separately; this check pins the
+        // Elo-first path.
+        Clear(); Give<StrikeSilent>(5);
+        var neededBlock = BuildValue.AddDetailed(Card<Deflect>(), bot);
+        Check(neededBlock.DeckFit,
+            $"a block card in a deck holding none must be a deck fit; reason was '{neededBlock.LegacyReason}'.");
+        Check(neededBlock.LegacyReason.Contains("needs-block", StringComparison.Ordinal),
+            $"the fixture needs the functional-gap token, got '{neededBlock.LegacyReason}'.");
+        var neededExcess = neededBlock.LegacyTotal - neededBlock.LegacyAffinity;
+        Check(Math.Abs(neededBlock.Rules - Math.Clamp((neededExcess - 10.0) * 0.25, -20.0, 8.0)) < 0.001,
+            $"a fitted card must be priced against the fit pivot (rules={neededBlock.Rules:F2}, excess={neededExcess:F2}).");
+        Check(neededBlock.Rules <= 8.0001 && neededBlock.Rules >= -20.0001,
+            "the fit pivot must not lift the ceiling the generic scale is bounded by.");
+        // Same deck, a card with no structural claim on it: the generic pivot.
+        var generic = BuildValue.AddDetailed(Card<TwinStrike>(), bot);
+        Check(!generic.DeckFit,
+            $"an ordinary attack the deck already has enough of must not be a deck fit; got '{generic.LegacyReason}'.");
+        var genericExcess = generic.LegacyTotal - generic.LegacyAffinity;
+        Check(Math.Abs(generic.Rules - Math.Clamp((genericExcess - 20.0) * 0.25, -20.0, 8.0)) < 0.001,
+            $"an unfitted card must stay on the generic pivot (rules={generic.Rules:F2}, excess={genericExcess:F2}).");
+        var fittedUnderGenericPivot = Math.Clamp((neededExcess - 20.0) * 0.25, -20.0, 8.0);
+        Check(neededBlock.Rules >= fittedUnderGenericPivot - 0.001,
+            "the fit pivot must never price a fitted card below the generic pivot "
+            + $"(fit={neededBlock.Rules:F2}, generic at the same legacy total={fittedUnderGenericPivot:F2}).");
+        Console.WriteLine($"PASS: a deck-demonstrated fit clears skipping at a lower legacy total "
+            + $"(needed block rules={neededBlock.Rules:F2} fit={neededBlock.DeckFit} vs generic {generic.Rules:F2}).");
+
         // The directional held-card affinity: the held card's document recommends
         // the candidate, never the reverse. A deck holding DEADLY_POISON lifts
         // OUTBREAK; the reverse deck does not.

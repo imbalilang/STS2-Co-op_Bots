@@ -19,7 +19,14 @@ src/CoopBots.Kernel/.nuget/
 # Third-party projects kept in the working copy for reference only. They are not
 # ours to redistribute; what CoopBots does ship from upstream is recorded in
 # THIRD_PARTY_NOTICES.md.
+#
+# Since 2026-09-20 every reference copy lives under third_party/ (see
+# docs/PROJECT_MAP.md §3). The individual names below are kept for checkouts
+# that still hold them at the repository root.
+third_party/
+CombatSolver-main/
 CombatSolver-0.33.9/
+CombatSolver-upstream-main/
 STS2-AiTeammate-main/
 STS2MCP-main/
 sts2-advisor-main/
@@ -32,3 +39,4 @@ StS2.RandomForeseer-0.13.14/
 # Python bytecode from the bake/import scripts.
 __pycache__/
 *.pyc
+/DEEPSEEK_API_KEY

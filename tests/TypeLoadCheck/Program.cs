@@ -53,9 +53,11 @@ try
     }
 
     int count;
+    Assembly? assembly = null;
     try
     {
-        count = context.LoadFromAssemblyPath(target).GetTypes().Length;
+        assembly = context.LoadFromAssemblyPath(target);
+        count = assembly.GetTypes().Length;
     }
     catch (ReflectionTypeLoadException error)
     {
@@ -71,6 +73,33 @@ try
         return 1;
     }
     Console.WriteLine($"CoopBots.dll enumerates {count} types with CoopBots.Kernel unresolvable.");
+
+    // Enumeration only proves the ASSEMBLY's types load. A type named solely inside a
+    // METHOD BODY is resolved when that method is JIT-compiled instead — so
+    // ModEntry.Initialize naming a CoopBots.Kernel type directly passes everything above
+    // and still refuses to start the game with FileNotFoundException, because the kernel
+    // is loaded by that very method at runtime. PrepareMethod compiles it WITHOUT running
+    // it, which is exactly the trigger.
+    var entry = assembly.GetType("CoopBots.ModEntry");
+    var initialize = entry?.GetMethod("Initialize", BindingFlags.Public | BindingFlags.Static);
+    if (initialize is not null)
+    {
+        try
+        {
+            System.Runtime.CompilerServices.RuntimeHelpers.PrepareMethod(initialize.MethodHandle);
+            Console.WriteLine("ModEntry.Initialize JITs without CoopBots.Kernel.");
+        }
+        catch (Exception error)
+        {
+            Console.Error.WriteLine("CoopBots.ModEntry.Initialize cannot be JIT-compiled without "
+                + "CoopBots.Kernel, so the mod will fail to start. No kernel-typed reference may "
+                + "appear in that method's body — the kernel is loaded by the method itself at "
+                + "runtime. Move it into a separate [MethodImpl(MethodImplOptions.NoInlining)] "
+                + "method, the way RegisterKernelHooks does.");
+            Console.Error.WriteLine(error.GetBaseException().Message);
+            return 1;
+        }
+    }
     return 0;
 }
 finally

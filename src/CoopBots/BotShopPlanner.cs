@@ -34,6 +34,18 @@ internal static class BotShopPlanner
     // Shared with the potion policy: past this line nothing is worth holding for.
     internal const int FinalAct = 2;
 
+    /// <summary>
+    /// Cards whose removal is never worth it, whatever the deck-value model says. A map is the
+    /// clearest case: its whole value happens outside combat, where the model cannot see it.
+    /// Matched on both the model id and the type name, case-insensitively — this project has
+    /// already been bitten by an id that came back empty, and a guard that silently stops
+    /// matching is worse than no guard at all.
+    /// </summary>
+    private static bool IsNeverRemoved(CardModel card) =>
+        card.Id.Entry.Contains("SPOILS_MAP", StringComparison.OrdinalIgnoreCase)
+        || card.GetType().Name.Contains("SpoilsMap", StringComparison.OrdinalIgnoreCase)
+        || card.GetType().Name.Contains("TreasureMap", StringComparison.OrdinalIgnoreCase);
+
     // What removing this card is worth to the deck, using the same valuation as
     // reward picks and upgrades. A card that has outlived its purpose scores as
     // a removal target even when it is not a curse or a basic card, and the
@@ -41,6 +53,16 @@ internal static class BotShopPlanner
     internal static double RemovalValue(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
     {
         if (!card.IsRemovable) return 0;
+        // NEVER REMOVE A MAP. SPOILS_MAP (藏宝图) marks a location on the run map — removing it
+        // destroys that location for good, and the removal planner was happily doing it because
+        // its deck-value model only knows what a card is worth IN COMBAT, where this one is
+        // worth nothing at all. Reported by the user watching a live run.
+        //
+        // Matched on both the model id and the type name, case-insensitively: this project has
+        // already been bitten once by an id that came back empty (the A/B log printed `?` for
+        // cards whose Id.Entry was blank), and a guard that silently stops matching is worse
+        // than no guard.
+        if (IsNeverRemoved(card)) return -1000;
         var value = Building.BuildValue.Remove(card, player, deckOverride).Total;
         // A curse is always worth paying to remove, even in a deck so poor that
         // nothing looks below average — and more so later, when the next chance

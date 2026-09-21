@@ -70,9 +70,12 @@ RitsuLib 默认从相应 SteamLibrary 的 workshop/content/2868840/3747602295/li
 
 其他本地适配位于 Vendor 外部。授权/署名沿用根目录 `THIRD_PARTY_NOTICES.md`；原始 notice 保持不变。
 
-## 能力路线部分同步（solver-power-sync，2026-09-18，开发中）
+## 能力路线部分同步（solver-power-sync，2026-09-18，**已被取代**）
 
-- 范围：把 CombatSolver 0.41.0 的**纯策略层**部分回移到 0.33.9 引擎上的生产路径（`KernelTeamSearch`），不是整体替换引擎，也不包含 0.41.0 的逐卡投影与单开能力前缀组合反事实。来源与文件清单见 `POWER_SYNC.json`，基础引擎仍是 `UPSTREAM.json` 记录的 0.33.9。
+- **取代说明（2026-09-19）**：本节讲的是"把 0.41.0 的策略层部分回移到 0.33.9 引擎"的过渡做法。
+  现在基础引擎本身就是 `UPSTREAM.json` 记录的 **0.41.0**（整体重导入，见 `VENDOR_DEVIATIONS.md` 的 D1），
+  "回移"不再必要。`Vendor/PowerSync/**` 与 `POWER_SYNC.json` 保留，作为该阶段的历史记录。
+- 范围：把 CombatSolver 0.41.0 的**纯策略层**部分回移到 0.33.9 引擎上的生产路径（`KernelTeamSearch`），不是整体替换引擎，也不包含 0.41.0 的逐卡投影与单开能力前缀组合反事实。来源与文件清单见 `POWER_SYNC.json`。（当时的基础引擎是 0.33.9。）
 - `Vendor/PowerSync/**` 逐文件命名空间适配（`CombatSolver` → `CoopBots.Kernel.Vendor.PowerSync`，正文不变）：合同、准入、承诺记录/生命周期/席位配额/启动投资，以及六卡池逐卡路线政策（共 104 张，Ironclad 19 / Silent 17 / Defect 20 / Regent 18 / Necrobinder 18 / Colorless 12）。未知卡或上游 `NoInCombatCommitment` 卡不产生描述符。
 - `KernelPower.cs` 适配当前按玩家划分的 `KernelSession`：承诺按 `Player.NetId` 归属，随出牌/药水/结束回合沿分支传递。准入只认“本主自己的分支上可观测到的 `PersistentValue` 增量或即时格挡增益”，因此未建模/无触发能力不会凭空开路；Silent 的 Shiv/Block 触发只看该玩家自己的牌堆与 Power，不看队友。
 - `KernelTeamSearch` 在宽度内用上游 normal 席位配额保留承诺代表（至少一半普通席位、最高分普通线优先保护，每个 owner 先占一席避免独占；共享节点只占一席并代表其上所有 owner，其次才给同一 owner 第二个席位；`after.HasWon` 分支先清空承诺），中间内存裁剪与最终 frontier 使用同一套保护；带承诺节点的去重键包含完整决策相关承诺状态（owner、family、cards、priority、opened turn/action/history、transition、last evidence、investment、remaining potential、progress/realized、power count）。承诺不进入 `Score`，`Complete` 排序、取消/过期、药水/选择/结束回合语义均不变。

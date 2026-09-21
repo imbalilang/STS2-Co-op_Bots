@@ -33,24 +33,26 @@ internal sealed partial class CombatBeamSolver(
     CancellationToken cancellationToken = default,
     Action<SolverProgress>? progressCallback = null,
     SolverSearchProfile? searchProfile = null,
-    int? shortCheckpointMilliseconds = null,
     SolverPotionPolicy? potionPolicyOverride = null,
     PotionFreePolicyBaseline? potionFreePolicyBaseline = null,
     int? maximumPotionUses = null,
     IReadOnlyList<PlanAction>? fixedPrefixActions = null,
+    bool resetFixedPrefixSchedulingBaseline = false,
     int? minimumPotionUses = null,
     PrimarySearchIncumbent? primaryIncumbent = null)
 {
-    private readonly SolverSearchProfile _profile = searchProfile ?? SolverSearchProfile.Short;
+    private readonly SolverSearchProfile _profile = searchProfile ?? SolverSearchProfile.Default;
     private readonly SearchRunContext _run = new(
         policy.MeasurePhasePerformance,
         policy.FramePressureSignal);
-    private readonly int? _shortCheckpointMilliseconds = shortCheckpointMilliseconds;
     private readonly bool _includeTurnSetup = policy.IncludeTurnSetup;
     private readonly Player _player = root.PlayerIdentity;
     private readonly IntentForecast _forecast = root.Forecast;
     private readonly int _startTurnNumber = root.StartTurnNumber;
+    private readonly int _totalFloor = root.TotalFloor;
     private readonly int _initialEnemyCount = root.Enemies.Count;
+    private readonly bool _hasRegisteredPowerCards = root.PlayerCardIds.Any(
+        PowerCardValuationModels.Registry.ContainsCardId);
     private readonly bool _isActEndingBoss = root.IsActEndingBoss;
     private readonly BossHpRelief _bossHpRelief = root.BossHpRelief;
     private readonly BossHpRelief _strategicBossHpRelief = ActEndingBossPolicy.ResolveStrategicHpRelief(
@@ -59,7 +61,8 @@ internal sealed partial class CombatBeamSolver(
         policy.FinalBossHpStrategy);
     private readonly int _acceptableBattleHpLoss = policy.AcceptableBattleHpLoss;
     private readonly GrowthValues _growthBudgets = policy.EffectiveGrowthBudgets;
-    private readonly bool _hasGrowthTargets = policy.EffectiveHasGrowthTargets;
+    private readonly IReadOnlyList<RelicCounterTarget> _relicTargets = policy.RelicTargets;
+    private readonly bool _hasGrowthTargets = policy.EffectiveHasGrowthTargets || policy.RelicTargets.Count > 0;
     private readonly bool _ignoreLongTermRewards = policy.IgnoreLongTermRewards;
     private readonly bool _detailedDiagnostics = policy.DetailedDiagnostics;
     private readonly int? _maximumPotionUses = maximumPotionUses;
@@ -68,6 +71,7 @@ internal sealed partial class CombatBeamSolver(
     private PrimarySearchIncumbent? _primaryIncumbent = primaryIncumbent;
     private readonly SearchInteractionState? _interaction = policy.Interaction;
     private readonly IReadOnlyList<PlanAction> _fixedPrefixActions = fixedPrefixActions ?? [];
+    private readonly bool _resetFixedPrefixSchedulingBaseline = resetFixedPrefixSchedulingBaseline;
     private readonly string? _progressPhaseOverride = DescribePotionProgressPhase(
         displayNames,
         potionPolicyOverride,
@@ -101,7 +105,8 @@ internal sealed partial class CombatBeamSolver(
         _enforcePotionDirectives,
         root.HasRenewablePotionShapedRock,
         _run,
-        EvaluateStandPat);
+        EvaluateStandPat,
+        PrepareStandPatProbes);
     private FinalPlanOrdering? _finalOrdering;
     private FinalPlanOrdering FinalOrdering => _finalOrdering ??= new FinalPlanOrdering(
         _potionPolicy,
@@ -116,7 +121,8 @@ internal sealed partial class CombatBeamSolver(
         _minimumPotionUses,
         policy.Diagnostics,
         _detailedDiagnostics,
-        battleDamage);
+        battleDamage,
+        _run.PotionStrategicCosts);
 
     private bool AllowsPotionUse(int slot, string potionId)
         => _potionStrategy.AllowsExplicitUse(

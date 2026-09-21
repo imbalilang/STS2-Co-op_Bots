@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Frozen;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Creatures;
@@ -28,8 +29,11 @@ internal sealed class CombatRootSnapshot
     public ContinuationStamp ContinuationStamp { get; }
     public int PlayerCount { get; }
     public int StartTurnNumber { get; }
+    public int TotalFloor { get; }
     public int InitialPlayerHp { get; }
     public int InitialPlayerMaxHp { get; }
+    public int InitialBrightestFlameMaxHpSpent
+        => ((SimulatedCombatState)_rootSimulator.State.CombatState).BrightestFlameMaxHpSpent;
     public int PotionSlotCount { get; }
     public IReadOnlyList<SearchablePotionSlotSnapshot> SearchablePotions { get; }
     public int SearchablePotionCount { get; }
@@ -43,6 +47,7 @@ internal sealed class CombatRootSnapshot
     public bool IsActEndingBoss => BossHpRelief != BossHpRelief.None;
     public double CaptureElapsedMilliseconds { get; }
     public int CapturedCardCount { get; }
+    public IReadOnlySet<string> PlayerCardIds { get; }
     public int CapturedPowerCount { get; }
     public int CapturedHookListenerCount { get; }
     public int CapturedRunModSubscriberCount { get; }
@@ -51,6 +56,10 @@ internal sealed class CombatRootSnapshot
     public bool HasUnusedCardReplayAllocator { get; }
     public bool HasRenewablePotionShapedRock { get; }
     public PostCombatRelicHealProfile PostCombatRelicHeal { get; }
+    internal HookLayoutCacheStatistics HookLayoutCacheStatistics
+        => ((SimulatedCombatState)_rootSimulator.State.CombatState).HookLayoutCacheStatistics;
+    internal HookListenerSegmentStatistics HookListenerSegmentStatistics
+        => ((SimulatedCombatState)_rootSimulator.State.CombatState).HookListenerSegmentStatistics;
 
     private CombatRootSnapshot(
         Player playerIdentity,
@@ -61,6 +70,7 @@ internal sealed class CombatRootSnapshot
         CombatPredictionSimulator rootSimulator,
         int playerCount,
         int startTurnNumber,
+        int totalFloor,
         int initialPlayerHp,
         int initialPlayerMaxHp,
         int potionSlotCount,
@@ -72,6 +82,7 @@ internal sealed class CombatRootSnapshot
         BossHpRelief bossHpRelief,
         double captureElapsedMilliseconds,
         int capturedCardCount,
+        IReadOnlySet<string> playerCardIds,
         int capturedPowerCount,
         int capturedHookListenerCount,
         int capturedRunModSubscriberCount,
@@ -89,6 +100,7 @@ internal sealed class CombatRootSnapshot
         _rootSimulator = rootSimulator;
         PlayerCount = playerCount;
         StartTurnNumber = startTurnNumber;
+        TotalFloor = totalFloor;
         InitialPlayerHp = initialPlayerHp;
         InitialPlayerMaxHp = initialPlayerMaxHp;
         PotionSlotCount = potionSlotCount;
@@ -106,6 +118,7 @@ internal sealed class CombatRootSnapshot
         BossHpRelief = bossHpRelief;
         CaptureElapsedMilliseconds = captureElapsedMilliseconds;
         CapturedCardCount = capturedCardCount;
+        PlayerCardIds = playerCardIds;
         CapturedPowerCount = capturedPowerCount;
         CapturedHookListenerCount = capturedHookListenerCount;
         CapturedRunModSubscriberCount = capturedRunModSubscriberCount;
@@ -116,10 +129,22 @@ internal sealed class CombatRootSnapshot
         PostCombatRelicHeal = postCombatRelicHeal;
     }
 
+    /// <summary>Captures for whichever player LocalContext reports.</summary>
     public static CombatRootSnapshot Capture(CombatState state)
+        => Capture(state, LocalContext.GetMe(state)
+            ?? throw new InvalidOperationException("找不到本地玩家。"));
+
+    /// <summary>
+    /// CoopBots patch: captures for a NAMED player. A four-seat branch has to be scored
+    /// from each seat's own view, and the perspective is fixed at capture time (the
+    /// constructor's playerIdentity), so one capture cannot serve another seat. Identical
+    /// to the patch applied to the vendored 0.33.9 copy.
+    /// </summary>
+    public static CombatRootSnapshot Capture(CombatState state, Player player)
     {
         if (!NGame.IsMainThread())
             throw new InvalidOperationException("Combat root snapshot must be captured on the main thread.");
+        Engine.InCombat.Mirrors.Hooks.TurnEnd.AfterSideTurnEndLateMirrors.Seal();
         Stopwatch stopwatch = Stopwatch.StartNew();
 
         PowerDynamicVarWarmup.EnsureMaterialized(state);
@@ -131,8 +156,6 @@ internal sealed class CombatRootSnapshot
         ContinuationStamp continuationBefore = ContinuationStamp.CaptureLive(state);
         LiveCombatStamp liveBefore = LiveCombatStamp.FromContinuation(continuationBefore);
 
-        Player player = LocalContext.GetMe(state)
-            ?? throw new InvalidOperationException("找不到本地玩家。");
         PlayerCombatState playerState = player.PlayerCombatState
             ?? throw new InvalidOperationException("玩家没有战斗状态。");
         AbstractModel[] liveCombatHookListeners = state.IterateHookListeners().ToArray();
@@ -201,6 +224,11 @@ internal sealed class CombatRootSnapshot
         int cardCount = state.Players
             .Where(candidate => candidate.PlayerCombatState != null)
             .Sum(candidate => candidate.PlayerCombatState!.AllCards.Count());
+        IReadOnlySet<string> playerCardIds = playerState.Hand.Cards
+            .Concat(playerState.DrawPile.Cards)
+            .Concat(playerState.DiscardPile.Cards)
+            .Select(card => card.Id.Entry)
+            .ToFrozenSet(StringComparer.Ordinal);
         int powerCount = state.Creatures.Sum(creature => creature.Powers.Count);
         stopwatch.Stop();
 
@@ -213,6 +241,7 @@ internal sealed class CombatRootSnapshot
             simulator,
             state.Players.Count,
             playerState.TurnNumber,
+            state.RunState.TotalFloor,
             player.Creature.CurrentHp,
             player.Creature.MaxHp,
             player.PotionSlots.Count,
@@ -224,6 +253,7 @@ internal sealed class CombatRootSnapshot
             ActEndingBossPolicy.ResolveHpRelief(state),
             stopwatch.Elapsed.TotalMilliseconds,
             cardCount,
+            playerCardIds,
             powerCount,
             simulatedCombat.RootHookListenerCount,
             simulatedCombat.RootRunModSubscriberCount,

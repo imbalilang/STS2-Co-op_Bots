@@ -20,6 +20,14 @@ internal sealed partial class SimulatedCombatState
 {
     private ForkableDictionary<Creature, PredictedDeathPhase>? _deathPhases;
 
+    public void SpawnStockReplacement(CombatPredictionSimulator simulator, StockPower power)
+        => MonsterSpawnSupport.Spawn<Axebot>(simulator, this, power.Owner, power.Owner.SlotName,
+            configure: axebot =>
+            {
+                axebot.ShouldPlaySpawnAnimation = true;
+                axebot.StockAmount = power.Amount - 1;
+            });
+
     private static ForkableDictionary<Creature, PredictedDeathPhase>? BuildInitialDeathPhases(
         IReadOnlyList<Creature> enemies)
     {

@@ -19,6 +19,9 @@ internal static class PowerPredictionStateSupport
     {
         switch (target, source)
         {
+            case (DarkEmbracePower value, DarkEmbracePower original):
+                _ = simulator.StateStore.GetReadOnly(value, () => new DarkEmbracePredictionState(original));
+                break;
             case (SkittishPower value, SkittishPower original):
                 _ = simulator.StateStore.GetReadOnly(value, () => new SkittishPredictionState(original));
                 break;

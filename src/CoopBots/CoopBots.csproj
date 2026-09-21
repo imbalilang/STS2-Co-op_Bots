@@ -17,6 +17,28 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      CombatSolver 0.41.0, shipped as its OWN assembly rather than source vendored into
+      the kernel. Its RootNamespace is `CombatSolver`, so its type identities do not
+      collide with the vendored 0.33.9 engine under `CoopBots.Kernel.Vendor` — both load
+      side by side, and only game types cross the boundary.
+
+      COPIED, not ProjectReference'd. A reference would make every consumer of this
+      project transitively rebuild CombatSolver, which needs SteamRoot/RitsuLib paths;
+      PatchSmoke and the release script do not pass them, and a third-party project should
+      not be recompiled on each of our builds anyway. Build it separately with:
+        dotnet build work/combatsolver-sync-latest/CombatSolver.csproj -c Release \
+          -p:SteamRoot=B:/SteamLibrary -p:Sts2DataDir=<game data dir>
+      Conditional so a checkout without the built copy still builds.
+    -->
+    <None Include="../../work/combatsolver-sync-latest/.godot/mono/temp/bin/Release/CombatSolver.dll"
+          Condition="Exists('../../work/combatsolver-sync-latest/.godot/mono/temp/bin/Release/CombatSolver.dll')">
+      <Link>CombatSolver.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>PatchSmoke</_Parameter1>
     </AssemblyAttribute>

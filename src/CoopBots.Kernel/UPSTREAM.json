@@ -1,10 +1,46 @@
 {
-  "source": "CombatSolver 0.33.9",
+  "source": "CombatSolver 0.41.0",
   "namespace": "CoopBots.Kernel.Vendor",
   "files": [
     {
+      "path": "Api/CombatShowcaseApi.cs",
+      "upstream_sha256": "a01b5b499f0064a9a52b76c0504769eb1b62629abd18cbc9f9552ad44036b825"
+    },
+    {
+      "path": "Api/PreCombatForecastApi.cs",
+      "upstream_sha256": "b6b1446c8514678cfec7b2e66896cd297ef1cdb15e878436c19c41f7a4b7895d"
+    },
+    {
+      "path": "Api/PreCombatForecastContracts.cs",
+      "upstream_sha256": "4e7da24e88c1b571e6f0fa192c801542c586b0d16cf67dbbefaa64e5c7909894"
+    },
+    {
+      "path": "Api/PreCombatForecastWorker.cs",
+      "upstream_sha256": "1d69935c53371bca94b29e98a2a72cce52f8c76ec5d50a9d967dbdc30f137cd8"
+    },
+    {
+      "path": "Api/PreCombatLiveStateSnapshot.cs",
+      "upstream_sha256": "3f326741a8d2bca6c7f16b32cea65d95a6fb71a2a083aef5807a0312aa65e6a2"
+    },
+    {
+      "path": "Api/PreCombatRunSerialization.cs",
+      "upstream_sha256": "26505cffea1dfb086a613980cf649e5a11b85d7f63de964c47f341ebd64c2f64"
+    },
+    {
+      "path": "Diagnostics/PerformanceLifecycle.cs",
+      "upstream_sha256": "91c877ad10ddfb66d9423d02cd73bf6333dadf6b544993382c1fee52e2bd452d"
+    },
+    {
+      "path": "Diagnostics/PerformanceRecording.cs",
+      "upstream_sha256": "13e9fb54956ec2e1ed6c13a53a2f3d7a7ea036c6a7d15bbdbf836ce669e0807d"
+    },
+    {
+      "path": "Diagnostics/PerformanceSession.cs",
+      "upstream_sha256": "e9b72e39481e9d2371cf002a19a50f8093b18bb449a4d675429bae3b6418d333"
+    },
+    {
       "path": "Engine/Common/BaseLibCloneConcurrency.cs",
-      "upstream_sha256": "da809edb150abbaecf45420baa799603dd26a13b4f8f66ee9c8e1cd3034e4071"
+      "upstream_sha256": "55633a9fb712735dacf07b0e730560e7512d392595fe41ac36331089c0823016"
     },
     {
       "path": "Engine/Common/CanonicalModels.cs",
@@ -17,6 +53,14 @@
     {
       "path": "Engine/Common/EngineDiagnostics.cs",
       "upstream_sha256": "6b7b8a249363d4c2e265ae8e3e8d9cfc59ed75741746ff8d36fc30e8a9fd9588"
+    },
+    {
+      "path": "Engine/Common/ICombatPredictionCardContinuationState.cs",
+      "upstream_sha256": "19b5e6dd159fce772e114125cab56b1f07c84648e803a4914c1ff85abe0ba7b2"
+    },
+    {
+      "path": "Engine/Common/MirroredHookListenerFilter.cs",
+      "upstream_sha256": "e3ec421d89e7c5b9a64a39fd13bdebfa6070c1556a0c3a20a0abb625d927e944"
     },
     {
       "path": "Engine/Common/Mirrors/MethodMirrorContext.cs",
@@ -35,8 +79,12 @@
       "upstream_sha256": "b69ef3d42a39716ed3116d7f51f8baab7579df68fca044cf824b23eda1afe7c4"
     },
     {
+      "path": "Engine/Common/NativeModelCloneConcurrency.cs",
+      "upstream_sha256": "5e8d48ee8154080b021472d3b5aedabb1ef015457b7a533117e86388f25bab3d"
+    },
+    {
       "path": "Engine/Common/PredictedCard.cs",
-      "upstream_sha256": "72f226558b8ec6a1da8c3cabb4ab712464de16d65615dea43266c8f2034dc07c"
+      "upstream_sha256": "794225df67cbb0ae9bfee369afd0dc41a750d009b8d88c5de601479a680df384"
     },
     {
       "path": "Engine/Common/PredictedCardExtensions.cs",
@@ -44,11 +92,11 @@
     },
     {
       "path": "Engine/Common/PredictionExtensions.cs",
-      "upstream_sha256": "a15f6454c11e71da3cf71fb184c04bb936b2d23b667953aa227ea2394a265025"
+      "upstream_sha256": "8377c8f9d11e0a19c8f550afa35d91518d51b7c19f995e14748eaa5eebf73bba"
     },
     {
       "path": "Engine/Common/PredictionForking.cs",
-      "upstream_sha256": "73af55bf8baea1694cf98b22892efe3f0d8120f6c0be8b791a976a8b58e4bbb9"
+      "upstream_sha256": "a456a91707c5440020cfbb99e3a49890fcc54ccbee6d8c73f6e4ca0212d539ba"
     },
     {
       "path": "Engine/Common/PredictionModModelSupport.cs",
@@ -59,12 +107,24 @@
       "upstream_sha256": "bdf3a6047e861e98d34122409b4617f44b994286c781f04135fd4ba5e22aeb49"
     },
     {
+      "path": "Engine/Common/PredictionStateStore.CardContinuation.cs",
+      "upstream_sha256": "054a17d7947ede5eac1938bd17f82affc843674cb2ab7e6e0eec59589cf86c80"
+    },
+    {
       "path": "Engine/Common/PredictionStateStore.cs",
-      "upstream_sha256": "2641cddd80e7c52a964ecf12f6810c2e4d9cb07f36aaa9b4ae7a9c21333a5d4e"
+      "upstream_sha256": "a6deac9a0a07298a3ebc2ccfffab14cc0fb232f7de3cd602c3dbbfe9de1c03e8"
+    },
+    {
+      "path": "Engine/Common/PredictionTrace.CardContinuation.cs",
+      "upstream_sha256": "3fbb756fda69f18eeeacbfc1320d61dfe2d734a58da977af57e2f431b2debd71"
     },
     {
       "path": "Engine/Common/PredictionTrace.cs",
-      "upstream_sha256": "2069d8fa22c4c22d4fe88553d5e2117fd100237ae89c25f96ae025da2d7e1b0c"
+      "upstream_sha256": "98966712b1eb04a4d329fa2e225a233b7c1575d0282546aea71fd7a74aa4a1c0"
+    },
+    {
+      "path": "Engine/Common/PredictionTrace.ExecutionContinuation.cs",
+      "upstream_sha256": "2715f68515ab5ce10e6aebb1af004c4a873ca69e0bd6e7fe66755dffc302aecc"
     },
     {
       "path": "Engine/Common/PredictionUnsupportedException.cs",
@@ -72,15 +132,15 @@
     },
     {
       "path": "Engine/Common/PredictionUtils.cs",
-      "upstream_sha256": "ca98a619bbc2a41aa7e6e9388f931079fb2ce27e4970b1623698e2fef4ac7eb9"
+      "upstream_sha256": "8ee18b218962aafd99c8ad6855646b1f302d98a37e7d7d6b05de715a478dff1d"
     },
     {
       "path": "Engine/Common/SimCardPile.cs",
-      "upstream_sha256": "f3026f48d62705907e57a57c6cf6276e7a0a42e5e66c567d9cf2621b7f27c126"
+      "upstream_sha256": "42e001707e7a58c78547e40f8a7c1ece95163796bafa7bff83c1dc11803ea587"
     },
     {
       "path": "Engine/InCombat/Extensions/CombatCardGenerationExtensions.cs",
-      "upstream_sha256": "c781450ef06362e5d281f0d0f60486f68df4338c217e1b17153477208996fbb9"
+      "upstream_sha256": "5b81cce8849cc1053f7faf3c83d3bff4f5a007c66e8aa56673cf042a7eddb364"
     },
     {
       "path": "Engine/InCombat/Extensions/CombatManagerExtensions.cs",
@@ -103,6 +163,10 @@
       "upstream_sha256": "75e7ef83b3ba611ea733d39bd0db18bf56db17cbf1a6facd533541a87e0fcf4c"
     },
     {
+      "path": "Engine/InCombat/Mirrors/CardHookReceiver.cs",
+      "upstream_sha256": "f263a250a793c2e1314751574ac6dac9257cc35a4308417ec35ff80e4249febc"
+    },
+    {
       "path": "Engine/InCombat/Mirrors/Cards/CardIsPlayableMirrors.cs",
       "upstream_sha256": "21b72343aef5a19210c353bf64e1b2446f30d29ee655c5162f10ad35c341aa91"
     },
@@ -116,27 +180,27 @@
     },
     {
       "path": "Engine/InCombat/Mirrors/Cards/OnPlay/AutoPlayCardMirrors.cs",
-      "upstream_sha256": "cd0bc02bc4fca948537e160e13b184fc081f4d0870836bf72d9c01067f9e9d9d"
+      "upstream_sha256": "24735e947b967b8ad025608bbe26786da0d9a43304ed93c303483fb76f8a0165"
     },
     {
       "path": "Engine/InCombat/Mirrors/Cards/OnPlay/BespokeCardMirrors.cs",
-      "upstream_sha256": "ebce435ef4b98d2183aba98f1b1f67133cad5fb0588636dc70021d514391ad7c"
+      "upstream_sha256": "f32040bbe6634386cef153853955e46d7801d5b4570f47fb944dd8b00a3cccdb"
     },
     {
       "path": "Engine/InCombat/Mirrors/Cards/OnPlay/CardDrawCardMirrors.cs",
-      "upstream_sha256": "dbea9d4a2af72a942b43e7737ce0d2ffdbe1653febeb8576d7d0240d4d9648f3"
+      "upstream_sha256": "60d509fb6f473b2c5927003649cc871d2320889364ebedce80fb17e019cd9d06"
     },
     {
       "path": "Engine/InCombat/Mirrors/Cards/OnPlay/CardEffectRecipe.cs",
-      "upstream_sha256": "47d5a28bd5a6fa7ebdf88632da99e0d72344844adc065e3fa7ceca0f1d06925b"
+      "upstream_sha256": "4f61a22e57df60857cfc725ec7ae33e79cd94fcf7362c5b42627b876845ec2c9"
     },
     {
       "path": "Engine/InCombat/Mirrors/Cards/OnPlay/CardGenerationCardMirrors.cs",
-      "upstream_sha256": "92f2d32944f2eda655640e50641d58eaabe5ca2929a2d5315c37292a92da7ff0"
+      "upstream_sha256": "23def6822a929dd9f56b2b16634870d2463b4476a6cfa5e15d3fb8adf564ffc3"
     },
     {
       "path": "Engine/InCombat/Mirrors/Cards/OnPlay/CardOnPlayInferrer.cs",
-      "upstream_sha256": "8f32c462b43a403a73d7788c5ba2bf40743f38378049deea1646b3def5de3658"
+      "upstream_sha256": "b7d2f77ed01dc05c8a20e15735ac02ec6fbf5b981f1d2dccba3178348e578150"
     },
     {
       "path": "Engine/InCombat/Mirrors/Cards/OnPlay/CardOnPlayMirrorContext.cs",
@@ -148,7 +212,11 @@
     },
     {
       "path": "Engine/InCombat/Mirrors/Cards/OnPlay/CardOnPlayMirrors.cs",
-      "upstream_sha256": "0eba4a7f5159f2b5d6762bf1c43a56998baa57ce77e75b0e8b0b799764152ade"
+      "upstream_sha256": "7f588ddfd8847b9bfe6165045bbfbc646da8dc9611b1a1541f778d977c69b238"
+    },
+    {
+      "path": "Engine/InCombat/Mirrors/Cards/OnPlay/CardOnPlayMirrors.ExecutionContinuation.cs",
+      "upstream_sha256": "32d6ea2a4f8994ca3b87abb7d38a49bb533a5e7365dc5f273f3bb854b40badd3"
     },
     {
       "path": "Engine/InCombat/Mirrors/Cards/OnPlay/CardSelectionCardMirrors.cs",
@@ -188,7 +256,15 @@
     },
     {
       "path": "Engine/InCombat/Mirrors/HookMirrors.cs",
-      "upstream_sha256": "9d8e2f615bb7006953202d1dee725b6c2a668a2f81f8234ecd6dc8b96bd34106"
+      "upstream_sha256": "818ff1fe79f51eaa7c99cadea8d3d42319a649129cbfa74e0e1158f3c7cd6104"
+    },
+    {
+      "path": "Engine/InCombat/Mirrors/HookMirrors.ExecutionContinuation.cs",
+      "upstream_sha256": "bd8b5df703e188249d0373236e0e063c43d2747d3ceac706c8b3c18a1623b853"
+    },
+    {
+      "path": "Engine/InCombat/Mirrors/HookMirrors.TurnEnd.cs",
+      "upstream_sha256": "f7fe4009b48fed25edeb317f9be50c000aa3a7877e575701b8e99b0e5e2d9551"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Attack/AfterAttackMirrors.cs",
@@ -228,39 +304,43 @@
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Block/ModifyBlockMultiplicativeMirrors.cs",
-      "upstream_sha256": "47af8e288c88f9d3dbe98c6b69c05b231835142245597cd79989ba9f4e309c21"
+      "upstream_sha256": "b64b2fb897b5f2f1164529c3d1a30aa8c0bd11cd27f20163024afb44e9be563e"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Card/AfterCardDiscardedMirrors.cs",
-      "upstream_sha256": "e4ac8ce1bf25e7bf9de63900461f024570c4c3aab74e672ed8903043a0f444a3"
+      "upstream_sha256": "a959ac53a7ce9967a9e4cdab1fd6f71b42b139f3f98ab43c58ddd008213f9687"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Card/AfterCardDrawnMirrors.cs",
-      "upstream_sha256": "5cf64e3f9a7b7a8ec65446c678663f9619924b742950ac8fc46b01dca33d731e"
+      "upstream_sha256": "8b59de2adf016b1d85756705efd1f9cfa2f57e4bd6da15fd007bee89707a3dc3"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Card/AfterCardExhaustedMirrors.cs",
-      "upstream_sha256": "cec31d7ae9cdb94c18b748c8a303018872249c132e3082a60b71b7ca541894e3"
+      "upstream_sha256": "3cd600f736aadd7bbc6d76c47edbeb310d4c5bb83fe5366126e97e9567eb51ea"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Card/AfterCardGeneratedForCombatMirrors.cs",
-      "upstream_sha256": "7da15c3a571ebae8596b380d24bca750e22645bde98dc8927caeffcabe8aba69"
+      "upstream_sha256": "192a64c8a72979235fa02e43520e0a2346d91281a123c0afa53825985692db81"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Card/AfterCardPlayedMirrors.cs",
-      "upstream_sha256": "b73d1d6821f93ffc5d684b3a998d76da7fb73e17837910eb6b2b292cc4a046c2"
+      "upstream_sha256": "23a6deff84631ec3d2fcaade56e1bb5a3a915e28e35fc8847d6e1c85eb06fdea"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Card/AfterShuffleMirrors.cs",
-      "upstream_sha256": "9047ff9657236dd30452e30660365751e3cbbf354496c3c231c24c0623c072f0"
+      "upstream_sha256": "00c2ddbc3bdf77015f33142c786ef6b2d10e96bb1df30edfab300e63a050f958"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Card/BeforeCardPlayedMirrors.cs",
-      "upstream_sha256": "bafdedd8ced56a916969d03e00a3903f82f852613a7e92d61d30cc674549afc5"
+      "upstream_sha256": "f84b0cf184b88093b0a4f618ee3d248b11c33b93beb4b75bec8e226d624aa1b4"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Card/CardPlayHookPredictionStates.cs",
       "upstream_sha256": "95bfb3a39c27e6ba9e4fd6cb48df19defd338774e9b3bca705e5d2b8bdfec37c"
+    },
+    {
+      "path": "Engine/InCombat/Mirrors/Hooks/Card/GhostSeedMirrors.cs",
+      "upstream_sha256": "f470bd43cbe371a6c600581c2c2191aa7cf2ade7efcacd9e7b877f3de4d10549"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Card/ModifyCardPlayCountMirrors.cs",
@@ -268,7 +348,7 @@
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Card/ModifyCardPlayResultLocationMirrors.cs",
-      "upstream_sha256": "b739241b6f9b5e00d4115ca76e0873503b3c66635c673b46ed5b3a6969f87301"
+      "upstream_sha256": "6bf4e95a1450d8b5cd6a9afcb7a99987216fd111aefaf08eb3afd836ab00896a"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Card/ModifyEnergyCostInCombatMirrors.cs",
@@ -283,12 +363,16 @@
       "upstream_sha256": "9dcc3aec36d39574c2c9a2ae78dc8ff66007401647fa830d78d3dae4d396e5f2"
     },
     {
+      "path": "Engine/InCombat/Mirrors/Hooks/Card/PhantomBladesPowerMirrors.cs",
+      "upstream_sha256": "7a3fb9edbadc26b39162f7029a5083329e91c1fab25c04864fb7a4d696f834d1"
+    },
+    {
       "path": "Engine/InCombat/Mirrors/Hooks/Card/ShouldDrawMirrors.cs",
       "upstream_sha256": "3611578e3ad927f2d72e345ed953c44f5095060461e15e054a191aef7453203d"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Card/ShouldPlayMirrors.cs",
-      "upstream_sha256": "e6f5e7e0266918ea40cebeb21de968d794ff29c2084be7b7184df18295e97637"
+      "upstream_sha256": "af3398355c815c3c61f76ba37e117fe9a43c47cf066a575c1f2176e1f84a4254"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Damage/AfterCurrentHpChangedMirrors.cs",
@@ -296,11 +380,11 @@
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Damage/AfterDamageGivenMirrors.cs",
-      "upstream_sha256": "2a8c46eccc9318ef200f3fe8ac1dd708e680b28ebb11f5e7549d7572264468be"
+      "upstream_sha256": "9637b17f36fc6440f79388f815ce16dc20e5a5f9cfbfbaff849889ac7ae68127"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Damage/AfterDamageReceivedMirrors.cs",
-      "upstream_sha256": "5f123f913d77fc3277b69e1c7e142d046e1bd35729963a2578b913f551990de0"
+      "upstream_sha256": "1d7309a39efa2ab237eb4157caf59c20b35e5c1a913995c4f6e54afe9fe195a7"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Damage/AfterModifyingHpLostAfterOstyMirrors.cs",
@@ -312,7 +396,7 @@
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Damage/ModifyDamageMirrors.cs",
-      "upstream_sha256": "190ca520f80cd1943ec56fae320cdaa1673974a13050e8df17dddecee105904c"
+      "upstream_sha256": "c4672362725653ad38c0ee5eb8d3f244afffdee091cddb59a0f9559d0e553095"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Damage/ModifyHpLostMirrors.cs",
@@ -320,7 +404,7 @@
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Death/AfterDeathMirrors.cs",
-      "upstream_sha256": "a06cf7da1b5d9f38b22a9e8c0cc7379ce410e4a6a815b549cd90874810d037be"
+      "upstream_sha256": "85cc3559eb22215ca0d1d46b9267f307d0129bee7c6c20d45935b73a877cb9aa"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Death/AfterPreventingDeathMirrors.cs",
@@ -332,7 +416,7 @@
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Death/DeathPreventerMirrors.cs",
-      "upstream_sha256": "550eca930cc8939b16c583e8199a8fd594406ea0370ae1698cd3c1e0ccece8b9"
+      "upstream_sha256": "690d83d779d1eff05990d8c127cc5c48db981a9bcba2b21da779c707e28f343c"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/Death/ShouldDieMirrors.cs",
@@ -355,6 +439,10 @@
       "upstream_sha256": "32377468005d1eea45cbff5fdce4337996c06da1870f83b47c8f7e186f8b8bbf"
     },
     {
+      "path": "Engine/InCombat/Mirrors/Hooks/Resources/AfterEnergyResetMirrors.cs",
+      "upstream_sha256": "0f7de98bc01da715145ed9618a2238a5409386f800119c2f08a0dd6bbfabd218"
+    },
+    {
       "path": "Engine/InCombat/Mirrors/Hooks/Resources/AfterStarsGainedMirrors.cs",
       "upstream_sha256": "338428186e90394a0273a0b4672e1c437c46b61719e02c8e46b30a89ca4f3076"
     },
@@ -365,6 +453,10 @@
     {
       "path": "Engine/InCombat/Mirrors/Hooks/TurnEnd/AfterAutoPostPlayPhaseEnteredMirrors.cs",
       "upstream_sha256": "06cf719cc5e29f31fa58136cef2d6825f8d6ac2baf434a88784c97e7a16baf01"
+    },
+    {
+      "path": "Engine/InCombat/Mirrors/Hooks/TurnEnd/AfterSideTurnEndLateMirrors.cs",
+      "upstream_sha256": "08365db1799ab33fb1d05daff98b791cb8259a8edd5a3249aa577f734eed92d4"
     },
     {
       "path": "Engine/InCombat/Mirrors/Hooks/TurnEnd/BeforeSideTurnEndMirrors.cs",
@@ -408,7 +500,7 @@
     },
     {
       "path": "Engine/InCombat/Mirrors/Potions/OnUse/CardGenerationPotionMirrors.cs",
-      "upstream_sha256": "23deb426e55704222f5284297e2f2a65fce3df27dd391a1c01aa4954cc584102"
+      "upstream_sha256": "28dbf1aae3a5a1d8d613c4998b3b758a1eea27c81534a0f57ab4896ad6912651"
     },
     {
       "path": "Engine/InCombat/Mirrors/Potions/OnUse/DrawPotionMirrors.cs",
@@ -432,19 +524,27 @@
     },
     {
       "path": "Engine/InCombat/Simulation/ActionRelicTriggerRecorder.cs",
-      "upstream_sha256": "22e5bc0b3166cee3430a2a768fae9dad4176047d3baf7e71f9c7aab424966c48"
+      "upstream_sha256": "914195661f718cdb744fec2c9f853a2a582c645ae5a8f283ff827ab7db2ad77a"
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictedCardExtensions.cs",
-      "upstream_sha256": "f16036ce05d33389bdf7195528f64d47b7b9ba5b66032734f20834b62142e00b"
+      "upstream_sha256": "2be64b9e3d157859dc0edda1fc9bbe7806f203a523b7bc23de86d2781a016225"
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionDynamicVarExtensions.cs",
-      "upstream_sha256": "4d8e2a0428805c42efc24a106a01e43acdfecb4d57d4ddbe3b60c58b871e5945"
+      "upstream_sha256": "c3e89bdec66dee3586cacff357068635523f743cdc7476b10e78b9d59aa7cd31"
+    },
+    {
+      "path": "Engine/InCombat/Simulation/CombatPredictionHistory.CardContinuation.cs",
+      "upstream_sha256": "7e743b9a9362408448c25e867cc1a03376df8521999bc9782c4d956daf0724ed"
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionHistory.cs",
-      "upstream_sha256": "8c736be1bf03589cf8551062d49fc441ab0878c2f5ef8f18a7a020370192143b"
+      "upstream_sha256": "1c91c45d95819de9a1e98009e495cc6bac08c9b2c0a1bf940bf1b87604917c9c"
+    },
+    {
+      "path": "Engine/InCombat/Simulation/CombatPredictionHistory.ExecutionContinuation.cs",
+      "upstream_sha256": "cbe042a709b28f77ed5c21c103fa84bea00322dcc0f83e3f0f978263d0a4fa49"
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionHistoryEntry.cs",
@@ -452,7 +552,7 @@
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionRngSet.cs",
-      "upstream_sha256": "7ecea6fab6e0941737e90803a26ea5f0523fab137c296d9c6a0f268f94fba1e7"
+      "upstream_sha256": "c58df273606dade9b1f67a7fca53f75704142eaceafd814f382ab16e2d5545b2"
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.Attack.cs",
@@ -460,43 +560,71 @@
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.AutoPlay.cs",
-      "upstream_sha256": "ee6d82544a12f64d46693a50ba998a1d9886e22075b4415ea6b963b806ffa10f"
+      "upstream_sha256": "5d13222fb79db481ec4f49ed58636cf63c16dab23ec710e1aad47fa2d50f353f"
+    },
+    {
+      "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.AutoPlayContinuation.cs",
+      "upstream_sha256": "e41e0ad2eed435b4a73fa4be4b19dee7b82514330436621c02c9b5c619d1da2c"
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.Block.cs",
-      "upstream_sha256": "2b1da8ccc97b3d21fcf3d8c29d629f45f3865a8d1f79bbc89db650c50ce8f3d4"
+      "upstream_sha256": "818828df5bf0dd1a7554853234d915e0af11491b076d76bb8ef56c76d8d42f1f"
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.Card.cs",
-      "upstream_sha256": "5f4f4858f027c902770593599106e1f104d2a4918a993af8520f444da3bc02f7"
+      "upstream_sha256": "e1e741c786113422886342c34e988a3bf916e315a9611f26dfcfe976119db8c5"
+    },
+    {
+      "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.CardContinuation.cs",
+      "upstream_sha256": "c2c0f7264771a72d1fee889dbbfa2e922852a958d6a3f09781eb7d8fd757b90d"
+    },
+    {
+      "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.CardExecutionContinuation.cs",
+      "upstream_sha256": "8a09c15ef20c534f94f3729ec288a3b1ce286b3c2f6c7d9ea4f5049bb991017f"
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.CardPile.cs",
-      "upstream_sha256": "f9baca5ba3ab3f3b5645df0236e65d6c36e969a25c578a3794cdf1f6a303bd34"
+      "upstream_sha256": "996dd8fc1dab5102e308d9f3ba7822fab463c7a674ce32e3b7e389426b08765b"
+    },
+    {
+      "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.CardTailContinuation.cs",
+      "upstream_sha256": "e9613ca7a0d59d7de7d8cdf866b73df2747ee21fccef3ed0849a1776214a4e06"
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.CardTargeting.cs",
-      "upstream_sha256": "b6984c7d252c13f44b40373dabf789d998e482bfa72a97ad253c172d680d39a8"
+      "upstream_sha256": "d4bda9988dc1f11c9abf9236f1dff161e5ae34d2d0f1ce136db739794f7075b5"
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.cs",
-      "upstream_sha256": "0191c7df6817504615176620335cf7eb4a689caa0f2059ebd3d7637161bb06b6"
+      "upstream_sha256": "886a42d4e3f71729c11d0ff29e7f6c0c987200e931d17615fe5327ebf8eb9b81"
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.Damage.cs",
-      "upstream_sha256": "52df5f037c81649c5705f808d7a2a556fedefcbceb6c926983f64633c7395fe1"
+      "upstream_sha256": "c0f0399050502c4e20817bb7c08b727af4701e95d2f003b54503e9c37a9c428b"
+    },
+    {
+      "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.DiscardContinuation.cs",
+      "upstream_sha256": "9a0964ce142970c52dfcdf4b1a18d9f2b5d68dedd801a8d504987965b8e10a50"
+    },
+    {
+      "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.DrawContinuation.cs",
+      "upstream_sha256": "c8fbf56cdd639590cfe61dd58815e6e8f328d4681f57f7a6bfc0a1a497a330b3"
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.EndTurn.cs",
-      "upstream_sha256": "7bd97acff1dca6bf3040e627bc7828fec75ac249df9b6d5c1519f1ebb6bf4023"
+      "upstream_sha256": "f2c069f26a51c527c9627246816a62a7f17d56ae0dbddeeb847bef17c7c0104b"
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.Energy.cs",
       "upstream_sha256": "a13f68b135994e270811765591292d3aca66dfefe1b8cfccb2deb169ad5e0e7e"
     },
     {
+      "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.ExecutionContinuation.cs",
+      "upstream_sha256": "3188d8b13787621b5e62a29f3d594ac7e7503868303c68c289c7328922ab7c24"
+    },
+    {
       "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.Heal.cs",
-      "upstream_sha256": "0d77b7073f4d02d8aef5ba6a0d3b66299fe0bcd5f7a3b70469a2f266ffdaa234"
+      "upstream_sha256": "e3fbb2fee39d21ff4ba6dfbf8d93dc5cb1e4cac42bdaa807a0925024405ad2d2"
     },
     {
       "path": "Engine/InCombat/Simulation/CombatPredictionSimulator.Orb.cs",
@@ -528,7 +656,11 @@
     },
     {
       "path": "Engine/InCombat/Simulation/SimPlayerCombatState.cs",
-      "upstream_sha256": "a82dfb5265ff1dacc5c2bb93a5615687bcfd1eced0777590e338b902e0128f3e"
+      "upstream_sha256": "42bc4dd0fcc04c606efe221ce3aa577abb6ff41e15ce55cb45f5f389ba424a01"
+    },
+    {
+      "path": "Prediction/AdaptedCardOnPlayMirrors.cs",
+      "upstream_sha256": "92cc453088148a673eff5c1de9dbe60c5bddf0ea0ab7a01d499380ae7395cc5a"
     },
     {
       "path": "Prediction/BranchMonsterAi.cs",
@@ -536,11 +668,15 @@
     },
     {
       "path": "Prediction/CalculatedVarSpecRegistry.cs",
-      "upstream_sha256": "753c4fee9d6778d6f1e66fa2d672ef5942254855e9558cf2ff6d3a3259bb7d06"
+      "upstream_sha256": "0a1beb2fa6ef8b7119ae13e8f1d8e286571a7c34217daed48597144b11d970f7"
+    },
+    {
+      "path": "Prediction/CardChoiceContinuation.cs",
+      "upstream_sha256": "0bea0eeb9029e5711919203d472d75472e19b45b0814db6b9ae79eb783344df1"
     },
     {
       "path": "Prediction/CardEffectSpecRegistry.cs",
-      "upstream_sha256": "84bfc2acc2822c3711ec86e9706f0b1ca3346964e935cc8b860e76ba702989f8"
+      "upstream_sha256": "0e9655eca51773bb528456fc41e421aa95f262cb583e82caeb96e828bf22f9b1"
     },
     {
       "path": "Prediction/CardExecutionSupport.cs",
@@ -548,11 +684,11 @@
     },
     {
       "path": "Prediction/CardOnPlayCompensationCatalog.cs",
-      "upstream_sha256": "83e557161e5a7d1427c4cad11d741ed0aed1bfe802ec793046e7c93bae084a9a"
+      "upstream_sha256": "e3ff615826c92aab899abdbbc5cbc8c307dafd546143a9588573369403e9f4c3"
     },
     {
       "path": "Prediction/CardOnPlaySupport.Batch042.cs",
-      "upstream_sha256": "299acb3f398afc68daf56b114215df8c1ebb022e8530814041161ae273625583"
+      "upstream_sha256": "9cc5dd41eee9904e07262761d35e98568ebfebacab68f47139040d2fa674ccc9"
     },
     {
       "path": "Prediction/CardOnPlaySupport.Batch043.cs",
@@ -568,7 +704,7 @@
     },
     {
       "path": "Prediction/CardPowerOnPlaySupport.cs",
-      "upstream_sha256": "bef8caac6604fd59314d63727e476055f57b231fc49fed2d3a8bdefa1b8c8e77"
+      "upstream_sha256": "3a39777ee5d8ed7d62af6f9ab86f82bbe50e31bc80b2b0d8337b7dc7610f8130"
     },
     {
       "path": "Prediction/CardPowerOnPlaySupport.SToZ.cs",
@@ -576,15 +712,15 @@
     },
     {
       "path": "Prediction/CorePowerSupport.cs",
-      "upstream_sha256": "7147a733d314c9d02d3d8dee1a7684b3bacec890e67c244c55b8d548a9e8cba5"
+      "upstream_sha256": "a9445ed8d07a0e177ab5cce4b3f9a06428b41f73d4cd93efbe8031af2c744848"
     },
     {
       "path": "Prediction/DeathPowerSupport.cs",
-      "upstream_sha256": "693f5c0f239f76f64dae5a56a5b3618832a3ad59cf14230b9237a74731e6003f"
+      "upstream_sha256": "7ff9f8715d82a20f45a3c16ccb282ea8deef04896e9371a4730a9c0856cb53a2"
     },
     {
       "path": "Prediction/EnchantmentLifecycleSupport.cs",
-      "upstream_sha256": "d808bf8bd33e415f801be2bbc9ec16b92cad19d3c65a01172f23936e1d228c9f"
+      "upstream_sha256": "681aae553c5c69a6e8e95a8c27f29fef0d19e181f7b252fb6741dd85d5a26a98"
     },
     {
       "path": "Prediction/EnchantmentStateSupport.cs",
@@ -596,7 +732,7 @@
     },
     {
       "path": "Prediction/EndTurnPowerSupport.cs",
-      "upstream_sha256": "b0691969cb931a5399b5fe64c16fa8d99ac3cec88b73c62007fa703a0964bb5f"
+      "upstream_sha256": "6f90b2d641cf9b9014ba3491019e553b93b3aaacc7e549903304a6c316713f7f"
     },
     {
       "path": "Prediction/IncompatibleGameplayModException.cs",
@@ -609,6 +745,18 @@
     {
       "path": "Prediction/KnowledgeDemonChoiceSupport.cs",
       "upstream_sha256": "a5c5e9bad684f2e3fe7f4c48b03aed4af4b25104017c3dd2305de4a03647edc6"
+    },
+    {
+      "path": "Prediction/ModelPredictionStateMirrors.cs",
+      "upstream_sha256": "3e955aad8713c81d24fa6137b23be00ce6bd8018e88f1f71ae0c255bd6eb8604"
+    },
+    {
+      "path": "Prediction/ModelPredictionStateWriter.CardReferences.cs",
+      "upstream_sha256": "bb3c9730c8fa13c1f34919b87b9efef760361651331b8dbd8c34e1c49cdcc7e9"
+    },
+    {
+      "path": "Prediction/ModelPredictionStateWriter.cs",
+      "upstream_sha256": "41f48778d538c680485fc0b7485d657ff9ea88e119195b5e33ff5b92ae0c3695"
     },
     {
       "path": "Prediction/MonsterMoveEffects.cs",
@@ -628,7 +776,7 @@
     },
     {
       "path": "Prediction/MonsterSpawnSupport.cs",
-      "upstream_sha256": "8c9d001189e3e5dbd566845188fa8fb9ac2b08cac2185bbefc72d7312269c30d"
+      "upstream_sha256": "ec46599dacec9fea3c765863585f165b69f1f96924c1bd3ec261897d3d8c8997"
     },
     {
       "path": "Prediction/MonsterValueReader.cs",
@@ -640,7 +788,7 @@
     },
     {
       "path": "Prediction/PersistentPowerSupport.cs",
-      "upstream_sha256": "910c12e74d81662ee0bce37e29f6fc7c079e8bfa3f05f2e794819e9820595c1c"
+      "upstream_sha256": "8f26e33d0ee4823524f63168666007fbeab1f96a57401a3c49dc72325aad2333"
     },
     {
       "path": "Prediction/PersistentRelicSupport.cs",
@@ -648,27 +796,39 @@
     },
     {
       "path": "Prediction/PlayerTurnEndLifecycle.cs",
-      "upstream_sha256": "152a6e32a714a6523f22dbeb89e7a098411b3b4a35f3720d65ef91fc4309bf5f"
+      "upstream_sha256": "fb9fa675cb41c4f813fee1671d6151c9c3c2e5e1bd810267780d18640d5c0bfc"
+    },
+    {
+      "path": "Prediction/PotionChoiceContinuation.cs",
+      "upstream_sha256": "6c38a94170c7d5e461c1f353c2e41c6a9ded5c577e2178b01177c9c5023ea324"
+    },
+    {
+      "path": "Prediction/PotionExecutionSupport.cs",
+      "upstream_sha256": "17050dd3526812b29e843017dbf55185e112f824c87b3c840a0000403e6e62aa"
     },
     {
       "path": "Prediction/PotionOnUseSupport.cs",
-      "upstream_sha256": "19a396a51ece8a4905eb693cf0cc02c12fa89fda772ef60eb44f4c2180677b14"
+      "upstream_sha256": "c6acbb2c4f0ebfe31bfc4a7afc24a48fc3d9bd2ebc08c8fb8ce94c109d2d40ac"
     },
     {
       "path": "Prediction/PowerLifecycleSupport.cs",
-      "upstream_sha256": "da4939027deb4ab39a5cba0dfa56bc3b5e10542d6de7e795abf99982c2adce97"
+      "upstream_sha256": "46bf2499adec3384423d7c4fb735ab205616020846b9bf26c47802ddd6180764"
     },
     {
       "path": "Prediction/PowerPredictionStateSupport.cs",
-      "upstream_sha256": "b998111ef9b217a02f3b54589a241b77e1cfc65a86ac999a0edd47b31cd3b152"
+      "upstream_sha256": "8d5fc4604feb36d224b8e893bd0c8fe95bce45878713aae8e77503749404a1bd"
+    },
+    {
+      "path": "Prediction/PredictionCardReferences.cs",
+      "upstream_sha256": "cd9fcb58d1b16a81f18efe3ee0eeb6f5c638082cc34fe8a61307e9321163b5df"
     },
     {
       "path": "Prediction/PredictionCoverage.cs",
-      "upstream_sha256": "1c2872e3d01c86d5b85c3fdde6d8af32b329dc05a31fe7ffa08f85029ca27da9"
+      "upstream_sha256": "2f81ef2df443831f28fccb74784ab33357ed49036416bbf6a0412bbb51a315d5"
     },
     {
       "path": "Prediction/PredictionModHookSubscriberCapture.cs",
-      "upstream_sha256": "b9b3910d14ae89f5cff3f1c7423a1da70faf74fce1d48b38ad0a3dbedd57d1dd"
+      "upstream_sha256": "6a69e14542ad2bab792ede942dff0f632aa4ac92d3a34a94b0d9df47f3e0026f"
     },
     {
       "path": "Prediction/PredictionModHookSubscriberInertness.cs",
@@ -676,7 +836,11 @@
     },
     {
       "path": "Prediction/PredictionModPatchAudit.cs",
-      "upstream_sha256": "c463ca09e47285680cb36e3e976cb6daf0db684fb0481310987bd061980adc4b"
+      "upstream_sha256": "ba439c6fe0e92bb5637e9d7d77a2843dbf219d8fef097262e5463ac02b116b3a"
+    },
+    {
+      "path": "Prediction/RelicCounterCatalog.cs",
+      "upstream_sha256": "5693f688cc65c3b7b736675933d816074aaad15503b7c0ce95b70af217dd7157"
     },
     {
       "path": "Prediction/RelicPredictionStateSupport.cs",
@@ -688,19 +852,39 @@
     },
     {
       "path": "Prediction/TriggeredPowerSupport.cs",
-      "upstream_sha256": "89511b344091b3b7a34c718ad45dd69e4cb78709b5f504a2cc16f118652ed509"
+      "upstream_sha256": "a8945e878dbe3a47cb5880e81de47e2bf8cff0fbe08abb74aa99f9013a86da25"
     },
     {
       "path": "Prediction/TurnStartChoiceSupport.cs",
-      "upstream_sha256": "98df296f465d0157aaa1cf7a64cb6d817954e23dc80ef4ec72024471692ad111"
+      "upstream_sha256": "55c24fefc56d7673d521355116121519607430c1bfdb579479dd0228a8cf6276"
+    },
+    {
+      "path": "Prediction/TurnStartChoiceSupport.ExecutionContinuation.cs",
+      "upstream_sha256": "f6b98644f57aca9859d6d053f7bce61b7e3be38a166f1fd551da99a86ff9eef5"
     },
     {
       "path": "Prediction/TurnStartPowerSupport.cs",
-      "upstream_sha256": "770d62919dcea1c9b3946ca65ed9ce6e4ea5c796989c6ac703d8ca94ee84eefa"
+      "upstream_sha256": "93c38488981cfa3d8951d7448e8ef5d344ffc2602f4aab0ee685cd4e16825753"
+    },
+    {
+      "path": "Prediction/TurnStartPowerSupport.ExecutionContinuation.cs",
+      "upstream_sha256": "804256f736d3c98827723abbe3d7bc1f55d37c5adeea817ea7eea53f06895f49"
     },
     {
       "path": "Prediction/TurnStartRelicSupport.cs",
       "upstream_sha256": "fab6e286ccaace75b83c0024437fdb22512946b1e77e2305e003e54aec423e22"
+    },
+    {
+      "path": "Replay/AppendOnlyEventLog.cs",
+      "upstream_sha256": "7d8a7fb6e6d86bdda2bbd13a09e209e4974c151dc1f1adda545716f5ecdcb5c9"
+    },
+    {
+      "path": "Replay/CheckpointArchive.cs",
+      "upstream_sha256": "e0bb0157b4a6545108c9f2cdc09656ecbdbd43e6e8d7a81b55a307c6c0fb4fa2"
+    },
+    {
+      "path": "Runtime/BaseLibCloneConcurrencyPatch.cs",
+      "upstream_sha256": "1b8b72c5a1c5d284a9554be7f501d79fb09c6d804dc6be6b3678a5cf6219fe2b"
     },
     {
       "path": "Runtime/BattleDamageTracker.cs",
@@ -711,60 +895,244 @@
       "upstream_sha256": "c060ec85f769aa614e64347204edae7fac4c5fd3bf40ff6b9ba3b175383fd550"
     },
     {
+      "path": "Runtime/ClientUpdateNotice.cs",
+      "upstream_sha256": "630df779545c912d03a5b0b857c6a6443745d02049751af8fa926ac9aa72d8aa"
+    },
+    {
+      "path": "Runtime/CombatBugReportDescription.cs",
+      "upstream_sha256": "1c39ab9c037d02c3bdeec47101eb5c9f0e1d71a4999b827b3ec6b87ab5098aaa"
+    },
+    {
+      "path": "Runtime/CombatBugReportExporter.cs",
+      "upstream_sha256": "c0821955841a1ed71fcdcdfcb5ac8be54e0c7403d6537a6b709cc3705326ff02"
+    },
+    {
+      "path": "Runtime/CombatBugReportMetadata.cs",
+      "upstream_sha256": "c9c009ff81b9efa01c8021885c5276aa4aa9d49cbe21d0fcd399fc07c1f50891"
+    },
+    {
+      "path": "Runtime/CombatBugReportUploader.cs",
+      "upstream_sha256": "59dc507a860e891bbb1140a7d564099e33f3cfdd4cfd568991ce97e33900bc4b"
+    },
+    {
+      "path": "Runtime/CombatDiagnosticJournal.cs",
+      "upstream_sha256": "105df3d3fa5b53d3f70d565f59bb419446743573566839e75c5b5c9610a4ba97"
+    },
+    {
+      "path": "Runtime/CombatInstantModePatch.cs",
+      "upstream_sha256": "3d8d3c9c5d3122803984a6bdf86baee19f56c989ad6bcc2dbf0e12945f033daa"
+    },
+    {
       "path": "Runtime/CombatReplayOutcome.cs",
       "upstream_sha256": "86720da7ac458603d043d5784cb6a5950f6e8942e011019688ca5b7fe6f52ef1"
     },
     {
+      "path": "Runtime/CombatReplayRecording.cs",
+      "upstream_sha256": "5b0405460aa096fd180fb0ddb0794458b55b8f9629dad934b0270fb7ef3d732e"
+    },
+    {
       "path": "Runtime/CombatRootSnapshot.cs",
-      "upstream_sha256": "4d6502c80711a543b922d5fb450c13eea4f76c1b1a77857ca5e046daa7af0e92"
+      "upstream_sha256": "baf68d3ff43d04d7c8d0f73b6d3c51f292b322aaa7db589b1b45a33b82dd813f"
+    },
+    {
+      "path": "Runtime/CombatShowcaseCollector.cs",
+      "upstream_sha256": "ce56395f694e003c3414d5db1a3aa5de76a6737890d226f1aeff7b217c5d2a6c"
+    },
+    {
+      "path": "Runtime/CombatShowcaseModEligibility.cs",
+      "upstream_sha256": "7f06a1e4ab6a45cdfb74f4a4cc552021891de139c159a40e729f48e10cb0f0e5"
+    },
+    {
+      "path": "Runtime/CombatShowcaseNativeState.cs",
+      "upstream_sha256": "6ff743d1f1ca4aa88d653d6a22ebee330e1838ab5878dbce144edf0f3ae2ca4a"
+    },
+    {
+      "path": "Runtime/CombatShowcaseRuntime.cs",
+      "upstream_sha256": "ae02158b3d42d55a55dbc4b5cab4590baafefa123475dfe9261bd0aefe272137"
+    },
+    {
+      "path": "Runtime/CombatSolverLog.cs",
+      "upstream_sha256": "20b06ecea61f5af7bd31e40d805def08117eea3cd899676573e3de60bde94a6c"
+    },
+    {
+      "path": "Runtime/CombatStateTrackerIsolationPatch.cs",
+      "upstream_sha256": "71a743e5e8d4e2a51f40c0f5013f2378007fbee3addeaef0bda8075e63842440"
     },
     {
       "path": "Runtime/ContinuationStamp.cs",
-      "upstream_sha256": "f3866659a75ccea8320df59dfe682593b66f067534e73e322acefd23c2260a98"
+      "upstream_sha256": "9bf348b35a335a995ae601d9142615f196d3aa8bd32d0c14068ca989853a9284"
+    },
+    {
+      "path": "Runtime/DynamicVarCloneMetadataPatches.cs",
+      "upstream_sha256": "6e16e82c8a1a997909fd2f7dedcb3f315eb10bf4797bbb23356808db7a9b0276"
+    },
+    {
+      "path": "Runtime/Entry.cs",
+      "upstream_sha256": "673ca031abf175e172ea30fca14a9cddb3edeb20f3a620e29263e1f39bdee9ac"
     },
     {
       "path": "Runtime/LiveCombatStamp.cs",
       "upstream_sha256": "fc3aa0be9b4bb8660ba162052998fa9db5beb5e69ecc4c84dc6f9488ae5362fa"
     },
     {
+      "path": "Runtime/LiveEndTurnRiskEvaluator.cs",
+      "upstream_sha256": "2d3b3736c6607becc5f3118ed6304a462cef05ad0af3b61a1920d5274e27ab51"
+    },
+    {
+      "path": "Runtime/LoadedModWarnings.cs",
+      "upstream_sha256": "472c3bee72c01e9b5f5481d3a5d0f3742c20db1dbadd3befed7e3a20bd6b14bf"
+    },
+    {
+      "path": "Runtime/NativeChoiceRuntime.cs",
+      "upstream_sha256": "716ccab2a5412063f6be9cd7d6a1d928658908220dfac0bf6bfc4085dd4f55d2"
+    },
+    {
+      "path": "Runtime/NodePoolSignalLifetimePatch.cs",
+      "upstream_sha256": "74f03f4230360228393ce89d431d12a988d9ab79cfcc59f06b11a6f5b609b0d6"
+    },
+    {
+      "path": "Runtime/OnlinePresence.cs",
+      "upstream_sha256": "e16466476e40c104b5a5c2d343413dd175a58df2c5b8b36bf78e9aeef87ea5f2"
+    },
+    {
       "path": "Runtime/PhysicalMemoryUsage.cs",
       "upstream_sha256": "2e18a3c1c9b1898fab22438cb420ece556121247171acdc4910cbcf6f6ff483d"
+    },
+    {
+      "path": "Runtime/PlayerTurnSetupPatches.cs",
+      "upstream_sha256": "1d246bf9a9500fb948eecc99c87168796a2c98974a4df512bc2b0fe1528d35ba"
+    },
+    {
+      "path": "Runtime/PowerAmountComparisonPatch.cs",
+      "upstream_sha256": "6f548ef251e826959433bdd90a58ccb26c381d1f68bad78aaee53fd58304265d"
+    },
+    {
+      "path": "Runtime/PowerDynamicVarMaterializationGuardPatch.cs",
+      "upstream_sha256": "1ba4d553087f2d933b03daa47c9fe79ce77cc4391694c9015c51dd7a69e26f18"
     },
     {
       "path": "Runtime/PowerDynamicVarWarmup.cs",
       "upstream_sha256": "3950e22be1022da12f7b00d9e855d6204ca8edfa6af12895f44e43bf9153e900"
     },
     {
+      "path": "Runtime/ProcessWorkingSetTrimmer.cs",
+      "upstream_sha256": "39e1bf54f804bfa4a89ae4aa990b6ed292dfa733e10520088ab4e0382dbf605e"
+    },
+    {
+      "path": "Runtime/RichTextEnvironmentLifetimePatch.cs",
+      "upstream_sha256": "db507d3b3b3d9131f00db87bf3e80cf1e19f37cb9676411a83ab9cd19e64ff89"
+    },
+    {
+      "path": "Runtime/RitsuEmptyCapabilityFastPathPatches.cs",
+      "upstream_sha256": "be76001b4b6435dfa5351e9de7df5cde90cb7492c26da7fc3254ef5af47dfd6a"
+    },
+    {
+      "path": "Runtime/RitsuFreePlayIsolationPatches.cs",
+      "upstream_sha256": "a90419bd0fc85f7dc49fe6dbc9a7ce2a6d7b8e70582b040d4b34ced1dcb37016"
+    },
+    {
+      "path": "Runtime/RunStatistics.cs",
+      "upstream_sha256": "d441cdfba96b603389ed09dba458d7dc115a9080fc7c53e4e1356cf924d177f5"
+    },
+    {
+      "path": "Runtime/RunStatisticsStore.cs",
+      "upstream_sha256": "9cdbe35a0b691c2bfd84bb2869d05e9290aaeb1ce04fedc8a9e5bd816f2c84d1"
+    },
+    {
+      "path": "Runtime/SearchCompletionNotifier.cs",
+      "upstream_sha256": "2fe2a7bc18d0e3eb3041d931d79115fa98c931f8123a2a0a9328b09d076de07b"
+    },
+    {
       "path": "Runtime/SearchGcLifecycleMetrics.cs",
       "upstream_sha256": "5f43670f11be226b1eb98049b25e19492904466620ea02bae63130c0fd80c50a"
     },
     {
+      "path": "Runtime/SearchGcPolicy.cs",
+      "upstream_sha256": "95aecd3371d12c310c9ff3c4f8633714d0663040130904333096d14164434924"
+    },
+    {
+      "path": "Runtime/SearchGcPolicy.Recovery.cs",
+      "upstream_sha256": "3e2fbb5f5d39139fae5e88096ba6ad0cd17d7af4270e172c50ba16961c3c6d57"
+    },
+    {
       "path": "Runtime/SearchMemoryPressureSignal.cs",
-      "upstream_sha256": "be113b027753b51548c0d125244a9e8a717af96e0bb42b3f0f30a02f6a8b065d"
+      "upstream_sha256": "a98be647df063c417d8a919f1ffa4a4487bb54c1c57addfe2f7754a0a2715fdd"
+    },
+    {
+      "path": "Runtime/SimulationCardPileLookupPatch.cs",
+      "upstream_sha256": "dc9f11048c20199269afdded71d965f04855efe58adad02bbebf8f7773cb09e4"
     },
     {
       "path": "Runtime/SimulationNotificationIsolation.cs",
-      "upstream_sha256": "10bd7d8db9d4eb9b5c7dffb956d4ad2e25ca9debec7e9e3fe58e98a7673f1656"
+      "upstream_sha256": "2d7533db9f5445e5d6b0d8255e6f295ec046469e67244950eb67466cba856af8"
+    },
+    {
+      "path": "Runtime/SolvedRouteCache.cs",
+      "upstream_sha256": "8f6590d5c0dea42b958c3e65f4792d81d1f486501aa45f51f58ce68b9af5a3a9"
+    },
+    {
+      "path": "Runtime/SolverController.cs",
+      "upstream_sha256": "84213e16ddc99ea07e6fca05b7246acf756bad08364b93d679501eac261c9df0"
+    },
+    {
+      "path": "Runtime/SolverController.Testing.cs",
+      "upstream_sha256": "3cde25ce57946d84e64bbefac3e650fd79531559880596a8d77707260e0187a8"
+    },
+    {
+      "path": "Runtime/SolverControllerSessions.cs",
+      "upstream_sha256": "c36d3c5100a72623aaf3709db1a9f04e5fb184fa4f682be218daed3ae4564157"
     },
     {
       "path": "Runtime/SolverDiagnostics.cs",
-      "upstream_sha256": "e8a6b2cad4e2ad5f2401d5a57499d6d4e5b5a3e73ae38f68f3c3b2656fe74d80"
+      "upstream_sha256": "533eba758f59e4e6a51ba48da12134a512311370f90b32e3cf56a525ee31cad6"
+    },
+    {
+      "path": "Runtime/SolverDispatcher.cs",
+      "upstream_sha256": "0c26d53609b5173b5f7648af727e3c7c59bece3594f22dda787fe50171cd749a"
     },
     {
       "path": "Runtime/SolverDisplayNames.cs",
-      "upstream_sha256": "7f484711c5cb5add65e2a49d8372394c110ec2ad6d6460e8239ac047556954ca"
+      "upstream_sha256": "6fe8605d8e7b0e541298b07511eaebbdf3c67724dab4d5ae391c81c1d7fbccab"
     },
     {
       "path": "Runtime/SolverProgress.cs",
-      "upstream_sha256": "e63f988ce6f14273a769b3435a4dfd352a04b80b57dd064394d4838ad9159b85"
+      "upstream_sha256": "bfcca68adb63df0b28622cde6e012988f6b0ce0159948d8809e519e814f7a385"
     },
     {
       "path": "Runtime/SolverSettings.cs",
-      "upstream_sha256": "39669a305aceea2001d08e155730c5c1e5ceb2b81d83210d8f81373cacc68cc5"
+      "upstream_sha256": "068d2d5519f913fe33073b7b4bc54c97a330c6587347ca6b444ef3f7f9d189e5"
+    },
+    {
+      "path": "Runtime/SystemMemoryReleaseService.cs",
+      "upstream_sha256": "5e538db9a1e1fa7873ebc1d960a014a7166c6c2cc2a1307ee58951ceb9fe3e66"
     },
     {
       "path": "Search/ActEndingBossPolicy.cs",
-      "upstream_sha256": "405af11ba4e5d5031e715e8b8ba0cf26da2989fbf87451ff43cc7a06880ab522"
+      "upstream_sha256": "060f32c94d6c7b0a44d9e393c4c24dc70ef233cb2bd3685045441219b02dd459"
+    },
+    {
+      "path": "Search/BeamWidthPortfolio.cs",
+      "upstream_sha256": "6816ab97e41d356f1e614fe7dabeee33146a6ebeb3f6404d9444e96f4375ad80"
+    },
+    {
+      "path": "Search/BeamWidthPortfolioGate.cs",
+      "upstream_sha256": "2e7edb32e8f6104f11bc516e1980de515bb9f02a1eab920348c2f3fc97dbaa4f"
+    },
+    {
+      "path": "Search/BeamWidthPortfolioTelemetry.cs",
+      "upstream_sha256": "6d4b12bf858fc788b26d0bc144149b41665b21b889b73b422bdc0eb65828066a"
+    },
+    {
+      "path": "Search/BfwsBoundedOpen.cs",
+      "upstream_sha256": "7168d203bae2e2cac104e72079aefb110ea9b9f94b7b8177384332c3a74f7def"
+    },
+    {
+      "path": "Search/BfwsEscapeBudget.cs",
+      "upstream_sha256": "ad82e5d07dd7c52bfba12aa91ae2fed37b90c95e59288c74f67bf7d3a554a3a4"
+    },
+    {
+      "path": "Search/BfwsPackedNovelty.cs",
+      "upstream_sha256": "b6aae52913dd809462b0e210209c73bcc5ea34ee5cb8888ebf2c4b29a4e84897"
     },
     {
       "path": "Search/CardChoiceMirrors.cs",
@@ -772,51 +1140,79 @@
     },
     {
       "path": "Search/CardChoiceResolution.cs",
-      "upstream_sha256": "b8c2dc59da1631503773ffb6793113f32333aa42f893e6af13e1dc9a067bb55f"
+      "upstream_sha256": "01a7b0cc10288ead552acc50a4284a17282cbab0a1bd0e1e59eda3303408bea1"
     },
     {
       "path": "Search/CardChoiceSupport.cs",
-      "upstream_sha256": "1b7161f686d9f8017525ab9d466c833e5306e3b23def375a38836fc1f6b974dc"
+      "upstream_sha256": "60680c8181b77f282a39cc91b051f20d352184dcc5594726704233fd79226738"
+    },
+    {
+      "path": "Search/CardChoiceSupport.ExecutionContinuation.cs",
+      "upstream_sha256": "4b0b1d3891e173072c8688ec3720c6795ee6ea7e182dd707434015effcd5816d"
     },
     {
       "path": "Search/CardRemovalValueMirrors.cs",
       "upstream_sha256": "c85dd6f44501acf09331ecfcbb31961b9291fa4adea69563f918e564883ceae5"
     },
     {
+      "path": "Search/CombatBeamSolver.AdmittedExpansion.cs",
+      "upstream_sha256": "07fd28d5e0d9e07649ada467875e55d9c9b19fe9eaea9eba5b6484a963b8ae1b"
+    },
+    {
       "path": "Search/CombatBeamSolver.BeamRetentionPolicy.cs",
-      "upstream_sha256": "034e613f018a2c51bc3cd08fb6430bc318ce9a209f56164c18fe277a33c78c0c"
+      "upstream_sha256": "98d361243f5c252a0ed13d2abdcecc7e3afd573751f06bedadd9d81170797407"
+    },
+    {
+      "path": "Search/CombatBeamSolver.BlockPotionInsertion.cs",
+      "upstream_sha256": "48645923ab3ee125605979212eb2f8c95a576e052023c69fa22fac2d5f4c1575"
+    },
+    {
+      "path": "Search/CombatBeamSolver.CardChoiceContinuation.cs",
+      "upstream_sha256": "71dee2559de3dde9f3ef6a4034d1217aee498e1361d503a7698e8ea87099484c"
     },
     {
       "path": "Search/CombatBeamSolver.CrossTurnPlanning.cs",
-      "upstream_sha256": "5aa404c550b543ad84d04d79eba9c979f5c8c5fe068a8d563e6ca4c12cdafddb"
+      "upstream_sha256": "bff55996198e896ff13b65f612e016132ddaf7f985322b903407e4eb0638e763"
     },
     {
       "path": "Search/CombatBeamSolver.cs",
-      "upstream_sha256": "570a4575220df4bf8956762dacbee778dc8ea60e9688817dabc1c7b0dac0ede8"
+      "upstream_sha256": "1a586e827c3031bcf7396b2f15310a6b73b32afc3c1a3f8278227e42dd2c605e"
     },
     {
       "path": "Search/CombatBeamSolver.CyclePlanning.cs",
-      "upstream_sha256": "c4580b197d703e05c7586cfbd883e206a8934dfa747033e02a41f53961f01fbf"
+      "upstream_sha256": "cd491e1cc0d67c6ffe426ec851b4c51de43749b586457c253ddd6468d2a07f2f"
     },
     {
       "path": "Search/CombatBeamSolver.CycleRegionRetention.cs",
       "upstream_sha256": "207c9a1f93815cfb2f5351e5fea314f4854b05150767f5f0a9c31dd49d864ffe"
     },
     {
-      "path": "Search/CombatBeamSolver.DeferredFrontier.cs",
-      "upstream_sha256": "39d4a31eae2700ab7f6412cf64e7960c1a83a1969dbd6e426fd831a701c30afe"
+      "path": "Search/CombatBeamSolver.EndTurnChoiceReplay.cs",
+      "upstream_sha256": "c1e909d3191ce82884cd2651e21468cc44ee26c8fcb5f6d15adeb92e7cc2edd8"
+    },
+    {
+      "path": "Search/CombatBeamSolver.ExecutionChoiceContinuation.cs",
+      "upstream_sha256": "3805ee4207be0269fed095871f2c703c79a82b23507bf8ad614ab7d529da6c86"
+    },
+    {
+      "path": "Search/CombatBeamSolver.ExecutionChoiceContinuation.Testing.cs",
+      "upstream_sha256": "95b6d0c8a8d1dc285c51bb9120ee1fad9400863f6ea2d57b93b931e87cec869b"
     },
     {
       "path": "Search/CombatBeamSolver.Expansion.cs",
-      "upstream_sha256": "d4c2f284b4a5ccf013479c35bc6f3218059e1266fa0b758a69498e2165cdc2d1"
+      "upstream_sha256": "55e4fb78ffac79df44135059afb789d2ac3c9b3d4e6372037575d72973288fb0"
     },
     {
       "path": "Search/CombatBeamSolver.FinalPlanOrdering.cs",
-      "upstream_sha256": "1024b90ccde2118f948c2869b501be37c87a74a93985db2bd49a49dd42348188"
+      "upstream_sha256": "83b23e92f9fd1ffc969168557b19b4de84edba3e4ef98d419e8ef17bfd834419"
     },
     {
       "path": "Search/CombatBeamSolver.Models.cs",
-      "upstream_sha256": "40298ae892a7737d7442f8cba79c1f7cb868f17fd0c0f3c8558c2da66d2f54c4"
+      "upstream_sha256": "77f6216924676c5583f42e3f0a5b5901253786f29d31f9050d24c387d173cc89"
+    },
+    {
+      "path": "Search/CombatBeamSolver.NoveltySearch.cs",
+      "upstream_sha256": "c699466b333bd9d8395463d65e9697ab24a52ab60d99ed8284c8d1964c2f6648"
     },
     {
       "path": "Search/CombatBeamSolver.OrderedMutationRetention.cs",
@@ -824,55 +1220,115 @@
     },
     {
       "path": "Search/CombatBeamSolver.ParallelExpansion.cs",
-      "upstream_sha256": "aa13bf9e7b02356fa7e24088b13dac974f733d8fb9431afa30ff49db0b7954be"
+      "upstream_sha256": "54eded79c6d58e8eb15b8d338ede778d37537d2734d6f8e481da8f2f5d15f3a8"
     },
     {
       "path": "Search/CombatBeamSolver.PathDiagnostics.cs",
-      "upstream_sha256": "c5c2d8cd331aaaf52a25b261e37428b8af663b31310f7ebb79f89cf965b36f5e"
+      "upstream_sha256": "8f68e09f49990341a6abcc0d6c0ea22919a1712fcb4a9157c6d2ab0c89c54f1a"
     },
     {
       "path": "Search/CombatBeamSolver.Phases.cs",
-      "upstream_sha256": "7a560018abede9e5feba310e596d88e085bf408867a6fddf20055753ebea203b"
+      "upstream_sha256": "31db35bfc0018f744d35545bfab4e8b631f5c130d3a486857432a9549056a38b"
+    },
+    {
+      "path": "Search/CombatBeamSolver.PotionChoiceContinuation.cs",
+      "upstream_sha256": "e4bc44faea8fbfa72e9e3175cee02b17f0ea6c2da3f743e22199ff4f873edbec"
+    },
+    {
+      "path": "Search/CombatBeamSolver.PrimaryChoiceReplay.cs",
+      "upstream_sha256": "c821030e9214b2e243035fe430cd4ff51e721cd1d6351d1fc8b3dfd772044f05"
     },
     {
       "path": "Search/CombatBeamSolver.Retention.cs",
-      "upstream_sha256": "c90fc382826e27e5d6a2d062c462ca85e7b5c215eecc5f7e364c1564c4b43c92"
+      "upstream_sha256": "cc949d8aedb595cac2ffc9dc7395e2a9e5a5eb9cab3e165c4b6db3c8cef1d435"
+    },
+    {
+      "path": "Search/CombatBeamSolver.RetentionJobs.cs",
+      "upstream_sha256": "3118928e34e83f83b4be14ca1a4217f7403ead1852f8aa5cfce048de70fc60b9"
+    },
+    {
+      "path": "Search/CombatBeamSolver.RoundTransition.cs",
+      "upstream_sha256": "d10a3cb5a8b967894fb4f63b3221a72695775db7f34f0d34907a7272d2302db7"
+    },
+    {
+      "path": "Search/CombatBeamSolver.StandPatJobs.cs",
+      "upstream_sha256": "4f44a39afca420360478cc343cb8e2660fd8d0e83be587bc05ae21314baf1c7e"
     },
     {
       "path": "Search/CombatBeamSolver.StateEvaluation.cs",
-      "upstream_sha256": "5be2997dda450efa1eefbafa13dfb397c6d0253b998139f8f3736eee6f464f75"
+      "upstream_sha256": "d998ddfde8c22ce8c407602b30d5f845c6238c92600886854c3274a4e34e3e6f"
     },
     {
       "path": "Search/CombatBeamSolver.Terminal.cs",
-      "upstream_sha256": "cad8f3e647b5b9a0a1978c6c450db576653498f204aeb743dc3d8fdfe1187e7c"
+      "upstream_sha256": "3b41820064a41577a33745ec9df2a3e09b2add269f15cd108e478946b787b575"
+    },
+    {
+      "path": "Search/CombatBeamSolver.Transpositions.cs",
+      "upstream_sha256": "d9b75714054441d93836b836e62f8fa672beb1be0217d370d2dfcdd0df3c236a"
+    },
+    {
+      "path": "Search/CombatBeamSolver.TurnExecutionContinuation.cs",
+      "upstream_sha256": "dea841669dbc400e8a02d0d3a194eed37ed86b76048a740b027f9a2f19a68da2"
     },
     {
       "path": "Search/CombatPlan.cs",
-      "upstream_sha256": "ce6c3067eef184ed77a224b965c6d199435da52ea756f59d0f8ea101d90c1065"
+      "upstream_sha256": "c72489de8c7fd55fb26845c11766493436d43abf41b978fe831de5971cadb1d8"
     },
     {
       "path": "Search/CombatSearchCoordinator.cs",
-      "upstream_sha256": "d8569359ebf5d439206f14b9aa55a6f3cd67f74fd13251a55b5e36aba045e73d"
+      "upstream_sha256": "aaf4995dbdb078de18e6e43d9434d16f1a3e44a4401e9f53a28d9cad319410d0"
     },
     {
       "path": "Search/CombatSearchCoordinator.FailureRecovery.cs",
-      "upstream_sha256": "190a130755774c65b24f9fd7d274f2a15d6a2fb08fab4b69b5b90434b7c98c3c"
+      "upstream_sha256": "2a96f4f49024f0297f9456f19a56444b7ea665dfe7df97f6cdb9c5962e634c99"
+    },
+    {
+      "path": "Search/CombatSearchCoordinator.NoveltyPortfolio.cs",
+      "upstream_sha256": "8737ee594a655d8cdb19808c615c825f20066776c80319e3546ae626963262ed"
+    },
+    {
+      "path": "Search/CombatSearchCoordinator.PowerRoutes.cs",
+      "upstream_sha256": "ad0286db712465b7cf6970948dc137897e69c1b1f85185ac04f3a40663bffb61"
     },
     {
       "path": "Search/ForkableCollections.cs",
       "upstream_sha256": "8657c345d80864c42b0659d175c87f03a76be9125d2549f3ed355f7637be3ade"
     },
     {
+      "path": "Search/GrowthCostPolicy.cs",
+      "upstream_sha256": "e28d0ee695d0825493228998801de529a4d8bcf4b203c79ac31015769e2c74a7"
+    },
+    {
+      "path": "Search/GrowthOpportunityPolicy.cs",
+      "upstream_sha256": "48da0eb36a4ebd2f36c18ad33d2e85ac3963c15166824b7851e6c47d2f54000d"
+    },
+    {
       "path": "Search/GrowthPolicy.cs",
-      "upstream_sha256": "9dbe3bdb277a8e9f031cc89976cd29359e012fe9bf3bdd1f9ab76a3aba96e019"
+      "upstream_sha256": "421b9a0c5f5026aa2118baf9976a4149b151207cdb3dba0049d74f5a109d459d"
     },
     {
       "path": "Search/GrowthSourceMirrors.cs",
-      "upstream_sha256": "8aa6c1e4fbf005e845411bd5366baa7cdf1ba22f11621baeb90c78f0964da1b1"
+      "upstream_sha256": "82ef8bf3a17e90f870152fe52e538041f8e3a794691a8e80dbc3a5729c318e90"
+    },
+    {
+      "path": "Search/NoveltyPortfolioBudget.cs",
+      "upstream_sha256": "c8e18722dda7a20fc2a91479ab944482923c1530defc9f3d238bf571e287cfc5"
+    },
+    {
+      "path": "Search/NoveltySearchOptions.cs",
+      "upstream_sha256": "df2949f1f1a00c5d94bc69ed23083fc4315071129a52eb6b6a2d0c127b906929"
+    },
+    {
+      "path": "Search/NoveltySearchTelemetry.cs",
+      "upstream_sha256": "ba283b00fd0a2cf2cd9a2070ab0b940939638128ad50fc4b028bc7bcce7bfd58"
     },
     {
       "path": "Search/OwnedExpansionBatch.cs",
-      "upstream_sha256": "15704b4e3338b006daa689e552ca43450473166c33b6268ed9cb97ddd2e4f7e7"
+      "upstream_sha256": "3c52b54e40c8d270270df88efed108e05556a15baba12467e23eb103515a9009"
+    },
+    {
+      "path": "Search/ParallelExpansionWorkProfile.cs",
+      "upstream_sha256": "1d408e2fe1e692a2b6974d241589be8a6e939135e35840d4c56fceb217a11b52"
     },
     {
       "path": "Search/PotionChoiceMirrors.cs",
@@ -880,31 +1336,351 @@
     },
     {
       "path": "Search/PotionChoiceSupport.cs",
-      "upstream_sha256": "52e63d3f8b6fe8a0e5bb61c0e5d054764aee54eef1879c5e9b85400ce633c2f4"
+      "upstream_sha256": "c86a7c6b3a4190f3c8ca67171e4a19bd3c63c6ce835eb6d3f23243a5e006f274"
     },
     {
       "path": "Search/PotionStrategySnapshot.cs",
-      "upstream_sha256": "18e292cde56187323880f914427decdee44164929c06fdf84aa07256b12c65b1"
+      "upstream_sha256": "f3b0843eb44ee95c74c8b68fc8fcdeecb36292b3e2f43e55ba4e9b50c893b2b9"
     },
     {
       "path": "Search/PotionUsePolicy.cs",
-      "upstream_sha256": "d84ad5604e45cd8c467c52f17bec30370a8068318a53701404286a6405290984"
+      "upstream_sha256": "ad10db3ecade30d649fa84fdee749a7c86198412de87f1aac47d738fe504573d"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Colorless/ColorlessFlowPowerCardValuationModels.cs",
+      "upstream_sha256": "7c91c83ad4863cd920ff55b15378ec8aff7d0cf83bc3c9bd97d65fd9f9923ef5"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Colorless/ColorlessGrowthPowerCardValuationModels.cs",
+      "upstream_sha256": "b83100e62cfc5a4b0d32486630a876c27e8767fe858a9cf65ba2d17ec5c88254"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Colorless/ColorlessPowerCardValuationModels.cs",
+      "upstream_sha256": "8bbf45f3d1bc09bb9e53d4e6455545bd6dae147796fa91c38806dfc0526d603e"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Colorless/ColorlessPowerOpeningProjection.cs",
+      "upstream_sha256": "f04b9da32d64a4b0ae6dd02a584b85c0bba57deabd7613addab67db25e366958"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Colorless/ColorlessPowerRoutePolicy.cs",
+      "upstream_sha256": "6990389a57def5ff681d42c005faf5c5d3919537aa80c6d8d1f684793de9623b"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Colorless/ColorlessPowerTriggerEvidence.cs",
+      "upstream_sha256": "549562fd9d580f3b21386f606c921c8f6fb56ea89246f39ed401885c6a4e17c8"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Defect/DefectCardFlowPowerCardValuationModels.cs",
+      "upstream_sha256": "84ddd87ba757d1cd101a3bf1097f7178f80689874d034155a0cd2afc2fca4a2a"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Defect/DefectGrowthPowerCardValuationModels.cs",
+      "upstream_sha256": "7067bf7eae01a7a323db92c881318c39d75f037fcf212bc4623afdd87407a8d9"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Defect/DefectOrbPowerCardValuationModels.cs",
+      "upstream_sha256": "6c31d91cd0a620e86150cd552ce70440397404543f77faffdb27368128e36588"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Defect/DefectPowerCardValuationModels.cs",
+      "upstream_sha256": "9b698e33a3111c25956039264d6123167002b2bd6d8314d6a406dabac8bc03e2"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Defect/DefectPowerOpeningProjection.cs",
+      "upstream_sha256": "e6a8d1cfe3dfcaf4b358ae81466040d0139309865b204ff588a4a0aeb930fa57"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Defect/DefectPowerRoutePolicy.cs",
+      "upstream_sha256": "b7f212c15114a00e826a98f61b65ef54d3bbd503ed808b803d867dc466456403"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Defect/DefectPowerTriggerEvidence.cs",
+      "upstream_sha256": "2cc3653b6c1b2e3cba5dec0ad1b95648c5a3ef411b13c541728aa209cec0ce55"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Ironclad/IroncladCardFlowPowerCardValuationModels.cs",
+      "upstream_sha256": "db21db28145b4a0ae531d3fb6739c053b302b2c65d2e2baf1c02842d1dbc195f"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Ironclad/IroncladDefensePowerCardValuationModels.cs",
+      "upstream_sha256": "f482d44c4f8abc6d29e7b618bd112ef5ee2859de96cdd772b24dcb67fd19b2f9"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Ironclad/IroncladExhaustPowerCardValuationModels.cs",
+      "upstream_sha256": "1e1b90462440e6f9501a2fb595bf7387f3270bec35f4d9c0dd29d43e294200bb"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Ironclad/IroncladPowerCardValuationModels.cs",
+      "upstream_sha256": "2eae269a26b888004833c48b861331b3f685ce9b54fdfce5d8eb4054883ad875"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Ironclad/IroncladPowerOpeningProjection.cs",
+      "upstream_sha256": "0a2a114137d912734302c2f06ec59f5ee8a0bf4db77eced33dfc97c7f1c4df99"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Ironclad/IroncladPowerRoutePolicy.cs",
+      "upstream_sha256": "b39833ef2f3aaece17771c4defd05a27c8129726daf538c27b6966680199eac1"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Ironclad/IroncladPowerTriggerEvidence.cs",
+      "upstream_sha256": "8d7ed7fd793b70a2352a903c0681fe0fe7506dd5eb7f2b9a4b9de2133b781f84"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Ironclad/IroncladStrengthPowerCardValuationModels.cs",
+      "upstream_sha256": "d4dbd273cc8a855ef785d03ff81e3c9ca13fdd863ad01e5daa161d8ca53dbca2"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Ironclad/IroncladTriggerPowerCardValuationModels.cs",
+      "upstream_sha256": "2a1145bec369dcd49d3543fa9aaffeb9293a2b0d4a83c09dd38de0d8cfade910"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Necrobinder/NecrobinderCardFlowPowerCardValuationModels.cs",
+      "upstream_sha256": "3c19951038b6e13186bbbc0baab43ec47109cd465237ddd6f323929faa10e653"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Necrobinder/NecrobinderDoomPowerCardValuationModels.cs",
+      "upstream_sha256": "184dbad1c32d61b15214f3da832513f59e99ff1c5974dc62656856ea94846cb4"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Necrobinder/NecrobinderPowerCardValuationModels.cs",
+      "upstream_sha256": "d67f925cd0e18b2f468c47ad1fe22f1141b30a21ac4cb4d2505a7ee56ca0792c"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Necrobinder/NecrobinderPowerOpeningProjection.cs",
+      "upstream_sha256": "6237f24dc430459d641b6712e6b3ec894b25cdcfa14d4768a069c0c399102c18"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Necrobinder/NecrobinderPowerRoutePolicy.cs",
+      "upstream_sha256": "28884cb86602ce41f146c4c0ef63a83de6a07a1c060a5c849e2337b5525255dd"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Necrobinder/NecrobinderPowerTriggerEvidence.cs",
+      "upstream_sha256": "26f8956492b917fa4d6f1c13d866c530d603352d9e5fd0b5bc219a7b271ece98"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Regent/RegentControlPowerCardValuationModels.cs",
+      "upstream_sha256": "99a58f0693247c53961a6213d8340d3532edced9cfca1a0c955e6bba059bcdf0"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Regent/RegentPowerCardValuationModels.cs",
+      "upstream_sha256": "53c590296a8144a8ca1c1d941a54589f4aa2917941d153d572751675ca86de86"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Regent/RegentPowerOpeningProjection.cs",
+      "upstream_sha256": "2c6f65654140958f4023e05d7dffbceb1929261898c463e601d2f1285648fe38"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Regent/RegentPowerRoutePolicy.cs",
+      "upstream_sha256": "21a0da90536bb3f2c53e39b6b794f0046c5e421d1c0d792037806c5874a9fe30"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Regent/RegentPowerTriggerEvidence.cs",
+      "upstream_sha256": "f4605ca258f1448f00e51562e11e53f6697df9702334f6861d01d7cea9c60fec"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Regent/RegentStarPowerCardValuationModels.cs",
+      "upstream_sha256": "4deed0f118c3e732025de1521456c4d29f14086f128e9de8185886e69003a9cf"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Silent/SilentCardFlowFacts.cs",
+      "upstream_sha256": "d5563eb4f2b580e28eeb90ae674533faef1adb0e743bb6fea5aa30f3aaf47be2"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Silent/SilentCardFlowPowerCardValuationModels.cs",
+      "upstream_sha256": "41e2723a630f3c6d9ee407f14374862a373c461f306fea82667eb884ff3e125c"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Silent/SilentDamagePowerCardValuationModels.cs",
+      "upstream_sha256": "fdd09848b3ebb2ad83056e34debe3098a43991d860f65ddc5524b5ba5ff9ef3b"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Silent/SilentDefensePowerCardValuationModels.cs",
+      "upstream_sha256": "ec065633e3ab614c5e04ddd1381015e8f7018b819f6f803515308643233e2242"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Silent/SilentDiscardWindowFacts.cs",
+      "upstream_sha256": "de66d80c513eb19ce605c35b9e3264e157de411adbdc3f55a1a52ea8940c936b"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Silent/SilentPoisonPowerCardValuationModels.cs",
+      "upstream_sha256": "91a99ec96dd5923575bcd0142cbbd3e4cbcbb0a74d0fe67cd45bd114cbfb5e27"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Silent/SilentPowerCardValuationModel.cs",
+      "upstream_sha256": "f04851c1b74ad7043eed466615b2798fd0049a2030af6b770cb579a9d8c5305d"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Silent/SilentPowerCardValuationModels.cs",
+      "upstream_sha256": "2567618b34b31e6c96bd2116f2541ebf108ff0749d749773d38e0bc899310123"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Silent/SilentPowerCardValueFacts.cs",
+      "upstream_sha256": "c674cd2d6c27862e3478c5f897545c6a901b36fa676ad9207084aa63792cc293"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Silent/SilentPowerCommitmentEvidence.cs",
+      "upstream_sha256": "33818b4a9e5eca7232be6cc12166a049997be99dfae53b51931f2c9d6d27cb7c"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Silent/SilentPowerRoutePolicy.cs",
+      "upstream_sha256": "8d922a06720f219ca2c1c5b01ffb9ed41e4bd0b028d5926cdac11cb1fbbc91dc"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Silent/SilentPowerTriggerEvidence.cs",
+      "upstream_sha256": "94012b47006a47685b71fbb19f011393f802fbfceea57788590de3535135cb7a"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Silent/SilentShivPowerCardValuationModels.cs",
+      "upstream_sha256": "3edfe5d435962baa9392a725ce31b19d5fa09f6cc855ba2f618cc6ff37b10cd2"
+    },
+    {
+      "path": "Search/PowerCardValuation/Cards/Silent/SilentWraithOpeningWindow.cs",
+      "upstream_sha256": "6404d2d8ef3f341087ee1d3abf2556d273c97bc73237e996969673e0e74226e8"
+    },
+    {
+      "path": "Search/PowerCardValuation/Commitments/PowerActivationInvestmentPolicy.cs",
+      "upstream_sha256": "07c85125dbc6cfd09921da977fad6b564a12a66ff903d8e533df52a9077f9310"
+    },
+    {
+      "path": "Search/PowerCardValuation/Commitments/PowerCardMechanismDispatch.cs",
+      "upstream_sha256": "0fb60cc22e17d5fc9078b53dd01c92c18c15ec021905f78781f997c0363481e7"
+    },
+    {
+      "path": "Search/PowerCardValuation/Commitments/PowerCardPlayOccurrence.cs",
+      "upstream_sha256": "4306d5776f14a2ce42a8c1af9cc58e73eb4c26164416f1ecac86515dd7955f14"
+    },
+    {
+      "path": "Search/PowerCardValuation/Commitments/PowerCommitment.cs",
+      "upstream_sha256": "a49e1f24904d26bf69836d4d47d224f2c5a5a98a027dc635c5802616d1696fc9"
+    },
+    {
+      "path": "Search/PowerCardValuation/Commitments/PowerCommitmentEvidence.cs",
+      "upstream_sha256": "ca6b656cc8c1756c86dfa9144efde97fa2317cdc6deac5cd1edd48c5d0c22308"
+    },
+    {
+      "path": "Search/PowerCardValuation/Commitments/PowerCommitmentLifecycle.cs",
+      "upstream_sha256": "91a85e9651e1513a42ff0eb1f1458b029e1066ed45e336c4e97eb10529f0e8f7"
+    },
+    {
+      "path": "Search/PowerCardValuation/Commitments/PowerCommitmentPolicy.cs",
+      "upstream_sha256": "0551fb8cdb93144b7f3c8f45ef2dd33c2b1ed22532915a9337f4a69328162b55"
+    },
+    {
+      "path": "Search/PowerCardValuation/Commitments/PowerCommitmentRetention.cs",
+      "upstream_sha256": "65ffadf7ba0fe7cab7e4b6a1bbb8cbef616303eceec26fe30903120ebb426097"
+    },
+    {
+      "path": "Search/PowerCardValuation/Commitments/PowerCommitmentSeatPolicy.cs",
+      "upstream_sha256": "55ccec08cb182441d17c54fa155b6ac8894ced802b6b72871ca60cf2914ff01d"
+    },
+    {
+      "path": "Search/PowerCardValuation/IPowerCardValuationModel.cs",
+      "upstream_sha256": "13b4ca5a78869668d955fa177fa79773f06848edceb36191faa91a78de261dd0"
+    },
+    {
+      "path": "Search/PowerCardValuation/PowerCardValuationContracts.cs",
+      "upstream_sha256": "f245fd7fd717758c8260ad6bae33cecef14a3be8ce372800b307730b7882b405"
+    },
+    {
+      "path": "Search/PowerCardValuation/PowerCardValuationModels.cs",
+      "upstream_sha256": "c78c843e943298ac4140575869d507866f966180472030602b6d610a0169ba19"
+    },
+    {
+      "path": "Search/PowerCardValuation/PowerCardValuationRegistration.cs",
+      "upstream_sha256": "d6380714a5f8d4c44a5138ad9be3d41246ee94e5c563dd56a46ce68c14a74039"
+    },
+    {
+      "path": "Search/PowerCardValuation/PowerCardValuationRegistry.cs",
+      "upstream_sha256": "336b2d56964c8b1f050aaddc7306dc9ef0e25541df1d69d5a5820dd8560733c6"
+    },
+    {
+      "path": "Search/PowerCardValuation/PowerCardValueFacts.cs",
+      "upstream_sha256": "8e97dc864046cf34ab4f5e62a7a2447483b23092a5c666fa8f9c7c762042923d"
+    },
+    {
+      "path": "Search/PowerCardValuation/PowerRouteAdmission.cs",
+      "upstream_sha256": "7890a4fdeac8113938012952c1b006cfc6188bed74e3e7acade07f040f5d80c1"
+    },
+    {
+      "path": "Search/PowerCardValuation/Projection/DrawDiscardTransition.cs",
+      "upstream_sha256": "a4700d4fe41c524d409d53905ccdac62c734602e3887acef9d9a50dd81888221"
+    },
+    {
+      "path": "Search/PowerCardValuation/Projection/MasterPlannerProjection.cs",
+      "upstream_sha256": "80210b94fd177fbeb7ff6eded5c46773f92caabe3a30c7760aeb7e52d522d003"
+    },
+    {
+      "path": "Search/PowerCardValuation/Projection/PoisonStackProjection.cs",
+      "upstream_sha256": "449d4c26775ff3f58735fc9ece8f0827d54b2e915d452ef86ef437714e86dc62"
+    },
+    {
+      "path": "Search/PowerCardValuation/Projection/PowerCardMechanismFacts.cs",
+      "upstream_sha256": "4a7827eef47ed7c68be193dcdb3d7fff79a37b5ac7518d2cd7cbfd4e028e0ddb"
+    },
+    {
+      "path": "Search/PowerCardValuation/Projection/PowerCardProjectionMath.cs",
+      "upstream_sha256": "cdf5ac9861b9062ab89178e630d583a6c52bdf9577e2285cbd27b921475f1551"
+    },
+    {
+      "path": "Search/PowerCardValuation/Projection/PowerCardProjectionSupport.cs",
+      "upstream_sha256": "41d3543b2dd5278439c9ff8c8ee4658dc2d166cc5c279eec793f358f7455bf64"
+    },
+    {
+      "path": "Search/PowerCardValuation/Projection/PowerTurnFrontier.cs",
+      "upstream_sha256": "753de33a7f55c40a62ca8f2361fb5acad168a92cf161784db2cf8a91e267600c"
+    },
+    {
+      "path": "Search/PowerCardValuation/Projection/RetainedHandTransition.cs",
+      "upstream_sha256": "c261fb33120c498a090b1c940ee8e05453b6cb778dc98e6b18df528ebf63e65f"
+    },
+    {
+      "path": "Search/PowerCardValuation/Projection/SilentDamageDefensePowerProjection.cs",
+      "upstream_sha256": "390e488f65c30ad1eadff01606e7a36b3542ed737e25b954dbae65271968b94f"
+    },
+    {
+      "path": "Search/PowerCardValuation/Projection/SilentPoisonPowerProjection.cs",
+      "upstream_sha256": "e7e1df2d0439a420acf4d27c633e22d6ee443284b5bb99efe30d4460df456f3e"
+    },
+    {
+      "path": "Search/PowerCardValuation/Projection/SilentPowerOpeningProjection.cs",
+      "upstream_sha256": "81193717d18cb50334f1c97a1089ecd1a8c4b532fefca0a945918a0e42e353e4"
+    },
+    {
+      "path": "Search/PowerCardValuation/Projection/SilentShivPowerProjection.cs",
+      "upstream_sha256": "6ad8ae38c2f6a1a5a8ffb600d761046f609b3d1ad878dc8c5844244a976c2418"
+    },
+    {
+      "path": "Search/PowerCommitmentPortfolioGate.cs",
+      "upstream_sha256": "b87dfbc212d09b70d6f398daf2579f210ea77ccb0a2b06b55baa00508d39c1ff"
     },
     {
       "path": "Search/PowerHiddenStateMirrors.cs",
       "upstream_sha256": "a5f100c806aea897f710ceafcd019b65ce5669cd0b3d6892542835bdec6c45f0"
     },
     {
+      "path": "Search/ReachableHandValue.cs",
+      "upstream_sha256": "07f07c6ebe720887155d5b64e3933f1d482502edf09e9ade21a1865c66bc91bd"
+    },
+    {
+      "path": "Search/RelicCounterPolicy.cs",
+      "upstream_sha256": "888000d4155959c83e079473bb9992319afc2b78d141e5f3456173e99bebd5a3"
+    },
+    {
       "path": "Search/RootCombatCardGenerationPoolSnapshot.cs",
-      "upstream_sha256": "9763646525e65f4c0870a8386957b7ebc773369bdac94298077e88257bbeb226"
+      "upstream_sha256": "3dfec3faa0b1378a92b1dc9b1ba5dd8776bd7e09f3001b8cb28be88f3e10d2fd"
     },
     {
       "path": "Search/RootCombatHistorySnapshot.cs",
       "upstream_sha256": "497ab34e9ee407c32b4e6bd22c17c835817812c1bbe408c28f5f7002bd10cd4a"
     },
     {
+      "path": "Search/RootCombatTransformationPoolSnapshot.cs",
+      "upstream_sha256": "670cec57985bdb98103713182a566f835464046d24bd657fab42af2e4ac1de04"
+    },
+    {
       "path": "Search/SearchDiagnosticsSink.cs",
-      "upstream_sha256": "833bb00b45c82b2d286dfc394676d2817c4381c34fc6e3dcbd442d136f1a7535"
+      "upstream_sha256": "064212300f097d6ad442b9d6cb030c9e26ddfa3351b58af93a8ec61759f1e9d9"
     },
     {
       "path": "Search/SearchFramePressureSignal.cs",
@@ -912,15 +1688,19 @@
     },
     {
       "path": "Search/SearchPerformanceMetrics.cs",
-      "upstream_sha256": "33bf15baeb9c773a082ed674125bc6ffe14807e99e8b448fb9304a46bc2e3ba0"
+      "upstream_sha256": "ba03e51b920eaeb8dea7af8a2f3795b993099feaa4381815e4e4e1147b1fa15c"
     },
     {
       "path": "Search/SearchPolicySnapshot.cs",
-      "upstream_sha256": "9a5ff5bc2224fb9932e46c534a927a38bc0101c1b4d785b5108cc82b5a9c2cbc"
+      "upstream_sha256": "a0a59d6733624a0900da9ca96b590a0beb9bc958f4afe630afe20998214509ac"
+    },
+    {
+      "path": "Search/SearchReplayEvidence.cs",
+      "upstream_sha256": "6d7574c5bccc2dbe3d91e151a63f59b6eab97e02554ec8fe1d0bf4dd1f0441cc"
     },
     {
       "path": "Search/SearchRequestWorkTotals.cs",
-      "upstream_sha256": "66ebb85fd4ffc79538689d1acb6f462a72cc5cb8edb72de2120e9269e84e7c5b"
+      "upstream_sha256": "9d5d530843b13a13d107f55a87b1deef1fa2026d0c3557cde9fe2c14735baa0d"
     },
     {
       "path": "Search/SearchTransitionException.cs",
@@ -932,7 +1712,7 @@
     },
     {
       "path": "Search/SearchWaveMemoryPolicy.cs",
-      "upstream_sha256": "3d4ec464e2bc60d6fe2ee869f1e1cc3ef6ce9ddf30db132ff87db61c4bdb9cec"
+      "upstream_sha256": "b4aac271963273da55f81cb72a42e6a3ffd829e892f7706ca9759c2eb23dff46"
     },
     {
       "path": "Search/SearchWorkPacer.cs",
@@ -940,27 +1720,35 @@
     },
     {
       "path": "Search/SimulatedCombatState.ActionChoices.cs",
-      "upstream_sha256": "cdaee79c6ab4b9674aa6aad447cd5d14b46d619c8a35f2070f83a39e2feaf00f"
+      "upstream_sha256": "4372cf519d393442ec7045199b3a2eb81817a730881221617f4329c3a5feab2b"
     },
     {
       "path": "Search/SimulatedCombatState.AutoPlay.cs",
-      "upstream_sha256": "b749608802c817f957157dddf48434bbb3348260304520c5bdc192816e0a01d5"
+      "upstream_sha256": "9136bc44feaff1a2b3408c1466594a04ee6782baa76f28aaf5837fd49b0d9d49"
+    },
+    {
+      "path": "Search/SimulatedCombatState.AutoPlayContinuation.cs",
+      "upstream_sha256": "1eb7d30c94de2c08780ca3ff4478aabb777e74fce378992716dca35eb98ac52b"
+    },
+    {
+      "path": "Search/SimulatedCombatState.CardContinuation.cs",
+      "upstream_sha256": "973f215c0d61001cd39a58afb000c70c9764ae51ddb0a6e62b7b0c7a90074c33"
     },
     {
       "path": "Search/SimulatedCombatState.CardEventHistory.cs",
-      "upstream_sha256": "a6c8cbafefb915f9a5c3b610486bba4104771f99706d51684b2f2df0d7373a5d"
+      "upstream_sha256": "ee93f6163e55d5f53b5e76db2e859cb585fe71387b807dc36c177185e88a5c45"
     },
     {
       "path": "Search/SimulatedCombatState.CardLifecycle.cs",
-      "upstream_sha256": "a58d77fc4f81115d2ef01d550c59f739682c6a20cd725e09ad70a7e926814d98"
+      "upstream_sha256": "eaa331348c344d2a9074691342412cb13a56ab4d6a4a6c874b79a2e97cc3ee0c"
     },
     {
       "path": "Search/SimulatedCombatState.CardPowerHistory.cs",
-      "upstream_sha256": "df895b5620d38dcef25d594d5bb96a9f2516be2bcd80a0b066285b07b1f7e68f"
+      "upstream_sha256": "b2ab801abe5c49baf4eba67b41ddea6428a1d089eee551af03d06c5516efe468"
     },
     {
       "path": "Search/SimulatedCombatState.cs",
-      "upstream_sha256": "926ecba02949f8b89535567691dcfac62ec888706cf284d3876e5d6cb48766a9"
+      "upstream_sha256": "ded040bf4b89da1c80057dd104e864f3f4a9f21a5297f1e16515df33c3d50c8b"
     },
     {
       "path": "Search/SimulatedCombatState.Dampen.cs",
@@ -968,15 +1756,23 @@
     },
     {
       "path": "Search/SimulatedCombatState.DeathLifecycle.cs",
-      "upstream_sha256": "658abf1a8464afcfa3ae5ef2650a18bb22d2bde67275f243cfd69fcca8b6603a"
+      "upstream_sha256": "f656682116d047396dc83a6289f4a9bf31fb72dac6674c18a6d3062e1d824021"
     },
     {
       "path": "Search/SimulatedCombatState.Doom.cs",
       "upstream_sha256": "edbf2653ad61d84f3bca67fb98a8e849bab6169a8e427088946f83fb66e3fd61"
     },
     {
+      "path": "Search/SimulatedCombatState.ExecutionContinuation.cs",
+      "upstream_sha256": "d9e36619430610cd9a81cb3a3c54c4b74934cbe8b3fae24d0cff731cd4b7158f"
+    },
+    {
+      "path": "Search/SimulatedCombatState.ExecutionScopes.cs",
+      "upstream_sha256": "3c1c00df33d8806c5d238c9e7ecea51ee8fa047bde7e61aa22045e4e3b2fb5c8"
+    },
+    {
       "path": "Search/SimulatedCombatState.Fork.cs",
-      "upstream_sha256": "dece2484d06bdd540a01edbcc3858ff1bab608e1ed46fbccb5f5c15a65eb1e2a"
+      "upstream_sha256": "33d4b1481cbd14ebd901eb344ec11f230e87ba848eaef5354bfd02a337112574"
     },
     {
       "path": "Search/SimulatedCombatState.KnowledgeDemon.cs",
@@ -984,7 +1780,7 @@
     },
     {
       "path": "Search/SimulatedCombatState.LongTermResources.cs",
-      "upstream_sha256": "dfcbafc0bd4e9622d7ee82358593e44a08e1703325f3a9d1f7f1e39c0cd28e78"
+      "upstream_sha256": "40bb1443ace88bd7f4d02e566dd6794850678450c7a8beae1215f48267dcc1e2"
     },
     {
       "path": "Search/SimulatedCombatState.MonsterAi.cs",
@@ -1004,31 +1800,39 @@
     },
     {
       "path": "Search/SimulatedCombatState.PowerLifecycle.cs",
-      "upstream_sha256": "2e30ac8cb80ecf3a5faea64f189480e86d3ed7df83b36db1969f1cf96cfa41e0"
+      "upstream_sha256": "ce442df481eaf42cf0332f4a7b1260740ded3630c7c565c27bad644826fb3465"
     },
     {
       "path": "Search/SimulatedCombatState.PowerRelics.cs",
-      "upstream_sha256": "19548d3673dc70bde31c2bb50c672224a74e5fb6ffbc36b34b8d241ab911d78e"
+      "upstream_sha256": "93cc311a465b7adfabd75f923eef40a8640514f447c0a0397b8f185157392c6f"
     },
     {
       "path": "Search/SimulatedCombatState.ReactiveRelics.cs",
-      "upstream_sha256": "13a255464bc471349943ccb658886a85e0ed6cbcef0c134a786ea7be4b5ca799"
+      "upstream_sha256": "81f711742f91212ecf36b0adea550638167d8188d69fe18aa0113a07d3867740"
+    },
+    {
+      "path": "Search/SimulatedCombatState.RelicCounters.cs",
+      "upstream_sha256": "d275c4807d8bd2d813b7c7e02a430b48709fb1c7aaf3a184bf333abfdf21361c"
     },
     {
       "path": "Search/SimulatedCombatState.RelicResources.cs",
-      "upstream_sha256": "6b0380559273a9c264edfe7fca3baa73d4a24fc2685bf97a2aedb4c6993febd5"
+      "upstream_sha256": "0f39474ccc4482e8a6d1e67b49139e98c799433939e06a9252795c56090367db"
     },
     {
       "path": "Search/SimulatedCombatState.Relics.cs",
-      "upstream_sha256": "fd8ffc753ad130439fc34c75c5beb238f12f076dffa0b66c731a2be7deb0ef01"
+      "upstream_sha256": "da1da2f1f3b98ed763939c7205bab5412b8a125526ae7d03de6029359c5ab06f"
     },
     {
       "path": "Search/SimulatedCombatState.RelicTurnStart.cs",
-      "upstream_sha256": "9ad35b90ffffb87e6cf407f23c480c0fb45a393c980a8e464a59be1648e78f30"
+      "upstream_sha256": "c6642411200134a288b36292510581dadde255608c2a98cad9115de7381384ee"
     },
     {
       "path": "Search/SimulatedCombatState.Theft.cs",
-      "upstream_sha256": "ec16add5b25dba7523e5d63f3fd348f4ccfd65c33536235fc061928b135bb374"
+      "upstream_sha256": "4905e8f465fec04241190f3488ee8113192cf8026a594fd39b437d94ca3aba42"
+    },
+    {
+      "path": "Search/SimulatedCombatState.TurnExecutionContinuation.cs",
+      "upstream_sha256": "f7d50c3aaa1ce8861a0647e04eed9da7c2c520c5aac7158bef9978ac41dc5227"
     },
     {
       "path": "Search/SimulatedCombatState.TurnStartChoices.cs",
@@ -1036,7 +1840,7 @@
     },
     {
       "path": "Search/SmartLayerMemoryForecast.cs",
-      "upstream_sha256": "8a42ccca00b0b7173b5268e7695e065ffcac6bf2a0d6c3f39818c259b9917e01"
+      "upstream_sha256": "4359979ad9c6a99914313dbcf90047a691162d08ab2072a539b0d71d58d51547"
     },
     {
       "path": "Search/SnapshotListBuffer.cs",
@@ -1044,19 +1848,19 @@
     },
     {
       "path": "Search/SolverInterimResultOrdering.cs",
-      "upstream_sha256": "5712cb769fade4fedb0333c9f5bb619b4b45fab168dd0baebf23eef086a1d18b"
+      "upstream_sha256": "52ee0641400f75eea76042aa9b86f788860e347970b2b19ce30e8ed7335029c5"
     },
     {
       "path": "Search/SolverSearchProfile.cs",
-      "upstream_sha256": "b5962af723d41651af0a39244da620ab34c34c5c55e2f5bf4412d81b315604e2"
+      "upstream_sha256": "8f5929b8d98d637e422b8a22bf9b149e7c4f3dd547b46dd54bbe23a02fc5a357"
     },
     {
       "path": "Search/SolverWeights.cs",
-      "upstream_sha256": "223beb9c7975e32eeeebaf08efb1a20df4794303a998ddee7fcdd65b94097c59"
+      "upstream_sha256": "52716675cf904ac2777c9a3cf2d16775018e5c287db09c83b1be3c30ea6d1d5a"
     },
     {
       "path": "Search/StateFingerprint.cs",
-      "upstream_sha256": "b6c07ac965ecf58c5e15ec7bc69f4d04984c65b3a423f1cf3217e816fef93bb8"
+      "upstream_sha256": "87911495005e7c3fbf7d76564141676187a984c5673ebae872e5cf10a8577c9c"
     },
     {
       "path": "Search/StrategicEffectMirrors.cs",
@@ -1064,16 +1868,815 @@
     },
     {
       "path": "Search/StrategicEffectModel.cs",
-      "upstream_sha256": "0b58845a9c1ec422ab7a6961defffa81e39d490a1094c11f51491399767cb9a7"
+      "upstream_sha256": "55244fc74f0dcb00d62a413301d67f4df2e5e6285d4a67fae4d25d049a48db62"
     },
     {
       "path": "Search/TheftEncounterStrategy.cs",
-      "upstream_sha256": "10b1d41c23416769523d81d7b6d54910ff0e440c3fc66a1a844b01ea484bc0a2"
+      "upstream_sha256": "5c5d5ea92f5d43130dc68e7cc3e8711523df8371f256325bbc5fd80c0f213ccf"
     },
     {
-      "path": "Runtime/SearchProgressDisplayState.cs",
-      "upstream": "Runtime/SolverControllerSessions.cs:SearchProgressDisplayState",
-      "upstream_sha256": "43ccbcb83fa978bf7502df418b5cb85ffc5cc4a93db8f83d1a796e810a03ccd3"
+      "path": "Strategy/CardMechanismFacts.cs",
+      "upstream_sha256": "b4f1e9d00293a347af9e96fd8eaf3a465e1baa7f823716f70c170da42695726c"
+    },
+    {
+      "path": "Testing/CardChoiceSupport.CombinationsBaseline.cs",
+      "upstream_sha256": "6e7dd74b9d9aef388f1dfc49eb1d3ac62295f5525e5f11b5ae56bdc67acc7046"
+    },
+    {
+      "path": "Testing/GeneratedCombatScenario.cs",
+      "upstream_sha256": "ffeb19b8ae28f893935714e26bd14cdbc779eed596dd6006c0cc72e7b8ad1f81"
+    },
+    {
+      "path": "Testing/GeneratedScenarioCardSelector.cs",
+      "upstream_sha256": "9136323e981a84ca79cab9582a34c65edf97090e19b4b22d25c15163cb88ca9d"
+    },
+    {
+      "path": "Testing/PlannedCardSelector.cs",
+      "upstream_sha256": "6616be8118c56d7c9c4fda43ff63f089fb655e07a4f419f715b369e2df2e3db6"
+    },
+    {
+      "path": "Testing/PredictionCoverage.Baseline.cs",
+      "upstream_sha256": "c5f608f104596b39e3242745794d95050e5ab1c50c87d16e2605c7315bc880a8"
+    },
+    {
+      "path": "Testing/UnattendedAsyncActivityTracker.cs",
+      "upstream_sha256": "13c6755e4f836a04161ae4d56d46d3e3dc7ee0558a07652c98eeb08fbcf9a8b8"
+    },
+    {
+      "path": "Testing/UnattendedCardSelector.cs",
+      "upstream_sha256": "128213a77a96205733595ec297e7cadc83f9dc997514519f958d0c4c3f96f6b5"
+    },
+    {
+      "path": "Testing/UnattendedCombatStartReplay.cs",
+      "upstream_sha256": "9e540395a5a73d9307bfd627910b262b13e1c78be517cfcaf6837ea36fc982f7"
+    },
+    {
+      "path": "Testing/UnattendedHeadlessFtuePatch.cs",
+      "upstream_sha256": "8453b3164f42b8abe2de9884344eb0ad748fd209aa1c0711e564c3d6642dcb98"
+    },
+    {
+      "path": "Testing/UnattendedTestIsolationPatch.cs",
+      "upstream_sha256": "a2f6b77e100c98aac953b0f8c512b8e2a3aace3ab1430e949b510a6128231925"
+    },
+    {
+      "path": "Testing/UnattendedTestProtocol.cs",
+      "upstream_sha256": "2e5f483a980f9cc997234a958b0faf737e1079a2e53c2c8c5cbfed5eaafd962e"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.Act3BossStrategy.cs",
+      "upstream_sha256": "6fd00663715303a6f2c4d9b9b3439107e1674351f3e678c874cd82b30b9157ca"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.AdaptedOnPlayIntegration.cs",
+      "upstream_sha256": "d1f4e0e32c7e5f109962d7c5835fb8259868f29c99c5f82ee741a2fa1e76f562"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.AeonglassPreviewOwnership.cs",
+      "upstream_sha256": "3d255717f66398c95f8a328ab3493fd20c1de1c55e4bc059c07a4fa7e72092e8"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.AncientGrowth.cs",
+      "upstream_sha256": "81dd505b069d01bcb0087cfb210e6ddb8fe86afc4b12d8f4c1d642edfb4bef08"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.Assertions.cs",
+      "upstream_sha256": "2e56ce1491d08fd9f23ef15f662ff084ea9dbf9f2e55c89f0818627141338cb5"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.AttackHookSuspension.cs",
+      "upstream_sha256": "35eb3c0275227b9a4123b7ba6966402bad39f891bc9d349322b89c51163c9e0d"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.AttackStartHistory.cs",
+      "upstream_sha256": "f9a211fed81f9a7e6f54e3d2f04655629245d865c2a0a66e348fd146ff6d7df3"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.AutomationRoot.cs",
+      "upstream_sha256": "6f2182eedad06dd5eeaeadc3ee93ceea3708a9f5d1b43c72405bd0502a8ed4ce"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.AutoTurnOwnership.cs",
+      "upstream_sha256": "2556f10839c0758c329886aee6cc12c6859ec8db66f24d7aa79b8d6daadfa008"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.BaseLibCardModifier.cs",
+      "upstream_sha256": "ce1a33151094d173149cd04f94d177ff7a2df43964c73152946316e4d47e1631"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.BlockEventHistory.cs",
+      "upstream_sha256": "8388d07bb1664ae385938109f2669265770de088b37ff8051720726e716b7b60"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.BrilliantScarf.cs",
+      "upstream_sha256": "7eb243ebdf5152646e34db97e9ac65ba6d44daae1b1b4a53bb39903fd1aa225b"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.BugReportUpload.cs",
+      "upstream_sha256": "e784aa7eec82376b81be337be9215a2f8dabd0cff0e8b60b9243f36791aea7f4"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CardChoicePending.cs",
+      "upstream_sha256": "661e988e211e0ae4ad111f8ade2d192d119ae0d3075a27318c0881045c005f93"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CardContinuation.Adapter.cs",
+      "upstream_sha256": "8d172c4475bd85f897625c417428de93b134c6e5364b705de93eef4c7de9354c"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CardContinuation.Boundaries.cs",
+      "upstream_sha256": "3fc55c40dcd56f2e7a7eb9c88a7d0263702be616525cc66c6214645e07f828c1"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CardContinuation.cs",
+      "upstream_sha256": "90d90ce9c28ddc27e96448fe619ff209ffc769f8d0c35e1738a821d351c794d9"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CardContinuation.Expanded.cs",
+      "upstream_sha256": "44b979c4ed6228437f185a894cb55ac235fe6d6f6edb878864b2486af2a6c1db"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CardContinuation.PriorityCards.cs",
+      "upstream_sha256": "c5fdb9095095363e06d4e7bf36d57ba8f1cd32754b54205d8e6ae01a2b40cd31"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CardContinuation.Search.cs",
+      "upstream_sha256": "de22236cd54803fa68a7443dc4920c11d985eb14b142c67aa04aed9f43353c5f"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CardExecutionContinuation.cs",
+      "upstream_sha256": "f9d08fdbf04a980659aa968ba36eb3061c8b436863f4af8b49de68998a6e9db9"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CardPlayCleanup.cs",
+      "upstream_sha256": "f3fe640d6158cfc5de16c859601f05bedb19e10da63914e65162db97b43aa609"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CharacterGenerationPoolCache.cs",
+      "upstream_sha256": "42bff242814cfc9c022cb8d97accaa5152bd16ac57d7cdd82869de4987b50007"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CheckpointArchive.cs",
+      "upstream_sha256": "ac35b0a07bf04d6d4c66ca1813e9f421500e2eea91e3a41c5b4b4437f35f07eb"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ChoiceCombinations.cs",
+      "upstream_sha256": "39374e44e947ea19dc75006dd88c207f4837e3eda7f5aa83eb6e5af530160aaf"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ChoiceTokenContract.cs",
+      "upstream_sha256": "cbaf1ff3db250276f07bb596067e127ec2dce5aee6cc8c2eacacbccec24f8780"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CloneIsolation.cs",
+      "upstream_sha256": "11f0afdf4c3a75b101342de701818517fcff1d6ccdda2830cb6f7ffc01b50e6d"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CombatDiagnosticLog.cs",
+      "upstream_sha256": "aa727818de51145c8d88323e371249f45e2c3dbdcf22f2bfa4561dd4d95f818e"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CombatRootSnapshot.cs",
+      "upstream_sha256": "c5a3d04cbfd9c2c1cdb65678f4e18663f4ddb99f67c038fef43f14cb74c1e5d1"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.CombatTiming.cs",
+      "upstream_sha256": "52a4cadc2861770ef3b7290514f5090f867cebe04845f58d9ef579aedab266e9"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ControllerSessions.cs",
+      "upstream_sha256": "7a2d2263f795df894553a31210cf63b317cb4640345e136611b82312e4c17695"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.cs",
+      "upstream_sha256": "988f9bd5018ec7e402e359d96088d7dc0b99a23b050ced8f15d662b9e527a889"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.DamagePending.cs",
+      "upstream_sha256": "b79cb42b62672076676eba0c132dd91f1231f398d02b4e5286b8dc69d1d65aa3"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.DampenDeath.cs",
+      "upstream_sha256": "d67844893d72ceef52a6cb4f5fabc2c56082793cbcff978362a44acc31519ae0"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.DeathHookTiming.cs",
+      "upstream_sha256": "0ba88d4f32aa89635b3f6556801e1a90ae39082a30577f62ef7eda32b891fd1f"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.DeferredBlockReturn.cs",
+      "upstream_sha256": "fa8df231846270325a0dbd19a4f62e3e232eed2216307d485bb3bcbd26db554c"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.DrawLifetime.cs",
+      "upstream_sha256": "b4f8d6e863af4e7a2a301960bb77da3f6456b99237e6a69af35a36fb16d2d111"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.DynamicVarMetadata.cs",
+      "upstream_sha256": "4a5cbb3fa7b70b6a3afb4cb006e05459c0f79739d17381a2214dc207042509e4"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.EarlyEndTurn.cs",
+      "upstream_sha256": "a208145334867948dbdcb8b4d9a7ccc39df7187f895b249f11a0e9696fd16fbf"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.EmotionChipDamage.cs",
+      "upstream_sha256": "2ccc4cdb8567494a8dba65d4c1e6b79eb660f6cba9bd58a94bbc00aa3340cce4"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.EndTurnChoiceReplay.cs",
+      "upstream_sha256": "6707c86e09f2bde2988418036a73824bf1b7b0b434482d23b64f142fffc26be5"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ExecutionChoiceSearch.cs",
+      "upstream_sha256": "20b6019d5691bfdbd87e39684d17ef23c2996f29f939a3d0b31e4a9ced5eb717"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ExecutionChoiceSearch.Solve.cs",
+      "upstream_sha256": "ce915365c495544d341e3150b2302edbab1cfdf1f2624d40a4a883aa00300b64"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ExecutionContinuation.cs",
+      "upstream_sha256": "60cd50cd815bcf27a9d2e85833e8b25eba283aa40e31db6a63afbfd70aaf1acd"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.Executor.cs",
+      "upstream_sha256": "aec04fcb5a7fe8e87fee32e364a101734f326beea625b300fae4b0e0d17dd746"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ExtraGenerationCache.cs",
+      "upstream_sha256": "75893ceb95a0cb74b1c00380009f4f220e0836d01da451a5c1b87b9181a9216a"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.FailureBoundaries.cs",
+      "upstream_sha256": "64b6a53c683a74368734b28b71012adf4c246b10bcfb4a289fb93a4142aea953"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.Fixtures.cs",
+      "upstream_sha256": "63d4e341d07fb986165d0d57e1b58986b3e4587579bd8a093e591bb452b543b9"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ForcedTurnTerminalDifferential.cs",
+      "upstream_sha256": "3cd3985e2367b778739a983ef1df06121def13bf8c97ad137ebb19a7079917b0"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ForegoneSelection.cs",
+      "upstream_sha256": "93eac3d3d2be0f02aef97b02808210d28a52a5dca63f5709bfd55808c3176aa8"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ForkBoundaries.cs",
+      "upstream_sha256": "a53e3cb641183134f428bd2106e68ab4acae64b09df787c57da9ea98b5752bb0"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.FrozenRootListeners.cs",
+      "upstream_sha256": "2da81e4d509517dae9e398949cb8891c960fe2932faa841b80ad492bf745375a"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.GainStarsSuspension.cs",
+      "upstream_sha256": "662bd44069d4db859b9c5f938d0f51e9a1e66f55f19aa63f691eb04a5d864762"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.GcCheckpointBackground.cs",
+      "upstream_sha256": "7f0071dc5bc167fc1b0c0411815f949699a4a37f08993199517bb784b6920685"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.GeneratedScenario.cs",
+      "upstream_sha256": "50bf46778579ee7f06914196eff320c1168e5ec5d156cbaeff42ed0f9991edf9"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.GeneratedScenarioChecks.cs",
+      "upstream_sha256": "cf7755eeffe70997c97ce33c9d6f3145ce542c6bdad218597216a0228481c957"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.GenerationHistory.cs",
+      "upstream_sha256": "9df22380e5e6663bfecacb3358100cc6224c8ea30e73e35ad59dc15185b0112d"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.GhostSeedKeywords.cs",
+      "upstream_sha256": "0826f250dc80a76223b2f59b283c25a4d4c46c6982893d1b0bad790439657fa7"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.GoldLoss.cs",
+      "upstream_sha256": "d494490ea00009a4460e2e333ef510bd0a6d71335bde3309bd2ad05fa09845e7"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.GrowthPolicy.cs",
+      "upstream_sha256": "f71f3474141ee50dc5b123ccfc778f503cf0168e754f23a83167330174f38aab"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.HandPotentialCosts.cs",
+      "upstream_sha256": "77d391a158f3ef2acd12587d65bd307433c1987f2d905bfead26fbeecc4611e6"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.HistoryRetention.cs",
+      "upstream_sha256": "f3df3c4f57e367345469cef05ee3c0b4ed85da3e7cc35ef5cc948f29084077ae"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.HpModifierCollections.cs",
+      "upstream_sha256": "6d37c3029dc608071c77ebaa6e3a351947aeb6561573ecb74b1667ef957d9272"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.HpTargetStop.cs",
+      "upstream_sha256": "9125e55f265d9480307d8e5f3520a185241c0e3ed0317531be30a963389c8e89"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ImplicitChoiceOrder.cs",
+      "upstream_sha256": "7d9815b5a7df70e61891ef436ae66b2a2723755bd1b0e2cd920ee805da6148ef"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.InstancedPower.cs",
+      "upstream_sha256": "d0835fb1c4f1cfbb407abb0d560f2d97dac0f47f069ade1117fe23b6df1f4dd4"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.KnownCustomPathTrace.cs",
+      "upstream_sha256": "8aec5de75afdac0ef63c55970872ff9cd19329962acb08b1f07b878465a63155"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.KnownCustomRouteNative.cs",
+      "upstream_sha256": "97285866182f05870e6200c7af7c3b31c3a9166f5a07489aa5fb4d55a8165366"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.KnownCustomRouteReplay.cs",
+      "upstream_sha256": "3f757ce3ea482ecb74871d680a180727d73398255fb11133e61ace1961a4abb0"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.KnownExoskeletonsNativeObservation.cs",
+      "upstream_sha256": "cae9ae2b1a24984f943c282117cdf6819cdde384b6f1273edc13a5848c95af21"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.KnownExoskeletonsPathTrace.cs",
+      "upstream_sha256": "68acf58f31673c8a8d2129d005dcd432afe7c7d428134acfae789fcb88c1972e"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.KnownExoskeletonsRouteNative.cs",
+      "upstream_sha256": "9c12376aa49c20086ec860c970463f21811a1028f886b16afe20d250c161e1b2"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.KnownExoskeletonsRouteReplay.cs",
+      "upstream_sha256": "69a8f9c0020a71648ea9f276ecfc74c97437903751f0054f324c54528edb9451"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.KnownRouteAliasReplay.cs",
+      "upstream_sha256": "d29801b7c68baa00d28b45c24877afa8935efb2a300b70a6d09a4502f4136d2a"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.KnownRoutePathTrace.cs",
+      "upstream_sha256": "c752f739400b40e185372b8883eafbb202fe6784e53de0d2dba52cec2baf92e9"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.KnownSoulGenerationContext.cs",
+      "upstream_sha256": "6f80a53ac6e36acae584b0476e12c06d7dc5d16947421fad550772247e40fcc5"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.KnownSoulPathTrace.cs",
+      "upstream_sha256": "01c644281ab395f2742bf6216bc073ecf91d8584dfe6d2cafb69c42d95c77143"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.KnownSoulRouteNative.cs",
+      "upstream_sha256": "9b3ba8f10b7c6dd63a3b72c4ff2c2ef81ab3f72d62d90f3a2429ef46152dc7e1"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.KnownSoulRouteReplay.cs",
+      "upstream_sha256": "efbf29cc6ffe4ac1c0c5e5aec6943f87b79b911bb9257fe0659a3d28fe098d22"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.KnownSoulVariantPathTrace.cs",
+      "upstream_sha256": "34200d51ec618885c18d4102ac3203306fb7e16eb66b76ab34b4b3438cbc1ef5"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.LampIndirectPoison.cs",
+      "upstream_sha256": "9b592c824a36fe19c757331ca88566769d94f42bcaff64dfde212f79748cd8f5"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.LazyRngFork.cs",
+      "upstream_sha256": "3f96b8fcf3a7cd9d36826d06132d8a7a267f4f1f1d5a4f092f27ac0802c4b924"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.LogicBugBatch.cs",
+      "upstream_sha256": "66cd3939d686f8fd90cafd790f226bc4aa010e4e7141d4a737c7eabf42161786"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.LongTermResourceCap.cs",
+      "upstream_sha256": "ad1be7ef3ea3623c05b998dc9cd8a431add53139db0c39bb082e308b053c6577"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.LongTermResourceStaging.cs",
+      "upstream_sha256": "fad747dd4c282450559fdc24136a1338a5cb4f1495c91ff8533cc3a420fa3496"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.MercuryReattachDifferential.cs",
+      "upstream_sha256": "b3e75011c8be310cb569c2b9489116efcddf2f67a71ed26be0ac612d16ec3a64"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.MirroredHookFilter.cs",
+      "upstream_sha256": "deaa7757444a42940953641ece5a8d72fd8cfd9bad08418e254a1900b96e553f"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ModelCloneConcurrency.cs",
+      "upstream_sha256": "fde9bc67d9dd2596afe9e0a8d70ab6d068b6f7906ba7549a2591e61a4e1ba237"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ModelStateIntegration.cs",
+      "upstream_sha256": "5bda90f00141fa0f369062ee200129f7921afbb0e895d5658d7b97cc2385ad3f"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.MurderHistory.cs",
+      "upstream_sha256": "4173327bff22a20518d3695df95d5f9b5b8f16ffcaa0961732fea677d8db358e"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.NativeHandChoiceReplay.cs",
+      "upstream_sha256": "01f2e02982764f9f8d0cd211ffe06ed1f3dbce4dd659d6541be596871669a4a8"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.NativeReplay.cs",
+      "upstream_sha256": "bc79873afe569a52354bd75864a2f89350957f3ad723f9ee9f00de3e4f18df58"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.NightmareSnapshot.cs",
+      "upstream_sha256": "030d3b0ab7a12cf4a3d1c7c9596ca1900a5ba42dd9bed4952aa993a732847a5f"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.NodePoolLifetime.cs",
+      "upstream_sha256": "b6425cd3104d5ae391f1bea2a505545172c3738ca011591d5d3a8a10a6b1bae9"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.Normality.cs",
+      "upstream_sha256": "a575f0f9199213af173aa43317399a2306482937c3baa0bb4a2b0f6d55208a5b"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.NoveltySearch.cs",
+      "upstream_sha256": "38205b67c1107041b05697c60616811cb9ed69e4a548abefe5a8651e8ffef99b"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.NoveltySearchControls.cs",
+      "upstream_sha256": "6c50e9887224e791f51f1ad4de36d2fdd7c3cb91dae1250922069624b70ef9be"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.NoVictoryEscalation.cs",
+      "upstream_sha256": "46df84b8e32e5a82dc2893a63c0c2b702fa5c07d3c6c886416f574409c48d726"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.Offline.cs",
+      "upstream_sha256": "39d3062db85d334a947bdd5f63ffdc1ea867e7717e1ee85e53b7e2360a4c4676"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.OnPlaySuspension.cs",
+      "upstream_sha256": "d8578cabef65ed3df572d874320b4558f0cf9dc1c1a76cce40223ac3687bbad1"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.OrbitRoot.cs",
+      "upstream_sha256": "88d3ac5770ded87ef4e80cc4c23dc0350b5f0f20a2d8f8b013f3b35b98395728"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.Orbs.cs",
+      "upstream_sha256": "d671c002295d4a2adfd2b7cd30c175bac05214d911e800dae7aeec8080766f00"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ParallelExpansionDrain.cs",
+      "upstream_sha256": "b9f4cf66b9530c0d75bfa306044ff03dc93ae1234cf15b5cfc125c514341b4d0"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.PendingHandlerTail.cs",
+      "upstream_sha256": "6aa449db1597f21464ff0a3d67fd2273934b3e2e8dc699d26e3a60e4a0cdf8ab"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.PhantomRetain.cs",
+      "upstream_sha256": "b1f9dbf8804595d6ba0f0e4797b54f413988522a6e140d007e4fb4e4ca046cac"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.PlayerDeathPowers.cs",
+      "upstream_sha256": "2f3dce9447f92e8b798fe26abfb0afcfd503c680fa3e7dc3ec2f283fa605e409"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.PotionContinuation.cs",
+      "upstream_sha256": "7b5ecf6f0b61de63c875da6e2e341b74e85a11e1bd337f914bee5faa1b6cd644"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.PotionContinuation.Search.cs",
+      "upstream_sha256": "fb7e64a11fc440a1c4405708a0c3821b9ca74c463e4bc9e1bf41c3c0d93e9063"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.Potions.cs",
+      "upstream_sha256": "10c985f8f16de888421ec3c76d5589d0bc83ff5be5da64c7267369e2623a330c"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.PowerCloneConcurrency.cs",
+      "upstream_sha256": "5bfc277aa416fa74160951678a3b509566f5ae08db0d40599e2a9c867690cc2f"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.PowerDurationApplication.cs",
+      "upstream_sha256": "8816f234f70e1ab0ed18d8d49f64113873bc47b023b6f8eb50d67221354b7418"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.PowerDurationKeys.cs",
+      "upstream_sha256": "2d4bdc28beb423471770f2d557340783b5825c3aacbed37539e142e914c03970"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.PowerHiddenState.cs",
+      "upstream_sha256": "8ad77c368d49cfaec489022a677de14ee212aa892e9122dfb78dc9dff0dc4676"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ProcessDiagnostics.cs",
+      "upstream_sha256": "7ce99bc6deafac1d059a6f2f088da084b648b56a2224ef79438212e12826b2f3"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ProtocolHost.cs",
+      "upstream_sha256": "4ab8c90ee7ce3217f87c9301d189448147d24e2afbb73a0e984170ec1cc6df81"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.PrPolicyGuards.cs",
+      "upstream_sha256": "a94e33dfc8cce8576e05f5d891477eded8aeff44e49189f7b1ddc91406148455"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.RecurringEnergyQuality.cs",
+      "upstream_sha256": "9e80faa1c0226e41d6a587dadbbc9c7680d0201f4ad5cfc3ea3a8f3b5682afe1"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.RelicCounters.cs",
+      "upstream_sha256": "e0ec10f709e6637f989239bdede9d53413c83d64a757c6ac7ef9785be4ac8d0a"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.RelicPriorityMeat.cs",
+      "upstream_sha256": "e4bd5f486663d5f37b393b96f6368f0aacced31c7b04aec6ac75feb2a3307976"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.RelicStatTerminal.cs",
+      "upstream_sha256": "f1ce7971254894a6cc0213c38f1427c9d28369d17297120b619831f8cfa2c988"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ReplayAssertions.cs",
+      "upstream_sha256": "54c6e968f629707c3a68da54b7d1725c34dc47e134e11f2a4ae936fa46466724"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ReplayBoundary.cs",
+      "upstream_sha256": "1f702702f549da847463be77a9716d622f5aa0286fae28a160b9c10d52a63a29"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ReplayState.cs",
+      "upstream_sha256": "25d28c60f4538a9d889dc33c9c6855d09367df117d9e2fb72180e5093a3c9063"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ReportCardSequence.cs",
+      "upstream_sha256": "70f511ef2fd2396f8cd59ceefe438ad2152318f20d83d9656ae00d572881b947"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ReportPowerLifecycle.cs",
+      "upstream_sha256": "7c35919ae2e2a07b4d14af248986e1f9732b5fb4c77782cd6852f5025efac044"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ReportRound.cs",
+      "upstream_sha256": "fde5e9fd5e83f109af65452a6f4fd77de30fa21bd6669c4012fcb5cad47fac88"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.RetentionJobs.cs",
+      "upstream_sha256": "9346e83ac275e5b3477de69e466cb433893bfac76d3ff4d06749314b8d1217a0"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ReturnEligibilityFingerprint.cs",
+      "upstream_sha256": "ad81b57e122d73237e52717220c4b91c0ec382f7d74103e3fa8dc09f2304adbb"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ReturnToHandDifferential.cs",
+      "upstream_sha256": "0765a6692d749abfb2d684c2f559b67c2391dccd36340436b3403009064edd6a"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ReturnToHandOrder.cs",
+      "upstream_sha256": "f5ab89835b997c3cc2fb85cc08e24bbbd6514b8371db91caa72120bc8b3575fa"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.RitsuCapabilityFastPaths.cs",
+      "upstream_sha256": "4952304b423c309b9b1c61720bd398d90751b18dd489fcb69ccb757c97c7e1f3"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.RitsuTagFastPath.cs",
+      "upstream_sha256": "3cb477eeef36f86eb58755d19340c376049852d8dd459db7c15c00f64c25218a"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.RouteRowReuse.cs",
+      "upstream_sha256": "24757a5ab0742289105ee67e55f4cde176444227f56e727398884ae8c14e204a"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ScenarioBuilder.cs",
+      "upstream_sha256": "60047751be1e37bcccd53409b2a6bce194fcb92b359cb64bd56a2bd8484688c1"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.SearchPolicy.cs",
+      "upstream_sha256": "1a0006ac68c00e9bbf0ee450c054d444e9d26c22ba471278a1a2b9cf517ce3ab"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.SearchWorkTotals.cs",
+      "upstream_sha256": "cd9b0c6b401df595f1d113e0646b95028287f1927e49639c4e74dd380508d3b8"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.SetupHistory.cs",
+      "upstream_sha256": "1001c44e6e5c46f577812002fdbce0fb760fb67ebe6c10b92e34b933552beff6"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ShowcaseRoute.cs",
+      "upstream_sha256": "9771214d5d774e8da52137c0a672d5e8ca1cbeaa339ed0edf342750a973001d5"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.SingleSearchProfile.cs",
+      "upstream_sha256": "ec5b9901c775720c81952e82223c2d3f9ecf70e7587f94be847041b299610333"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.SlowTurnReset.cs",
+      "upstream_sha256": "ce31d1f37daf592b8e7c8f74ebd35a42ba99c2c7eb5240f6abd5d6f422cf2f0a"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.SnapshotCoverage.cs",
+      "upstream_sha256": "8b88b5cfcfde7075b5e1b1c4613cf2472441db4b0dbb6022e84667adaa87187c"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.SolvedRouteCache.cs",
+      "upstream_sha256": "6a83ff8ff86e2ce57a3600a88246d61424a9866f9e48fcb07af5c3da6423aa5d"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.SolverPolicy.cs",
+      "upstream_sha256": "5c3048e334c590987c6b47162736a2ce98c82ffab704e0a4eda6484e7473990a"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.StandPatProbes.cs",
+      "upstream_sha256": "92e72045766f5a4a9f55f1b747569bb193e61ea4007efb338f909fa410dc6b13"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.StateDiff.cs",
+      "upstream_sha256": "7861de2d4e5d76e781237930b30f833ff609306b9ae5cca07840ee6e708f7e20"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.StockRespawn.cs",
+      "upstream_sha256": "80264f7205471185f67046a37ad05bc189a30f716d3f3d94ccadf87820207e58"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.SurgicalFixes.cs",
+      "upstream_sha256": "599d78be7036bc895e9a83615ba6c46ac90eaf5f679cb1ef16c2732c8f2f6264"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.SwordSageRoot.cs",
+      "upstream_sha256": "4710a368ca479340566dca81e43b016ef1c7ffa3156afd122e161a2d16e0abb4"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.TemporaryStrength.cs",
+      "upstream_sha256": "a43ba4e178457f7d776a38b8cd2b77644aa2b9e31152b26a8656f729c2b6439f"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.TenderNested.cs",
+      "upstream_sha256": "10be7ecc99252f9f6ee4e9a954b1dc01035e44a66fc27b7684eaf11be8d8c48a"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.TestSubjectReport.cs",
+      "upstream_sha256": "a7c637dfeb572e00e87d499d61a6643e74ebcf5ae1178cb5815f2c2eff86e605"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.TheftPolicy.cs",
+      "upstream_sha256": "0ffce1dd1bc3af0606314f6b259b2ff9a88a98298b41fda39bf46b8a7326ebc5"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ThirdPartyCalculatedFailure.cs",
+      "upstream_sha256": "aba92007b9f84ac9f196d13d73a55feeb541795da7794730dd73ab7ed2a281d0"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ThirdPartyCardRemoval.cs",
+      "upstream_sha256": "e9632b7d6ab25fa6997e0cf3921260fe9ca1d442fadc2b069db4cd62e64e68e7"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ThirdPartyGrowth.cs",
+      "upstream_sha256": "f780e1de02936be248646ee6b1622ae1d43dd3b815ab31dbc316b625c400c0a5"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.TransformationPoolCache.cs",
+      "upstream_sha256": "9d6904ddde2cec6e903d1846cb4ba510f8599831a000b9d77f7b554384ef1184"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.TurnBoundaryPending.cs",
+      "upstream_sha256": "4dac14f8eb5304398592941a4fdd50fca39e3ed973b847745708e7ce1f56d27e"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.TurnCounterReset.cs",
+      "upstream_sha256": "0eb302c4dcae9b09051f3be91c05b9504a6fcc195a40f3fbcc5101ccc512d9d4"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.TurnExecutionContinuation.cs",
+      "upstream_sha256": "571156a6ab60eceba600c6ae9665f913d7ba3f34d32bff08e5e40013d910a00c"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.TurnLifecycle.cs",
+      "upstream_sha256": "3b21e77264c0bc9d607a5e98786b97b05ddf32adf592148d1de9c503a21630a0"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.TurnSetupControls.cs",
+      "upstream_sha256": "470a3403e486234c7b1f8a7db30ea36ec77e21ead0d693e732277077e2a78112"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.TurnStartGenerationCache.cs",
+      "upstream_sha256": "2e0219f0b6a7001758ca5cb05320f7b5a39d8ec91a0795f6e38fd91d63ac9367"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.UiLocalization.cs",
+      "upstream_sha256": "4edb35174f4e051aabbe115c0f44ee4cd5e82c0ea992cc3f5bd83683ffd9879b"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.WakeDamage.cs",
+      "upstream_sha256": "d0b13737f0c50da5638fc756f66ae596bbef83c58c87cbacfda267433f52acb5"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.Writer.cs",
+      "upstream_sha256": "a996bef17c2aa31dbc3e303ab53c240da5e4615882b55d091ccdd235a170fc5b"
+    },
+    {
+      "path": "Testing/UnattendedTestRunner.ZeroBaseBlock.cs",
+      "upstream_sha256": "b5bfc3d21e4b66ce4d42e3487e0b5cea6f687d82272bd215e1ac4539d9ec202c"
+    },
+    {
+      "path": "UI/BugReportUploadDialog.cs",
+      "upstream_sha256": "6fa839a225a0a717e044e0562bd5a2024b358f851cbb7fa097f4eb71a963b027"
+    },
+    {
+      "path": "UI/SolverActionBar.cs",
+      "upstream_sha256": "3c30a2566c7c57b10e36c25265a5dc87039eb30b203475dcc157e5b903ee303f"
+    },
+    {
+      "path": "UI/SolverActionPill.cs",
+      "upstream_sha256": "805490b1567029d1a0ad7740521c1392ea8d775570bd242dea025be729668822"
+    },
+    {
+      "path": "UI/SolverActionTextIdentity.cs",
+      "upstream_sha256": "8a8713f1f78fadfd4a1c5371b5488499f35a84394d4dbd6e3de65e95824363d5"
+    },
+    {
+      "path": "UI/SolverGrowthStrategyPanel.cs",
+      "upstream_sha256": "554ba550dcac7e33d825f7878309f69813939dd809d5ea8b2c85090f55111493"
+    },
+    {
+      "path": "UI/SolverHudButton.cs",
+      "upstream_sha256": "c29bcbdff88f09f6d44411512284bb06fc61085028802d66cddd1c74c1867eea"
+    },
+    {
+      "path": "UI/SolverLocaleRefresh.cs",
+      "upstream_sha256": "71527020cf2f78dc28e9d8252bd050a0d65f911eb949f91e81a6156b0bf4c367"
+    },
+    {
+      "path": "UI/SolverMemoryUsageBar.cs",
+      "upstream_sha256": "5ad3a627052ea10de39e295e790b8f0735643431a51ae2c86e85362dd527fb1e"
+    },
+    {
+      "path": "UI/SolverOverlay.cs",
+      "upstream_sha256": "0e2d03de8ba5fddcc200e97c83eaeacbc6a045d573eb6a04979a9b1658081e8f"
+    },
+    {
+      "path": "UI/SolverOverlayInputBridge.cs",
+      "upstream_sha256": "fc13a26716b47cf12898d0d438e48b42a9d0a9c3970d47c20b3807f41669ac86"
+    },
+    {
+      "path": "UI/SolverOverlaySnapshot.cs",
+      "upstream_sha256": "c072fba2b336f2ebf9c3ca30e836f11cc85f8c6cd63d6060a0d5a094bea223b2"
+    },
+    {
+      "path": "UI/SolverPotionStrategyPanel.cs",
+      "upstream_sha256": "7832f89e84d9c3337faee5017f33710c59f683bffe5ecb33cd46bfd99b022c4c"
+    },
+    {
+      "path": "UI/SolverRelicEffectText.cs",
+      "upstream_sha256": "c2686fa38591d5365ae6ca6d86cde1d67957a55836011ae2bc0e5c3a218d7eab"
+    },
+    {
+      "path": "UI/SolverRelicStrategyPanel.cs",
+      "upstream_sha256": "f374c90279d4559cf39b2cdba1b83c133b321bf7f1ec1833ff7f0b723dcabd32"
+    },
+    {
+      "path": "UI/SolverRouteRow.cs",
+      "upstream_sha256": "0500ede7370fbde30410fdb6c208566b07d993dda7d29bd8a66c0042a0f82f84"
+    },
+    {
+      "path": "UI/SolverSettingsPanel.BugReports.cs",
+      "upstream_sha256": "5b54552f533194f5680bc3cf421d1dbdb23e592d3be7ef47421f58833d2bba7c"
+    },
+    {
+      "path": "UI/SolverSettingsPanel.Controls.cs",
+      "upstream_sha256": "ff8d603014468abfc70c1ee39e9048d8c540a280a4915df5b315a94dec72f15a"
+    },
+    {
+      "path": "UI/SolverSettingsPanel.cs",
+      "upstream_sha256": "3300ee44f3082a36112399576257749dbc6830652ab9298e61cd0fa5f067019d"
+    },
+    {
+      "path": "UI/SolverSettingsPanel.General.cs",
+      "upstream_sha256": "d0815f173df56f067485d10f1a6f7cf57d47079707eb51a22988b86dab1b907d"
+    },
+    {
+      "path": "UI/SolverSettingsPanel.Performance.cs",
+      "upstream_sha256": "c66bb0b3d87f4578f2b66520158da202b9847db9070076796ed3bc5f2d8aeda5"
+    },
+    {
+      "path": "UI/SolverStrategyOutcomeText.cs",
+      "upstream_sha256": "6977e14bdece07468dc542ddbfa80b6e5dcb3da72735d839b29c4736985e42b4"
+    },
+    {
+      "path": "UI/SolverText.cs",
+      "upstream_sha256": "eb6a856c158c975a92006dbb60f82ab2f7d5014f72703a449d18beeaad680843"
+    },
+    {
+      "path": "UI/SolverUiTokens.cs",
+      "upstream_sha256": "89f0a78e86ed5aa1f4da085dc68b7959a2da89fba2a6f4985cd7da144b2c439e"
     }
   ]
 }

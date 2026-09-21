@@ -90,14 +90,17 @@ internal static class CrystalSphereSync
         _hostFinished = false;
     }
 
-    /// <summary>True when this minigame belongs to a bot and the host should play it.</summary>
+    /// <summary>True when this minigame belongs to a seat the host answers for.
+    /// A synthetic bot and a handed-over player's seat both qualify: for either one
+    /// there is nobody at the keyboard to play the board, and the board is seeded
+    /// from the run's RNG so the sweep fallback is always a legal script.</summary>
     internal static bool ShouldDrive(CrystalSphereMinigame game)
     {
         try
         {
-            if (_manager is null || _manager.NetService.Type != NetGameType.Host) return false;
+            if (_manager is null || !RunAuthority.IsSubmittingPeer()) return false;
             if (OwnerField.GetValue(game) is not Player owner) return false;
-            return BotRegistry.IsBot(owner.NetId);
+            return AutoPilot.Drives(owner.NetId);
         }
         catch { return false; }
     }
@@ -133,6 +136,10 @@ internal static class CrystalSphereSync
     // sweep fallback below is always available.
     private static async Task WaitForHost()
     {
+        // With the local seat handed over there is no local board being played, so
+        // _hostFinished can never be set and the wait would burn its full 60s before
+        // falling back to the sweep on every divination. Go straight to the sweep.
+        if (MegaCrit.Sts2.Core.Context.LocalContext.NetId is { } me && AutoPilot.Drives(me)) return;
         var started = Environment.TickCount64;
         while (!_hostFinished && Environment.TickCount64 - started < WaitMs)
             await Task.Delay(100);
@@ -142,7 +149,10 @@ internal static class CrystalSphereSync
     // board: the big tool on a 3-cell stride reaches every item.
     private static IReadOnlyList<(CrystalSphereMinigame.CrystalSphereToolType Tool, int X, int Y)> EffectiveScript(
         CrystalSphereMinigame game)
-        => Script.Count > 0 ? Script : Sweep(game.GridSize.X, game.GridSize.Y, game.DivinationCount);
+        // A copy, not the live list: PlayForBot drives game.CellClicked while walking
+        // this sequence, so anything that appends to Script mid-play would otherwise
+        // mutate the collection being enumerated.
+        => Script.Count > 0 ? Script.ToList() : Sweep(game.GridSize.X, game.GridSize.Y, game.DivinationCount);
 
     /// <summary>
     /// Cell centres for the fallback sweep: one reveal per cell of a 3-cell
@@ -177,7 +187,7 @@ internal static class CrystalSphereSync
         if (Environment.TickCount64 >= _nextLog)
         {
             _nextLog = Environment.TickCount64 + 5000;
-            Log.Info($"CoopBots divination: {BotRegistry.DisplayName(owner.NetId)} revealed "
+            Log.Info($"CoopBots divination: {AutoPilot.Label(owner.NetId)} revealed "
                 + $"{revealed.Count} item(s) from {game.GridSize.X}x{game.GridSize.Y}.");
         }
     }
@@ -199,7 +209,11 @@ internal static class CrystalSphereSync
             if (_manager is null || _manager.NetService.Type == NetGameType.Host) return;
             var state = _manager.DebugOnlyGetState();
             var owner = state?.Players.FirstOrDefault(player => player.NetId == message.Bot);
-            if (owner is null || !BotRegistry.IsBot(owner.NetId)) return;
+            // No bot test here: a handed-over seat keeps its real net id, and the
+            // host — the only sender of this message — decides which seats it answers
+            // for. Filtering on IsBot would make a client silently drop the rewards
+            // for the handed-over seat while the host granted them, i.e. desync.
+            if (owner is null) return;
             if (_manager.EventSynchronizer.GetEventForPlayer(owner) is not { } model) return;
             var revealed = (message.Items ?? [])
                 .Select(item => CrystalSphereItem.FromSerializable(item, owner)).ToList();
@@ -218,7 +232,11 @@ internal static class CrystalSphereSync
         try
         {
             if (OwnerField?.GetValue(game) is not Player owner) return;
-            if (BotRegistry.IsBot(owner.NetId)) return;
+            // Skip every seat we drive, not only synthetic bots. PlayForBot replays
+            // the script through game.CellClicked, which lands here as a Postfix —
+            // and EffectiveScript hands back the Script list itself, so recording our
+            // own replay would append to the collection being enumerated.
+            if (AutoPilot.Drives(owner.NetId)) return;
             Script.Add((game.CrystalSphereTool, cell.X, cell.Y));
             // The last click is what ends the host's board; marking it here keeps
             // the wait below to a plain state read instead of a hook on an async

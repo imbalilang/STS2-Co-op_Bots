@@ -172,9 +172,15 @@ internal static class CombatPredictedCardExtensions
     public static IReadOnlySet<CardKeyword> GetKeywords(this PredictedCard card, CombatPredictionState state)
     {
         var keywords = card.Preview.LocalKeywords.ToHashSet();
-        Hook.ModifyKeywordsInCombat(state.CombatState, card.Preview, keywords);
+        if (!HasNoGlobalKeywordModifiers(state))
+            Hook.ModifyKeywordsInCombat(state.CombatState, card.Preview, keywords);
         return keywords;
     }
+
+    private static bool HasNoGlobalKeywordModifiers(CombatPredictionState state)
+        => state.CombatState is ICombatPredictionHookListenerSource source
+            && source.MirroredHookListeners is MirroredHookListenerSnapshot listeners
+            && !listeners.HasAny(MirroredHookMask.TryModifyKeywordsInCombat);
 
     /// <summary>
     /// 热路径只查询一个关键字时复用线程本地集合，避免 CanPlay、回合末和伤害 Hook
@@ -185,6 +191,12 @@ internal static class CombatPredictedCardExtensions
         CombatPredictionState state,
         CardKeyword keyword)
     {
+        // Capture/dispatch metadata already guards base and native Hook patches, external
+        // model types, and opaque attached listeners. With no participant, the original
+        // hook can only call AbstractModel's no-op, so the local set is the complete answer.
+        if (HasNoGlobalKeywordModifiers(state))
+            return card.Preview.LocalKeywords.Contains(keyword);
+
         bool ownsScratch = !_keywordScratchInUse;
         HashSet<CardKeyword> keywords;
         if (ownsScratch)

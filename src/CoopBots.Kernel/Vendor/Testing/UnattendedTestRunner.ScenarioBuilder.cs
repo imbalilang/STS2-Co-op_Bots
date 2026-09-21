@@ -1,0 +1,919 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using MegaCrit.Sts2.Core.Assets;
+using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Context;
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
+using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Entities.Rngs;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
+using MegaCrit.Sts2.Core.Map;
+using MegaCrit.Sts2.Core.Modding;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Powers;
+using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.Orbs;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
+using MegaCrit.Sts2.Core.Rooms;
+using MegaCrit.Sts2.Core.Random;
+using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.TestSupport;
+using CoopBots.Kernel.Vendor.Api;
+
+namespace CoopBots.Kernel.Vendor;
+
+internal sealed partial class UnattendedTestRunner
+{
+    private sealed record ScenarioContext(
+        CharacterModel Character,
+        EncounterModel Encounter,
+        CombatState CombatState,
+        Player Player,
+        int StartedTurn,
+        IReadOnlyList<UnattendedOrbCheck> OrbChecks,
+        IReadOnlyList<UnattendedPotionCheck> PotionChecks,
+        IReadOnlyList<UnattendedMonsterMoveCheck> MonsterMoveChecks);
+
+    private sealed partial class ScenarioBuilder(UnattendedTestRunner runner)
+    {
+        public CombatState? CombatState { get; private set; }
+        public int StartedTurn { get; private set; }
+
+        public async Task<ScenarioContext> BuildAsync()
+        {
+            if (!string.IsNullOrWhiteSpace(runner._request.GeneratedScenarioPath)
+                && (!string.IsNullOrWhiteSpace(runner._request.CheckpointArchivePath)
+                    || !string.IsNullOrWhiteSpace(runner._request.RunSnapshotPath)
+                    || !string.IsNullOrWhiteSpace(runner._request.ReplayStatePath)))
+                throw new InvalidDataException("生成场景不能同时恢复问题包或快照。");
+            runner.PrepareCheckpointRequest();
+            runner._executor.PrepareArchiveSettings();
+            if (runner.HasNativeRecording)
+            {
+                ScenarioContext native = await runner.BuildNativeRecordedScenarioAsync();
+                CombatState = native.CombatState;
+                StartedTurn = native.StartedTurn;
+                return native;
+            }
+            UnattendedTestRequest request = runner._request;
+            runner.SetStage("game_startup");
+            await runner._host.GameStartupComplete;
+            runner.RecordCheckpointModDifferencesAfterStartup();
+            runner.ApplyHeadlessFastModeOverride();
+            runner.EnsureWithinDeadline();
+            if (RunManager.Instance.IsInProgress)
+                throw new InvalidOperationException("无人测试要求从无进行中跑局的独立游戏进程启动。");
+
+            PrepareGeneratedScenario();
+            using IDisposable? generatedChoices = BeginGeneratedSetupChoices();
+            request = runner._request;
+            CharacterModel character = ResolveUnique(ModelDb.AllCharacters, request.CharacterId, "角色");
+            // AllEncounters is a curated pool and omits some event encounters.
+            // The registry is authoritative for a caller-selected native model.
+            EncounterModel encounter = ResolveUnique(ModelDb.All.OfType<EncounterModel>(), request.EncounterId, "遭遇");
+            AssertExpectedLoadedMods(request.ExpectedLoadedMods);
+            if (!string.IsNullOrWhiteSpace(request.ShowcaseBundlePath))
+            {
+                runner.SetStage("showcase_bundle_import");
+                CombatShowcaseEnterResult entered =
+                    await CombatShowcaseRuntime.EnterAsync(request.ShowcaseBundlePath);
+                CombatState = CombatManager.Instance.DebugOnlyGetState()
+                    ?? throw new InvalidOperationException("录像包导入后没有战斗状态。");
+                Player importedPlayer = LocalContext.GetMe(CombatState)
+                    ?? throw new InvalidOperationException("录像包导入后没有本地玩家。");
+                EncounterModel importedEncounter = CombatState.Encounter
+                    ?? throw new InvalidOperationException("录像包导入后没有遭遇。");
+                StartedTurn = importedPlayer.PlayerCombatState?.TurnNumber
+                    ?? throw new InvalidOperationException("录像包导入后玩家没有战斗状态。");
+                CombatShowcaseNativeState.VerifyContractForTesting(CombatState);
+                if (!ModelMatches(importedPlayer.Character, entered.CharacterId)
+                    || !ModelMatches(importedEncounter, entered.EncounterId))
+                    throw new InvalidDataException("录像包导入结果与当前战斗身份不一致。");
+                if (TestMode.IsOff)
+                {
+                    CardModel[] modelHand = importedPlayer.PlayerCombatState!.Hand.Cards.ToArray();
+                    CardModel?[] visualHand = (NPlayerHand.Instance
+                            ?? throw new InvalidOperationException("录像包导入后没有手牌节点。"))
+                        .ActiveHolders
+                        .Select(static holder => holder.CardNode?.Model)
+                        .ToArray();
+                    if (!visualHand.SequenceEqual(modelHand))
+                        throw new InvalidDataException("录像包导入后的界面手牌与模型手牌不一致。");
+                    runner._completedChecks.Add(
+                        $"ShowcaseHandVisuals:Models={modelHand.Length}:Holders={visualHand.Length}");
+                    NCombatUi ui = NCombatRoom.Instance?.Ui
+                        ?? throw new InvalidOperationException("录像包导入后没有战斗界面。");
+                    PlayerCombatState pileState = importedPlayer.PlayerCombatState;
+                    (NCombatCardPile Control, int Count)[] pileCounters =
+                    [
+                        (ui.DrawPile, pileState.DrawPile.Cards.Count),
+                        (ui.DiscardPile, pileState.DiscardPile.Cards.Count),
+                        (ui.ExhaustPile, pileState.ExhaustPile.Cards.Count),
+                    ];
+                    foreach ((NCombatCardPile control, int count) in pileCounters)
+                    {
+                        if (control._currentCount != count || control._countLabel.Text != count.ToString())
+                            throw new InvalidDataException("录像包导入后的牌堆显示数量与模型不一致。");
+                    }
+                    runner._completedChecks.Add(
+                        $"ShowcasePileCounters:Draw={pileCounters[0].Count}:" +
+                        $"Discard={pileCounters[1].Count}:Exhaust={pileCounters[2].Count}");
+
+                    NOrbManager orbManager = NCombatRoom.Instance
+                            ?.GetCreatureNode(importedPlayer.Creature)
+                            ?.OrbManager
+                        ?? throw new InvalidOperationException("录像包导入后没有球位界面。");
+                    OrbModel[] modelOrbs = pileState.OrbQueue.Orbs.ToArray();
+                    OrbModel?[] visualOrbs = orbManager._orbs
+                        .Select(static orb => orb.Model)
+                        .ToArray();
+                    NOrb[] containerOrbs = orbManager._orbContainer
+                        .GetChildren()
+                        .OfType<NOrb>()
+                        .ToArray();
+                    if (containerOrbs.Length != orbManager._orbs.Count
+                        || containerOrbs.Any(orb => !orbManager._orbs.Contains(orb)))
+                    {
+                        throw new InvalidDataException("录像包导入后的球位容器残留孤儿节点。");
+                    }
+                    if (visualOrbs.Length != pileState.OrbQueue.Capacity
+                        || !visualOrbs.Take(modelOrbs.Length).SequenceEqual(modelOrbs)
+                        || visualOrbs.Skip(modelOrbs.Length).Any(static orb => orb != null))
+                    {
+                        throw new InvalidDataException("录像包导入后的球位界面与模型不一致。");
+                    }
+                    runner._completedChecks.Add(
+                        $"ShowcaseOrbVisuals:Capacity={visualOrbs.Length}:Models={modelOrbs.Length}");
+                }
+                runner._completedChecks.Add(
+                    $"ShowcaseBundleImport:EndTurn={entered.CombatEndedTurn}:" +
+                    $"LocalSearches={entered.LocalSearchStarts}:CanonicalNativeState");
+                return new ScenarioContext(
+                    importedPlayer.Character,
+                    importedEncounter,
+                    CombatState,
+                    importedPlayer,
+                    StartedTurn,
+                    [],
+                    [],
+                    []);
+            }
+            ModifierModel[] modifiers = request.ModifierIds
+                .Select(id => ResolveUnique(
+                    ModelDb.GoodModifiers.Concat(ModelDb.BadModifiers),
+                    id,
+                    "自定义规则").ToMutable())
+                .ToArray();
+
+            runner.SetStage("start_run");
+            bool loadedRunSnapshot = !string.IsNullOrWhiteSpace(request.RunSnapshotPath);
+            if (request.LoadRunSnapshotDirectly)
+            {
+                RunState restored = await RestoreRunSnapshotDirectlyAsync(request);
+                if (!ModelMatches(restored.Players.Single().Character, request.CharacterId))
+                    throw new InvalidOperationException("完整跑局快照的角色与请求角色不一致。");
+            }
+            else if (loadedRunSnapshot)
+            {
+                SerializableRun savedRun = JsonSerializer.Deserialize(
+                    await File.ReadAllTextAsync(request.RunSnapshotPath!), JsonSerializationUtility.GetTypeInfo<SerializableRun>())!;
+                RunState savedState = RunState.FromSerializable(savedRun);
+                await RunManager.Instance.SetUpSavedSingleplayer(savedState, savedRun);
+                await PreloadManager.LoadRunAssets(savedState.Players.Select(player => player.Character));
+                await PreloadManager.LoadActAssets(savedState.Act);
+                RunManager.Instance.Launch();
+                runner._host.RootSceneContainer.SetCurrentScene(NRun.Create(savedState));
+                await RunManager.Instance.GenerateMap();
+            }
+            else
+                await runner._host.StartNewSingleplayerRun(
+                character,
+                shouldSave: false,
+                ActModel.GetDefaultList(),
+                modifiers,
+                request.Seed,
+                GameMode.Standard,
+                request.Ascension);
+            runner.EnsureWithinDeadline();
+
+            runner.SetStage("inject_run_relics");
+            RunState runState = RunManager.Instance.DebugOnlyGetState()
+                ?? throw new InvalidOperationException("创建跑局后找不到 RunState。");
+            if (!loadedRunSnapshot && request.ActIndexForTest != 0)
+            {
+                if ((uint)request.ActIndexForTest >= (uint)runState.Acts.Count)
+                    throw new InvalidOperationException($"测试幕索引超出范围：{request.ActIndexForTest}。");
+                await RunManager.Instance.SetActInternal(request.ActIndexForTest);
+            }
+            if (request.MarkEncounterAsSecondBossForTest)
+                runState.Act.SetSecondBossEncounter(encounter);
+            if (request.LoadRunSnapshotDirectly)
+                ApplyPreCombatInterveningMapPoints(runState, request.PreCombatInterveningMapPoints);
+            if (request.TargetActFloor is { } targetActFloor)
+                runState.ActFloor = targetActFloor;
+            Player runPlayer = LocalContext.GetMe(runState)
+                ?? throw new InvalidOperationException("创建跑局后找不到本地玩家。");
+            if (request.PreCombatPlayerCurrentHpOverride is { } preCombatPlayerHp)
+            {
+                if (preCombatPlayerHp < 1 || preCombatPlayerHp > runPlayer.Creature.MaxHp)
+                {
+                    throw new InvalidOperationException(
+                        $"战前玩家生命覆盖必须在 1 到 {runPlayer.Creature.MaxHp} 之间，收到 {preCombatPlayerHp}。");
+                }
+                runPlayer.Creature.SetCurrentHpInternal(preCombatPlayerHp);
+                runner._completedChecks.Add($"PreCombatPlayerHp:{preCombatPlayerHp}");
+            }
+            PrepareGeneratedStartingRelics(runPlayer);
+            foreach (UnattendedRelicInjection injection in request.Relics)
+                await InjectRelicAsync(runPlayer, injection);
+            if (request.ClearRunDeck)
+                ClearRunDeck(runState, runPlayer);
+            await PrepareGeneratedAscendersBaneAsync(runState, runPlayer);
+            foreach (UnattendedCardInjection injection in request.RunCards)
+                await InjectRunCardAsync(runState, runPlayer, injection);
+            PrepareGeneratedPotionSlots(runPlayer);
+            if (request.PreserveNativeCombatStateForTest)
+                foreach (UnattendedPotionInjection injection in request.Potions)
+                    InjectPotionForTest(runPlayer, injection.PotionId);
+            CaptureGeneratedLoadout(runState, runPlayer);
+            if (request.VerifyPreCombatForecastApi)
+                await VerifyPreCombatForecastApiAsync(runState, encounter);
+
+            using UnattendedCombatStartReplay? combatStartReplay =
+                await PrepareCombatStartReplayAsync(runState, runPlayer, request);
+            runner.SetStage("enter_encounter");
+            EncounterModel mutableEncounter = encounter.ToMutable();
+            if (request.PreCombatSimulationSeed is { } simulationSeed)
+                ApplyPreCombatSimulationRng(runState, mutableEncounter, simulationSeed);
+            MapPointType targetMapPointType = request.TargetMapPointType != MapPointType.Unassigned
+                ? request.TargetMapPointType
+                : request.TargetRoomType switch
+                {
+                    RoomType.Monster => MapPointType.Monster,
+                    RoomType.Elite => MapPointType.Elite,
+                    RoomType.Boss => MapPointType.Boss,
+                    _ => throw new InvalidOperationException(
+                        $"无人测试仅支持战斗房间，收到 {request.TargetRoomType}。"),
+                };
+            if (request.LoadRunSnapshotDirectly)
+            {
+                if (request.TargetActFloor is not { } directTargetFloor
+                    || request.TargetMapColumn is not { } directTargetColumn)
+                {
+                    throw new InvalidOperationException(
+                        "完整跑局恢复请求需要目标楼层和地图列坐标。");
+                }
+                await RunManager.Instance.EnterMapCoordDebug(
+                    new MapCoord(directTargetColumn, directTargetFloor - 1),
+                    request.TargetRoomType,
+                    targetMapPointType,
+                    mutableEncounter,
+                    showTransition: false);
+            }
+            else
+            {
+                await RunManager.Instance.EnterRoomDebug(
+                    _generatedScenario != null ? request.TargetRoomType : RoomType.Monster,
+                    _generatedScenario != null ? targetMapPointType : MapPointType.Unassigned,
+                    mutableEncounter);
+            }
+
+            if (combatStartReplay != null)
+            {
+                runner.SetStage("restore_legacy_combat_start");
+                while (combatStartReplay.Restoration is not { IsCompleted: true })
+                {
+                    runner.EnsureWithinDeadline();
+                    await runner.NextFrameAsync();
+                }
+                await combatStartReplay.Restoration;
+                while (!combatStartReplay.OpeningVerification.IsCompleted)
+                {
+                    runner.EnsureWithinDeadline();
+                    await runner.NextFrameAsync();
+                }
+                await combatStartReplay.OpeningVerification;
+                runner._completedChecks.Add("ReplayCombatStartStateMatched");
+                if (runner._writer.ReplayVerification != null)
+                    runner._writer.ReplayVerification["comparisonScope"] = "full_combat";
+            }
+            runner.SetStage("wait_player_turn");
+            if (request.VerifyTurnSetupSceneExitCancellation)
+            {
+                CombatState = await runner.WaitForPendingTurnSetupChoiceAsync();
+                Player sceneExitPlayer = LocalContext.GetMe(CombatState)
+                    ?? throw new InvalidOperationException("场景退出测试找不到本地玩家。");
+                StartedTurn = sceneExitPlayer.PlayerCombatState!.TurnNumber;
+                int cancellationCount = NativeChoiceRuntime.SceneExitCancellationCountForTesting;
+                runner.SetStage("turn_setup_scene_exit");
+                await runner._host.ReturnToMainMenu();
+                if (NativeChoiceRuntime.SceneExitCancellationCountForTesting != cancellationCount + 1)
+                    throw new InvalidOperationException("返回主菜单前没有取消仍在等待的回合开始手牌选择。");
+                runner._completedChecks.Add(
+                    $"TurnSetupSceneExitCancellation:Turn={StartedTurn}:Canceled=1");
+                return new ScenarioContext(
+                    character,
+                    encounter,
+                    CombatState,
+                    sceneExitPlayer,
+                    StartedTurn,
+                    [],
+                    [],
+                    []);
+            }
+            CombatState = await runner.WaitForPlayableCombatAsync();
+            Player player = LocalContext.GetMe(CombatState)
+                ?? throw new InvalidOperationException("进入战斗后找不到本地玩家。");
+            StartedTurn = player.PlayerCombatState!.TurnNumber;
+
+            runner.SetStage("inject_state");
+            await RunManager.Instance.ActionExecutor.FinishedExecutingActions();
+            IReadOnlyList<UnattendedOrbCheck> orbChecks = request.OrbChecks;
+            IReadOnlyList<UnattendedPotionCheck> potionChecks = runner.GetPotionChecks();
+            IReadOnlyList<UnattendedMonsterMoveCheck> monsterMoveChecks = runner.GetMonsterMoveChecks();
+            CaptureGeneratedOpening(CombatState, player);
+            if (request.PreserveNativeCombatStateForTest)
+                return new ScenarioContext(character, encounter, CombatState, player, StartedTurn, orbChecks, potionChecks, monsterMoveChecks);
+            CombatReplayRecording.Pending?.MarkIncomplete("test_fixture_state_injection");
+            foreach (string monsterId in request.AdditionalMonsterIds
+                         .Where(static id => !string.IsNullOrWhiteSpace(id))
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                await EnsureMonsterExistsAsync(CombatState, monsterId, null);
+            }
+            if (!string.IsNullOrWhiteSpace(request.ReplayStatePath))
+            {
+                if (combatStartReplay == null)
+                {
+                    await ApplyReplayStateAsync(CombatState, player, request.ReplayStatePath, request.RunSnapshotPath, request.NativeStatePath);
+                    CombatBugReportExporter.ResetOutcomeAtRestoredRoot(CombatState);
+                }
+                StartedTurn = player.PlayerCombatState!.TurnNumber;
+                runner.RecordCheckpointRestored();
+                await runner.NextFrameAsync();
+                return new ScenarioContext(
+                    character,
+                    encounter,
+                    CombatState,
+                    player,
+                    StartedTurn,
+                    orbChecks,
+                    potionChecks,
+                    monsterMoveChecks);
+            }
+            foreach (IGrouping<string, UnattendedMonsterMoveCheck> group in monsterMoveChecks
+                         .Where(static check => !string.IsNullOrWhiteSpace(check.MonsterId))
+                         .GroupBy(static check => check.MonsterId, StringComparer.OrdinalIgnoreCase))
+            {
+                string[] initialMoveIds = group
+                    .Select(static check => check.SpawnInitialMoveId)
+                    .Where(static moveId => !string.IsNullOrWhiteSpace(moveId))
+                    .Distinct(StringComparer.Ordinal)
+                    .Cast<string>()
+                    .ToArray();
+                if (initialMoveIds.Length > 1)
+                    throw new InvalidOperationException($"怪物 {group.Key} 配置了多个出生初始行动。");
+                string? initialMoveId = initialMoveIds.SingleOrDefault();
+                await EnsureMonsterExistsAsync(CombatState, group.Key, initialMoveId);
+                int requiredCount = group.Max(static check => check.MonsterOccurrence) + 1;
+                int existingCount = CombatState.Enemies.Count(candidate =>
+                    candidate.Monster != null && ModelMatches(candidate.Monster, group.Key));
+                while (existingCount < requiredCount)
+                {
+                    await AddMonsterForTestAsync(CombatState, group.Key, initialMoveId);
+                    existingCount++;
+                }
+            }
+            if (request.InitialEnemyMaxHps.Length > 0)
+            {
+                if (request.InitialEnemyMaxHps.Length != CombatState.Enemies.Count)
+                {
+                    throw new InvalidOperationException(
+                        $"逐敌最大生命数量 {request.InitialEnemyMaxHps.Length} 与敌人数 {CombatState.Enemies.Count} 不同。");
+                }
+                for (int enemyIndex = 0; enemyIndex < CombatState.Enemies.Count; enemyIndex++)
+                {
+                    int maxHp = request.InitialEnemyMaxHps[enemyIndex];
+                    if (maxHp <= 0)
+                    {
+                        throw new InvalidOperationException(
+                            $"逐敌最大生命必须为正数：enemyIndex={enemyIndex}，maxHp={maxHp}。");
+                    }
+                    await CreatureCmd.SetMaxHp(CombatState.Enemies[enemyIndex], maxHp);
+                }
+            }
+            if (request.InitialEnemyCurrentHps.Length > 0)
+            {
+                if (request.InitialEnemyCurrentHps.Length != CombatState.Enemies.Count)
+                {
+                    throw new InvalidOperationException(
+                        $"逐敌生命数量 {request.InitialEnemyCurrentHps.Length} 与敌人数 {CombatState.Enemies.Count} 不同。");
+                }
+                for (int enemyIndex = 0; enemyIndex < CombatState.Enemies.Count; enemyIndex++)
+                {
+                    Creature enemy = CombatState.Enemies[enemyIndex];
+                    await CreatureCmd.SetCurrentHp(
+                        enemy,
+                        Math.Clamp(request.InitialEnemyCurrentHps[enemyIndex], 0, enemy.MaxHp));
+                }
+            }
+            else
+            {
+                foreach (Creature enemy in CombatState.Enemies.Where(static enemy => !enemy.IsDead))
+                    await CreatureCmd.SetCurrentHp(enemy, Math.Min(request.EnemyCurrentHp, enemy.MaxHp));
+            }
+            if (request.InitialEnemyBlocks.Length > 0)
+            {
+                if (request.InitialEnemyBlocks.Length != CombatState.Enemies.Count)
+                {
+                    throw new InvalidOperationException(
+                        $"逐敌格挡数量 {request.InitialEnemyBlocks.Length} 与敌人数 {CombatState.Enemies.Count} 不同。");
+                }
+                for (int enemyIndex = 0; enemyIndex < CombatState.Enemies.Count; enemyIndex++)
+                    await SetBlockAsync(CombatState.Enemies[enemyIndex], request.InitialEnemyBlocks[enemyIndex]);
+            }
+            runner.ForceInitialEnemyMoves(CombatState);
+            runner.ForceInitialEnemyStateLogs(CombatState);
+            if (request.InitialPlayerMaxHp is { } initialPlayerMaxHp)
+                await CreatureCmd.SetMaxHp(player.Creature, initialPlayerMaxHp);
+            if (request.InitialPlayerHp is { } initialPlayerHp)
+            {
+                await CreatureCmd.SetCurrentHp(
+                    player.Creature,
+                    Math.Clamp(initialPlayerHp, 1, player.Creature.MaxHp));
+            }
+            if (request.InitialPlayerBlock is { } initialPlayerBlock)
+                await SetBlockAsync(player.Creature, initialPlayerBlock);
+            if (request.InitialPlayerEnergy is { } initialPlayerEnergy)
+                SetEnergy(player, initialPlayerEnergy);
+            if (request.InitialPlayerStars is { } initialPlayerStars)
+                SetStars(player, initialPlayerStars);
+            if (request.InitialRoundNumber is { } initialRoundNumber)
+                CombatState.RoundNumber = initialRoundNumber;
+            if (request.InitialPlayerTurnNumber is { } initialPlayerTurnNumber)
+            {
+                PlayerCombatState playerState = player.PlayerCombatState!;
+                if (initialPlayerTurnNumber < playerState.TurnNumber)
+                {
+                    throw new InvalidOperationException(
+                        $"玩家测试回合号不能从 {playerState.TurnNumber} 回退到 {initialPlayerTurnNumber}。");
+                }
+                while (playerState.TurnNumber < initialPlayerTurnNumber)
+                    playerState.IncrementTurnNumber();
+            }
+
+            if (request.ClearPlayerPiles)
+                await ClearPlayerPilesAsync(player);
+            else if (request.ClearPlayerHand)
+            {
+                await CardCmd.Discard(
+                    new BlockingPlayerChoiceContext(),
+                    player.PlayerCombatState!.Hand.Cards.ToArray());
+                await RunManager.Instance.ActionExecutor.FinishedExecutingActions();
+            }
+            foreach (UnattendedCardInjection injection in request.Cards)
+                await InjectCardAsync(CombatState, player, injection);
+            foreach (UnattendedOrbInjection injection in request.Orbs)
+                await InjectOrbAsync(player, injection);
+            foreach (UnattendedPotionInjection injection in request.Potions)
+                InjectPotionForTest(player, injection.PotionId);
+            foreach (UnattendedRelicInjection injection in request.CombatRelics)
+                await InjectRelicAsync(player, injection);
+            if (request.ClearAllPowers)
+            {
+                foreach (PowerModel power in CombatState.Creatures
+                             .SelectMany(creature => creature.Powers)
+                             .ToArray())
+                {
+                    await PowerCmd.Remove(power);
+                }
+            }
+            foreach (UnattendedPowerInjection injection in request.Powers)
+                await InjectPowerAsync(CombatState, player, injection);
+            await RunManager.Instance.ActionExecutor.FinishedExecutingActions();
+            if (request.ReloadRunRngAfterStateInjection)
+            {
+                if (string.IsNullOrWhiteSpace(request.RunSnapshotPath))
+                    throw new InvalidOperationException("战斗状态注入后回载 RNG 需要跑局快照。");
+                ReloadRunSnapshotRng(runState, player, request.RunSnapshotPath);
+            }
+            StartedTurn = player.PlayerCombatState!.TurnNumber;
+            await runner.NextFrameAsync();
+
+            return new ScenarioContext(
+                character,
+                encounter,
+                CombatState,
+                player,
+                StartedTurn,
+                orbChecks,
+                potionChecks,
+                monsterMoveChecks);
+        }
+
+        private async Task VerifyPreCombatForecastApiAsync(
+            RunState runState,
+            EncounterModel encounter)
+        {
+            runner.SetStage("verify_precombat_api");
+            VerifyPreCombatNormalization();
+            int forecastEntryHp = Math.Max(1, runState.Players.Single().Creature.CurrentHp - 1);
+            string before = PreCombatForecastApi.CaptureLiveStateToken(runState);
+            SolverSettingsData settingsBefore = SolverSettings.Current;
+            try
+            {
+                SolverSettings.ApplyForTesting(settingsBefore with
+                {
+                    AcceptableBattleHpLoss = settingsBefore.AcceptableBattleHpLoss + 1,
+                });
+                if (before == PreCombatForecastApi.CaptureLiveStateToken(runState))
+                    throw new InvalidOperationException("求解设置变化没有使战前缓存令牌失效。");
+            }
+            finally
+            {
+                SolverSettings.ApplyForTesting(settingsBefore);
+            }
+            runner._completedChecks.Add("PreCombatSettingsInvalidateToken");
+            await PreCombatForecastApi.StopWorkerAsync();
+            PreCombatWorkerStatus stopped = PreCombatForecastApi.GetWorkerStatus();
+            if (stopped.IsRunning)
+                throw new InvalidOperationException("显式关闭后战前 worker 仍在运行。");
+            await PreCombatForecastApi.SetWorkerIdleTimeoutAsync(120_000);
+            if (PreCombatForecastApi.GetWorkerStatus().IdleTimeoutMilliseconds != 120_000)
+                throw new InvalidOperationException("战前 worker 未接受 2 分钟保活设置。");
+            await PreCombatForecastApi.SetWorkerIdleTimeoutAsync(600_000);
+            if (PreCombatForecastApi.GetWorkerStatus().IdleTimeoutMilliseconds != 600_000)
+                throw new InvalidOperationException("战前 worker 未接受 10 分钟保活设置。");
+            await PreCombatForecastApi.SetWorkerIdleTimeoutAsync(null);
+            if (PreCombatForecastApi.GetWorkerStatus().IdleTimeoutMilliseconds is not null)
+                throw new InvalidOperationException("战前 worker 未接受一直维持设置。");
+            int startsBefore = PreCombatForecastWorker.WorkerStartCountForTesting;
+            int reusesBefore = PreCombatForecastWorker.WorkerReuseCountForTesting;
+            PreCombatForecastResult result;
+            try
+            {
+                PreCombatWorkerStatus prewarmed = await PreCombatForecastApi.RestartWorkerAsync(
+                    runState,
+                    idleTimeoutMilliseconds: null);
+                if (!prewarmed.IsRunning
+                    || prewarmed.ProcessId is null
+                    || prewarmed.WorkingSetBytes is null
+                    || prewarmed.PrivateMemoryBytes is null
+                    || !prewarmed.AudioMuted
+                    || prewarmed.IdleTimeoutMilliseconds is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"战前 worker 预热状态不完整：{prewarmed}。");
+                }
+                await PreCombatForecastApi.SetWorkerIdleTimeoutAsync(1_800_000);
+                if (PreCombatForecastApi.GetWorkerStatus().IdleTimeoutMilliseconds != 1_800_000)
+                    throw new InvalidOperationException("运行中的战前 worker 未切换到 30 分钟保活设置。");
+                var options = new PreCombatForecastOptions
+                {
+                    SearchBudgetMilliseconds = 3_000,
+                    OverallTimeoutMilliseconds = 45_000,
+                    MaxDegreeOfParallelism = 1,
+                    PlayerCurrentHpOverride = forecastEntryHp,
+                    CancelWorkerWhenCallerCancels = true,
+                    ForceRefresh = true,
+                    WorkerIdleTimeoutMilliseconds = 1_800_000,
+                };
+                int targetActFloor = Math.Max(1, runState.ActFloor + 1);
+                int targetMapColumn = ResolveNextMapColumn(runState);
+                result = await PreCombatForecastApi.ForecastAsync(
+                    runState,
+                    encounter,
+                    targetActFloor,
+                    targetMapColumn,
+                    PreCombatRoomKind.Normal,
+                    PreCombatMapPointKind.Normal,
+                    options: options);
+                if (!result.IsSuccess)
+                {
+                    throw new InvalidOperationException(
+                        $"战前 API 返回 {result.Status}: {result.Error} log={result.DiagnosticLogPath}");
+                }
+
+                PreCombatForecastResult repeated = await PreCombatForecastApi.ForecastAsync(
+                    runState,
+                    encounter,
+                    targetActFloor,
+                    targetMapColumn,
+                    PreCombatRoomKind.Normal,
+                    PreCombatMapPointKind.Normal,
+                    options: options);
+                if (!repeated.IsSuccess)
+                {
+                    throw new InvalidOperationException(
+                        $"战前 API 复用请求返回 {repeated.Status}: {repeated.Error} log={repeated.DiagnosticLogPath}");
+                }
+                if (result.ProjectedHpLoss != repeated.ProjectedHpLoss
+                    || result.FinalHp != repeated.FinalHp
+                    || result.CombatEndedTurn != repeated.CombatEndedTurn
+                    || result.SearchBoundary != repeated.SearchBoundary
+                    || !result.PotionUses.SequenceEqual(repeated.PotionUses))
+                {
+                    throw new InvalidOperationException("相同跑局快照的复用 worker 返回了不同的战前预测结果。");
+                }
+
+                const ulong simulationSeed = 0x5EED_2026_0904UL;
+                Task<PreCombatForecastResult> interrupted = PreCombatForecastApi.ForecastAsync(
+                    runState, encounter, targetActFloor, targetMapColumn,
+                    PreCombatRoomKind.Normal, PreCombatMapPointKind.Normal, options: options);
+                while (!PreCombatForecastApi.GetWorkerStatus().IsBusy && !interrupted.IsCompleted)
+                {
+                    runner.EnsureWithinDeadline();
+                    await runner.NextFrameAsync();
+                }
+                var stopWatch = System.Diagnostics.Stopwatch.StartNew();
+                await PreCombatForecastApi.StopWorkerAsync();
+                PreCombatForecastResult interruptedResult = await interrupted;
+                if (interruptedResult.Status != PreCombatForecastStatus.Cancelled
+                    || PreCombatForecastApi.GetWorkerStatus().IsRunning
+                    || stopWatch.ElapsedMilliseconds > 5_000)
+                    throw new InvalidOperationException("显式停止没有及时取消当前 worker 请求。");
+                runner._completedChecks.Add("PreCombatStopActiveRequest");
+                PreCombatForecastResult simulated = await PreCombatForecastApi.SimulateAsync(
+                    runState,
+                    encounter,
+                    PreCombatRoomKind.Normal,
+                    new PreCombatSimulationOptions
+                    {
+                        SearchBudgetMilliseconds = 3_000,
+                        OverallTimeoutMilliseconds = 45_000,
+                        MaxDegreeOfParallelism = 1,
+                        SampleSeed = simulationSeed,
+                        CloseWorkerAfterRequest = true,
+                        WorkerIdleTimeoutMilliseconds = 1_800_000,
+                    });
+                if (!simulated.IsSuccess)
+                {
+                    throw new InvalidOperationException(
+                        $"纯模拟 API 返回 {simulated.Status}: {simulated.Error} log={simulated.DiagnosticLogPath}");
+                }
+                if (PreCombatForecastApi.GetWorkerStatus().IsRunning)
+                    throw new InvalidOperationException("自动关闭选项没有在模拟样本完成后释放 worker。");
+
+                int workerStarts = PreCombatForecastWorker.WorkerStartCountForTesting - startsBefore;
+                int workerReuses = PreCombatForecastWorker.WorkerReuseCountForTesting - reusesBefore;
+                if (workerStarts != 2 || workerReuses != 3)
+                {
+                    throw new InvalidOperationException(
+                        $"战前 worker 生命周期不符合预期：starts={workerStarts}, reuses={workerReuses}。");
+                }
+                string after = PreCombatForecastApi.CaptureLiveStateToken(runState);
+                if (!before.Equals(after, StringComparison.Ordinal))
+                    throw new InvalidOperationException("战前 API 调用改变了主进程跑局状态或 RNG。");
+                if (result.ProjectedHpLoss is { } hpLoss
+                    && result.FinalHp != Math.Max(0, forecastEntryHp - hpLoss))
+                {
+                    throw new InvalidOperationException(
+                        $"战前 HP 覆盖没有反映在结果中：entry={forecastEntryHp} loss={hpLoss} final={result.FinalHp}。");
+                }
+                runner._completedChecks.Add(
+                    $"PreCombatForecastApi:EntryHp={forecastEntryHp}:HpLoss={result.ProjectedHpLoss}:Potions={result.PotionUses.Count}:" +
+                    $"Boundary={result.SearchBoundary}:LiveStateUnchanged=1:WorkerStarts={workerStarts}:" +
+                    $"WorkerReuses={workerReuses}:PrewarmMemoryVisible=1:AudioMuted=1:" +
+                    $"KeepAliveModes=2m,10m,30m,Indefinite:SimulationSeed={simulationSeed}:AutoClose=1");
+            }
+            finally
+            {
+                await PreCombatForecastApi.StopWorkerAsync();
+            }
+        }
+
+        private void VerifyPreCombatNormalization()
+        {
+            JsonObject emptyVariables = new()
+            {
+                ["variables"] = new JsonObject(),
+            };
+            JsonObject populatedVariables = new()
+            {
+                ["variables"] = new JsonObject
+                {
+                    ["kept"] = "value",
+                },
+            };
+            JsonObject root = new()
+            {
+                ["map_point_history"] = new JsonArray
+                {
+                    new JsonArray
+                    {
+                        new JsonObject
+                        {
+                            ["player_stats"] = new JsonArray
+                            {
+                                new JsonObject
+                                {
+                                    ["event_choices"] = new JsonArray
+                                    {
+                                        emptyVariables,
+                                        populatedVariables,
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            };
+
+            PreCombatRunSerialization.NormalizeRoot(root);
+            if (emptyVariables.ContainsKey("variables")
+                || populatedVariables["variables"]?["kept"]?.GetValue<string>() != "value")
+            {
+                throw new InvalidOperationException(
+                    "战前快照规范化未正确删除空事件变量，或误删了非空事件变量。");
+            }
+            runner._completedChecks.Add("PreCombatSnapshotNormalization:EmptyEventVariablesRemoved:PopulatedRetained");
+            VerifyPreCombatModSourcePinning();
+        }
+
+        private void VerifyPreCombatModSourcePinning()
+        {
+            if (!OperatingSystem.IsWindows())
+                return;
+
+            string root = Path.Combine(
+                Path.GetTempPath(),
+                $"combatsolver-precombat-pin-test-{Guid.NewGuid():N}");
+            string sourceRoot = Path.Combine(root, "source");
+            string pinnedRoot = Path.Combine(root, "pinned");
+            string sourceFile = Path.Combine(sourceRoot, "ExampleMod.dll");
+            string pinnedFile = Path.Combine(pinnedRoot, "ExampleMod.dll");
+            try
+            {
+                Directory.CreateDirectory(sourceRoot);
+                File.WriteAllText(sourceFile, "loaded-version");
+                PreCombatForecastWorker.MirrorDirectoryForTesting(sourceRoot, pinnedRoot);
+                File.WriteAllText(sourceFile, "in-place-update");
+                if (File.ReadAllText(pinnedFile) != "loaded-version")
+                    throw new InvalidOperationException("源文件原地更新修改了 Mod 快照。");
+                File.WriteAllText(pinnedFile, "worker-write");
+                if (File.ReadAllText(sourceFile) != "in-place-update")
+                    throw new InvalidOperationException("worker 写入修改了主进程 Mod 文件。");
+                File.WriteAllText(pinnedFile, "loaded-version");
+                runner._completedChecks.Add("PreCombatModFiles:InPlaceUpdateAndWorkerWriteIsolated");
+
+                string replacement = Path.Combine(sourceRoot, "replacement.tmp");
+                File.WriteAllText(replacement, "workshop-update");
+                File.Move(replacement, sourceFile, overwrite: true);
+
+                if (File.ReadAllText(sourceFile) != "workshop-update"
+                    || File.ReadAllText(pinnedFile) != "loaded-version")
+                {
+                    throw new InvalidOperationException(
+                        "启动期 Mod 文件快照未能隔离运行中的工坊原子更新。");
+                }
+                runner._completedChecks.Add(
+                    "PreCombatModSourcePinning:AtomicWorkshopUpdatePreservesLoadedFiles");
+            }
+            finally
+            {
+                if (Directory.Exists(root))
+                    Directory.Delete(root, recursive: true);
+            }
+        }
+
+        private static int ResolveNextMapColumn(RunState runState)
+        {
+            int targetRow = Math.Max(0, runState.ActFloor);
+            return runState.CurrentMapPoint?.Children
+                       .OrderBy(static point => point.coord.col)
+                       .FirstOrDefault()?.coord.col
+                   ?? runState.Map.GetPointsInRow(targetRow)
+                       .OrderBy(static point => point.coord.col)
+                       .FirstOrDefault()?.coord.col
+                   ?? runState.Map.BossMapPoint.coord.col;
+        }
+
+        private void ApplyPreCombatSimulationRng(
+            RunState runState,
+            EncounterModel encounter,
+            ulong sampleSeed)
+        {
+            RunRngType[] combatStreams =
+            [
+                RunRngType.Shuffle,
+                RunRngType.CombatCardGeneration,
+                RunRngType.CombatPotionGeneration,
+                RunRngType.CombatCardSelection,
+                RunRngType.CombatEnergyCosts,
+                RunRngType.CombatTargets,
+                RunRngType.MonsterAi,
+                RunRngType.Niche,
+                RunRngType.CombatOrbs,
+            ];
+            ulong state = sampleSeed;
+            foreach (RunRngType stream in combatStreams)
+                runState.Rng.MockRng(stream, NextSimulationSeed(ref state));
+            encounter._rng = new Rng(NextSimulationSeed(ref state));
+            runner._completedChecks.Add($"PreCombatSimulationRng:{sampleSeed}");
+        }
+
+        private static ulong NextSimulationSeed(ref ulong state)
+        {
+            state += 0x9E3779B97F4A7C15UL;
+            ulong value = state;
+            value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9UL;
+            value = (value ^ (value >> 27)) * 0x94D049BB133111EBUL;
+            return value ^ (value >> 31);
+        }
+
+        private void ApplyPreCombatInterveningMapPoints(
+            RunState runState,
+            IReadOnlyList<UnattendedPreCombatMapStep> steps)
+        {
+            int previousRow = runState.CurrentMapCoord?.row ?? runState.ActFloor - 1;
+            foreach (UnattendedPreCombatMapStep step in steps)
+            {
+                if (step.Coordinate.row != previousRow + 1)
+                {
+                    throw new InvalidOperationException(
+                        $"战前中间地图点不连续：previousRow={previousRow} next={step.Coordinate}。");
+                }
+                if (runState.Map.GetPoint(step.Coordinate)?.PointType != step.MapPointType)
+                    throw new InvalidOperationException($"战前中间地图点与恢复地图不一致：{step.Coordinate}。");
+                if (step.RoomType is RoomType.Monster or RoomType.Elite or RoomType.Boss or RoomType.Event)
+                    throw new InvalidOperationException($"不能跳过会改变战斗序列的中间房间：{step.RoomType}。");
+
+                runState.AddVisitedMapCoord(step.Coordinate);
+                runState.ActFloor = step.Coordinate.row + 1;
+                runState.AppendToMapPointHistory(step.MapPointType, step.RoomType, null);
+                previousRow = step.Coordinate.row;
+            }
+            if (steps.Count > 0)
+                runner._completedChecks.Add($"PreCombatInterveningMapPoints:{steps.Count}");
+        }
+
+        private async Task<RunState> RestoreRunSnapshotDirectlyAsync(UnattendedTestRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(request.RunSnapshotPath))
+                throw new InvalidOperationException("完整跑局恢复请求缺少 RunSnapshotPath。");
+            if (!File.Exists(request.RunSnapshotPath))
+                throw new FileNotFoundException("找不到完整跑局快照。", request.RunSnapshotPath);
+            if (request.TargetActFloor is not { } targetFloor || targetFloor < 1)
+                throw new InvalidOperationException("完整跑局恢复请求需要正数 TargetActFloor。");
+
+            runner.SetStage("restore_run_snapshot");
+            byte[] sourceBytes = await File.ReadAllBytesAsync(request.RunSnapshotPath);
+            SerializableRun save = JsonSerializer.Deserialize(
+                sourceBytes,
+                JsonSerializationUtility.GetTypeInfo<SerializableRun>())
+                ?? throw new InvalidDataException("完整跑局快照为空。");
+            if (save.CurrentActIndex != request.ActIndexForTest)
+            {
+                throw new InvalidOperationException(
+                    $"快照幕索引 {save.CurrentActIndex} 与请求 {request.ActIndexForTest} 不一致。");
+            }
+
+            RunState restored = RunState.FromSerializable(save);
+            await RunManager.Instance.SetUpSavedSingleplayer(restored, save);
+            await PreloadManager.LoadRunAssets(restored.Players.Select(static player => player.Character));
+            await PreloadManager.LoadActAssets(restored.Act);
+            RunManager.Instance.Launch();
+            runner._host.RootSceneContainer.SetCurrentScene(NRun.Create(restored));
+            await RunManager.Instance.GenerateMap();
+            runner.EnsureWithinDeadline();
+
+            byte[] restoredBytes = PreCombatRunSerialization.SerializeNormalized(
+                RunManager.Instance.ToSave(null));
+            if (!SHA256.HashData(sourceBytes).SequenceEqual(SHA256.HashData(restoredBytes)))
+            {
+                string restoredPath = Path.Combine(
+                    Path.GetDirectoryName(request.RunSnapshotPath)!,
+                    "run.restored.json");
+                await File.WriteAllBytesAsync(restoredPath, restoredBytes);
+                throw new InvalidOperationException(
+                    $"完整跑局恢复或地图加载改变了快照状态；为保护 RNG，已拒绝预测。restored={restoredPath}");
+            }
+            runner._completedChecks.Add("DirectRunSnapshot:ExactStateRestored");
+            return restored;
+        }
+
+        private static void AssertExpectedLoadedMods(IReadOnlyList<string> expected)
+        {
+            if (expected.Count == 0)
+                return;
+            string[] actual = ModManager.GetLoadedMods()
+                .Where(static mod => mod.manifest?.id != null)
+                .Select(static mod => $"{mod.manifest!.id}@{mod.manifest.version}")
+                .OrderBy(static value => value, StringComparer.Ordinal)
+                .ToArray();
+            string[] orderedExpected = expected.OrderBy(static value => value, StringComparer.Ordinal).ToArray();
+            if (!actual.SequenceEqual(orderedExpected, StringComparer.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"隔离进程 Mod 集合不一致。expected=[{string.Join(",", orderedExpected)}] " +
+                    $"actual=[{string.Join(",", actual)}]");
+            }
+        }
+    }
+}

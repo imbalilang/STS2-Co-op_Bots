@@ -176,7 +176,10 @@ public static class BotBrain
         // Every candidate is compared against the deck as it stands, so skipping
         // is a real candidate rather than a fallback: a card that takes more
         // draws from the deck than it contributes is worth less than nothing.
+        // Research capture is default-off and must not change the scorer call.
+        var pending = BuildDecisionCapture.CapturePreState(player, cards);
         var chosen = Building.BuildValue.BestReward(player, cards, allowSkip: true);
+        BuildDecisionCapture.CaptureOutcome(pending, chosen);
         BuildTrace.LogReward(player, cards, chosen, skip: chosen < 0);
         return chosen;
     }

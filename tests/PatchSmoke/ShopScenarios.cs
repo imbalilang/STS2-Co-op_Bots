@@ -174,6 +174,25 @@ internal static class ShopScenarios
             "Shared Weak and multiplayer card reward relics must not default to zero.");
         Console.WriteLine("PASS: real shop card/potion/relic/removal purchases, independent peer replay, owner-only gold, stale-state/replay rejection, full slots, removal inflation, membership repricing and team relic value.");
 
+        // WHO IS ALLOWED TO SHOP. This is the predicate the driver picks its branch with,
+        // and it used to be spelled `NetService.Type == NetGameType.Host`. Singleplayer is
+        // not Host, so the driver took its CLIENT path there: it never ran the purchase
+        // loop, no seat ever reached `done`, `Finished` stayed false, and
+        // BotRoomProceedDriver refused to press the shop's continue forever. That is the
+        // whole floor-4 deadlock of the 2026-09-20 unattended round, with nothing in the
+        // log but the periodic `where` line. Singleplayer IS the submitting peer — the
+        // same rule the game uses to decide who may begin a run (LoadRunLobby.cs:368:
+        // `Type == Host || Type == Singleplayer`).
+        // CHECKED (R2): making Accepts() accept Host only turns this red with
+        //   Shop regression: singleplayer must count as the submitting peer; ...
+        Check(RunAuthority.Accepts(NetGameType.Singleplayer),
+            "singleplayer must count as the submitting peer; it is the mode the unattended live run uses.");
+        Check(RunAuthority.Accepts(NetGameType.Host), "the host must count as the submitting peer.");
+        Check(!RunAuthority.Accepts(NetGameType.Client), "a client must never submit the run's actions.");
+        Check(!RunAuthority.Accepts(NetGameType.None) && !RunAuthority.Accepts(NetGameType.Replay),
+            "neither an unstarted run nor a replay may be driven as the submitting peer.");
+        Console.WriteLine("PASS: the shop's submitting-peer decision accepts Host and Singleplayer and nothing else.");
+
         // Gold that cannot be spent is worth nothing, so the last act buys a
         // break-even item it would have saved past earlier in the run. The
         // reviewed party reached the act-3 boss holding 646 gold it never used.

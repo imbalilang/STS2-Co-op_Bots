@@ -44,6 +44,19 @@ internal static class KernelRoundScenarios
         Check(choices.Length >= 2 && choices.All(c => c.Boundary.Length == 0),
             "Headbutt must enumerate settled retrieval alternatives: " + string.Join(',', choices.Select(c => c.Boundary)));
         Check(choices.Select(c => c.Choices.Single().Cards.Single().Id).Distinct().Count() == 2, "Headbutt alternatives lost identity.");
+        // Regression: CardBranches seeds its queue with the EMPTY vector, so the branch
+        // that used the default choice index carries [] — not null. Replay used to treat
+        // [] as "no vector", which disabled the choice cursor, made ManualPlay return
+        // false and failed the step with `pending-choice`. One SURVIVOR in a path was
+        // therefore enough to empty ActionStates for an entire 104-action route.
+        Check(choices[0].ChoiceOrdinals is { Count: 0 },
+            "the default-index branch must carry an empty (not null) ordinals vector, got "
+            + (choices[0].ChoiceOrdinals is null ? "null" : choices[0].ChoiceOrdinals.Count.ToString()));
+        var replayAction = new KernelTeamSearch.Action(players[0], headbutt, enemy,
+            Choices: choices[0].Choices, ChoiceOrdinals: choices[0].ChoiceOrdinals);
+        var replay = KernelSession.Capture(combat).Fork();
+        Check(replay.ReplayPlanned(replayAction, 2, out var replayReason),
+            $"An EMPTY choice vector must still drive the cursor, got {replayReason}.");
         foreach (var branch in choices)
         {
             var choice = branch.Choices.Single();
@@ -151,15 +164,80 @@ internal static class KernelRoundScenarios
             "A complete nonlethal round must not displace an immediate lethal.");
         Console.WriteLine("PASS: P1-1 completed-round search preserves immediate lethal over premature ending.");
 
+        // The simulation must pay the SAME gold the live game pays. Live gold goes through
+        // PlayerCmd.GainGold, which BotGoldCheatPatch triples for a Cheated bot; the
+        // simulator pays through its own ledger and never sees that command, so it reads
+        // this registered rule instead. A Cheated seat that prices the untripled amount
+        // drifts on `field=gold` the moment a gold-gain card (e.g. HandOfGreed) resolves.
+        var savedMultiplier = CoopBots.Kernel.Vendor.SimulatedGoldGain.MultiplierResolver;
+        try
+        {
+            CoopBots.Kernel.Vendor.SimulatedGoldGain.MultiplierResolver = static netId => netId == 42UL ? 3 : 1;
+            Check(CoopBots.Kernel.Vendor.SimulatedGoldGain.MultiplierFor(42UL) == 3
+                && CoopBots.Kernel.Vendor.SimulatedGoldGain.MultiplierFor(43UL) == 1,
+                "the registered gold multiplier must be resolved per seat.");
+        }
+        finally { CoopBots.Kernel.Vendor.SimulatedGoldGain.MultiplierResolver = savedMultiplier; }
+        Check(CoopBots.Kernel.Vendor.SimulatedGoldGain.MultiplierFor(42UL) == 1,
+            "the gold multiplier must fall back to 1x once the registration is removed.");
+        Console.WriteLine("PASS: the simulator's gold payout follows the registered per-seat multiplier.");
+
+        // A plan names a card by IDENTITY, not by instance. That only works if the identity
+        // is stable across copies — two Shivs are distinct CardModel objects but must share
+        // one state key. Instance matching (Hand.Cards.Contains / PredictedCard.References)
+        // is reference equality, so it matched nothing for generated cards and refused every
+        // route through one (observed: `(SHIV): unplayable` on four consecutive fights).
+        var shivA = lethal.Combat.CreateCard<Shiv>(lethal.Party[0]);
+        var shivB = lethal.Combat.CreateCard<Shiv>(lethal.Party[0]);
+        var keyA = CoopBots.Kernel.Vendor.CardChoiceSupport.ChoiceCardKey(shivA);
+        var keyB = CoopBots.Kernel.Vendor.CardChoiceSupport.ChoiceCardKey(shivB);
+        Check(!ReferenceEquals(shivA, shivB) && keyA == keyB,
+            "two copies of a generated card must be distinct objects sharing one state key.");
+        Console.WriteLine("PASS: a card's plan identity is stable across instances, not per object.");
+
+        // Same board and evaluator as above; only StopOnFirstTerminal differs. The
+        // extension ladder sets it so a found ending is USED instead of being ranked
+        // against endings the search has not found yet — without it every extension ran
+        // to `time-budget` and burned its whole minute after already holding a route.
+        var earlyRoot = KernelSession.Capture(lethal.Combat);
+        using var early = new KernelTeamSearch(earlyRoot, lethal.Party,
+            s => (s.HasWon ? 10000 : 0) - s.Hp(lethal.Enemy) * 10 + lethal.Party.Sum(p => s.Hp(p.Creature)),
+            new(Depth: 6, Width: 12, MaxNodes: 200, IncludeEndTurns: true, StopOnFirstTerminal: true));
+        while (!early.Advance(TimeSpan.FromMilliseconds(2), () => true)) { }
+        Check(early.HasRoute && early.CompletedResult!.StopReason == "terminal-found",
+            $"StopOnFirstTerminal must end the search on the first line that ends the fight, got "
+            + $"stop={early.CompletedResult!.StopReason} route={early.HasRoute} "
+            + $"nodes={early.CompletedResult.ExpandedNodes} (ranked run used {search.CompletedResult!.ExpandedNodes}).");
+        Console.WriteLine($"PASS: an extension attempt stops on the first ending "
+            + $"(nodes={early.CompletedResult.ExpandedNodes} vs {search.CompletedResult.ExpandedNodes} ranked).");
+
         void ChoiceCard<T>(Action<CombatState, Player> setup, int minBranches) where T : CardModel
         {
             var e = Encounter<SludgeSpinner>("RAGE_MOVE");
             var p = e.Party[0];
             var card = e.Combat.CreateCard<T>(p); p.PlayerCombatState!.Hand.AddInternal(card);
             setup(e.Combat, p);
-            var alternatives = KernelSession.Capture(e.Combat).CardBranches(card, p.Creature).ToArray();
+            // Derive the target from the card's own target type rather than assuming the
+            // caster's creature. A Self card is played with NO target (the live game
+            // logs a blank `targetid:` for Defend/Inflame/Hologram alike), so passing
+            // p.Creature made the engine reject every such play as "invalid-target".
+            var session = KernelSession.Capture(e.Combat);
+            var alternatives = session.CardBranches(card, session.Targets(card).FirstOrDefault()).ToArray();
             Check(alternatives.Length >= minBranches && alternatives.All(a => a.Boundary == "" && a.Choices.Count > 0),
                 typeof(T).Name + " choices: " + string.Join(',', alternatives.Select(a => a.Boundary)));
+            // Every card that resolves through a choice vector must also REPLAY through it.
+            // This is the general form of the SURVIVOR bug: an empty vector meant "use the
+            // default index" during the search but "no choice at all" during replay, which
+            // failed the step with `pending-choice` and emptied the sentinel. Checking it
+            // for every ChoiceCard case keeps Discard/Exhaust/Upgrade/Transform/Duplicate
+            // covered, not just the one card that happened to hit the empty vector first.
+            var firstBranch = alternatives[0];
+            var replayTarget = session.Targets(card).FirstOrDefault();
+            var replayAction = new KernelTeamSearch.Action(p, card, replayTarget,
+                Choices: firstBranch.Choices, ChoiceOrdinals: firstBranch.ChoiceOrdinals);
+            var replay = session.Fork();
+            Check(replay.ReplayPlanned(replayAction, 2, out var replayReason),
+                $"{typeof(T).Name} must replay through its own choice vector, got {replayReason}.");
         }
         ChoiceCard<Hologram>((s, p) =>
         {

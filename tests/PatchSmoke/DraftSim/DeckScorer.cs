@@ -26,11 +26,13 @@ internal sealed record DeckScore(
     double DeadDrawRate,
     double EnergyWaste,
     double RampRatio,
+    double PeakDamage,
+    double PeakTurn,
     int Size,
     int Curses,
     int Upgrades)
 {
-    internal static DeckScore Empty(int turns) => new(0, 0, 0, 0, 0, 0, 0, 0, turns, 0, 0, 0, 1, 1, 1, 0, 0, 0);
+    internal static DeckScore Empty(int turns) => new(0, 0, 0, 0, 0, 0, 0, 0, turns, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0);
 }
 
 /// <summary>
@@ -70,6 +72,7 @@ internal static class DeckScorer
 
         var shuffles = Math.Max(1, config.ScoreShuffles);
         double damage = 0, block = 0, waste = 0, dead = 0, drawn = 0, ramp = 0, killTurns = 0;
+        double peakDamage = 0, peakTurn = 0;
         var kills = 0;
         var survived = 0;
         var perShuffleDamage = new List<double>(shuffles);
@@ -83,6 +86,8 @@ internal static class DeckScorer
             dead += outcome.DeadDraws;
             drawn += outcome.Drawn;
             ramp += outcome.RampRatio;
+            peakDamage += outcome.PeakDamage;
+            peakTurn += outcome.PeakTurn;
             perShuffleDamage.Add(outcome.Damage);
             if (!outcome.Died) survived++;
             if (outcome.KillTurn > 0) { kills++; killTurns += outcome.KillTurn; }
@@ -117,6 +122,23 @@ internal static class DeckScorer
         var consistency = Consistency(perShuffleDamage);
 
         var weights = config.Weights;
+        // Viability first, weighting second.
+        //
+        // The weights rank decks that can win; they were measured on real finished
+        // decks, every one of which killed its boss. They say nothing about a deck
+        // that cannot, and a weighted average cannot express "this deck does not
+        // win at all" — which is why a sweep of BuildValue.BlockWeight ran power up
+        // to 48 while the kill rate collapsed from 30% to 12%: each point of block
+        // bought defence weight, and nothing anywhere charged for the damage that
+        // was no longer there to close the fight.
+        //
+        // The bar is half of par, not par. Par is the *median* of winning decks, so
+        // gating at par discounts half of them — measured, that took the community
+        // AUC from 0.52 to 0.45, i.e. the score started ranking winners below
+        // losers. A gate has to be inert across the range real decks occupy and
+        // bite only below it, and half of what a winning deck produces is the point
+        // where a deck is no longer racing the boss at all.
+        var viability = Math.Min(1, meanDamage / Math.Max(0.1, reference.ParDamagePerTurn * 0.5));
         // A deck that dies is not paid. Without this the survival model would only
         // shorten the fight, and a deck that dies on turn four with a big opening
         // would still read as a high-damage deck.
@@ -124,7 +146,7 @@ internal static class DeckScorer
             + weights.Defence * (defence / 2 * 100)
             + weights.Upgrades * (upgrades / 2 * 100)
             + weights.Efficiency * (efficiency / 2 * 100)
-            + weights.Consistency * (consistency * 100)) / Math.Max(1, weights.Total) * survival;
+            + weights.Consistency * (consistency * 100)) / Math.Max(1, weights.Total) * survival * viability;
 
         return new DeckScore(
             Power: power,
@@ -145,6 +167,8 @@ internal static class DeckScorer
             DeadDrawRate: drawn <= 0 ? 0 : dead / drawn,
             EnergyWaste: wasted,
             RampRatio: ramp / shuffles,
+            PeakDamage: peakDamage / shuffles,
+            PeakTurn: peakTurn / shuffles,
             Size: deck.Count,
             Curses: deck.Count(card => card.Type == CardType.Curse),
             Upgrades: upgradeCount);
@@ -189,7 +213,7 @@ internal static class DeckScorer
 
     private sealed record Outcome(
         double Damage, double Block, double EnergyWaste, double DeadDraws, double Drawn, double RampRatio,
-        int KillTurn, bool Died);
+        double PeakDamage, double PeakTurn, int KillTurn, bool Died);
 
     /// <summary>One full fight: shuffle, then <c>ScoreTurns</c> turns of play.</summary>
     private static Outcome PlayOut(IReadOnlyList<CardModel> deck, ReferenceFight reference, SimConfig config, ulong seed, int shuffle)
@@ -305,7 +329,16 @@ internal static class DeckScorer
             }
         }
 
-        return new Outcome(damage, block, energyWaste, deadDraws, drawn, RampRatio(perTurn), killTurn, died);
+        // Burst is reported, not scored: how hard the deck's best turn hits, and
+        // when. A deck whose peak arrives on turn nine is a different deck from one
+        // that peaks on turn two even when their averages match, and the average is
+        // all the score has ever seen. Turns after the fight ended stay zero, so the
+        // peak is always inside the part of the fight that actually happened.
+        var peakTurn = 0;
+        for (var turn = 1; turn < perTurn.Length; turn++)
+            if (perTurn[turn] > perTurn[peakTurn]) peakTurn = turn;
+        return new Outcome(damage, block, energyWaste, deadDraws, drawn, RampRatio(perTurn),
+            perTurn[peakTurn], peakTurn + 1, killTurn, died);
     }
 
     /// <summary>

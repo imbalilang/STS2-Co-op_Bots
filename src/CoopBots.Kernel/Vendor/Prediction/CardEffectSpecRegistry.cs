@@ -1,4 +1,4 @@
-using MegaCrit.Sts2.Core.Entities.Creatures;
+﻿using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Powers;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
@@ -37,6 +37,22 @@ internal static class CardEffectSpecRegistry
         [typeof(Blur)] = [Owner<BlurPower>("Blur")],
         [typeof(ChargeBattery)] = [Owner<EnergyNextTurnPower>(card => card.DynamicVars.Energy.IntValue)],
         [typeof(Colossus)] = [Owner<ColossusPower>("Colossus")],
+        // CoopBots multiplayer port. CONCOCT is multiplayer-only (AnyAlly): it gives an ally
+        // "your powered attacks apply N Poison". ConcoctPower's own TRIGGER was already
+        // mirrored (AfterDamageGivenMirrors), but the card's OnPlay was not, so the power was
+        // never applied in the simulation and everything downstream diverged. Measured live
+        // 2026-09-20 (CUBEX_CONSTRUCT_NORMAL): `risk_first=CONCOCT.OnPlay:MethodNotMirrored`,
+        // a logged hand drift (live hand 6 cards vs the plan's 5, the extra being a generated
+        // AFTERIMAGE), and the turn-boundary check then correctly refused a 90-action route.
+        [typeof(Concoct)] = [Target<ConcoctPower>("ConcoctPower")],
+        // CoopBots multiplayer port. BLAZE is the same shape as CONCOCT — Skill, AnyAlly, one
+        // declared PowerVar — so it gets the same treatment: grant the declared power to the
+        // chosen ally. It used to be SKIPPED as an unmirrored ally buff, and the live A10 4-bot
+        // round measured what that costs (2026-09-20, CEREMONIAL_BEAST_BOSS):
+        //   boundaries=BLAZE:prediction-risk:{SourceId=BLAZE, Method=OnPlay, Reason=MethodNotMirrored}x1272
+        // — the single most frequent boundary in the fight, i.e. a card the bot tried to play over
+        // and over and could not. With Blaze modelled it is a real +5 Strength to a teammate.
+        [typeof(Blaze)] = [Target<StrengthPower>("StrengthPower")],
         [typeof(CrushUnder)] = [AllEnemies<CrushUnderPower>("StrengthLoss")],
         [typeof(Debilitate)] = [Target<DebilitatePower>("DebilitatePower")],
         [typeof(Defy)] = [Target<WeakPower>(card => card.DynamicVars.Weak.IntValue)],
@@ -56,7 +72,6 @@ internal static class CardEffectSpecRegistry
         [typeof(LightningRod)] = [Owner<LightningRodPower>("LightningRodPower")],
         [typeof(Mangle)] = [Target<ManglePower>("StrengthLoss")],
         [typeof(NegativePulse)] = [AllEnemies<DoomPower>(card => card.DynamicVars.Doom.IntValue)],
-        [typeof(Neurosurge)] = [Owner<NeurosurgePower>("NeurosurgePower")],
         [typeof(PanicButton)] = [Owner<NoBlockPower>("Turns")],
         [typeof(Patter)] = [Owner<VigorPower>("VigorPower")],
         [typeof(Pounce)] = [Owner<FreeSkillPower>(_ => 1)],
@@ -93,17 +108,17 @@ internal static class CardEffectSpecRegistry
 
     private static readonly HashSet<Type> ResourceEffects =
     [
-        typeof(Adrenaline), typeof(BigBang), typeof(BloodWall), typeof(Breakthrough), typeof(BrightestFlame), typeof(GatherLight),
+        typeof(BigBang), typeof(BloodWall), typeof(Breakthrough), typeof(BrightestFlame), typeof(GatherLight),
         // CoopBots multiplayer port: instant team/target energy, no power lifecycle needed.
         typeof(EnergySurge), typeof(BelieveInYou),
         // CoopBots multiplayer port: team-wide next-turn draw and the
-        // HP-for-ally-block trade; both are handled in the switch below.
+        // HP-for-ally-block trade; both are handled in the switch.
         typeof(Plot), typeof(DemonicShield),
-        typeof(Glow), typeof(Hemokinesis), typeof(Neurosurge), typeof(Offering), typeof(ShiningStrike), typeof(SolarStrike),
+        typeof(Glow), typeof(Hemokinesis), typeof(ShiningStrike), typeof(SolarStrike),
         typeof(AllForOne), typeof(BoneShards), typeof(Bulwark), typeof(Claw), typeof(Compact),
         typeof(DeathsDoor), typeof(EvilEye), typeof(GeneticAlgorithm), typeof(Glitterstream), typeof(GoForTheEyes),
         typeof(Misery), typeof(Modded), typeof(MoltenFist), typeof(MomentumStrike), typeof(PullAggro),
-        typeof(Rampage), typeof(SpoilsOfBattle), typeof(Whistle), typeof(WroughtInWar),
+        typeof(Rampage), typeof(Whistle), typeof(WroughtInWar),
     ];
 
     private static readonly HashSet<Type> GenerationEffects =
@@ -111,12 +126,8 @@ internal static class CardEffectSpecRegistry
         typeof(AdaptiveStrike), typeof(BoostAway), typeof(CollisionCourse), typeof(CrashLanding),
         typeof(FightThrough), typeof(GraveWarden), typeof(GunkUp), typeof(Overclock), typeof(Reave),
         typeof(Severance), typeof(Undeath),
-        // CoopBots multiplayer port: "add a copy of this card to EVERY player's
-        // discard pile". Generation only; the damage is the generic attack recipe.
-        typeof(Outrage),
-        // CoopBots multiplayer port: cards that hand every player generated
-        // cards or a summon; the per-player loops live in the switch below.
-        typeof(BladeSymphony), typeof(GlimpseBeyond), typeof(LegionOfBone),
+        // CoopBots multiplayer port: copies and gifts that reach EVERY player.
+        typeof(Outrage), typeof(BladeSymphony), typeof(GlimpseBeyond), typeof(LegionOfBone),
     ];
 
     public static IReadOnlyCollection<Type> SupportedTypes
@@ -137,7 +148,7 @@ internal static class CardEffectSpecRegistry
                 typeof(DeathsDoor), typeof(EvilEye), typeof(GeneticAlgorithm), typeof(Glitterstream),
                 typeof(GoForTheEyes), typeof(Misery), typeof(Modded), typeof(MoltenFist),
                 typeof(MomentumStrike), typeof(PullAggro), typeof(Rampage), typeof(SicEm),
-                typeof(SpoilsOfBattle), typeof(Whistle), typeof(WroughtInWar),
+                typeof(Whistle), typeof(WroughtInWar),
             ];
             foreach (Type type in completionTypes)
                 result[type] = "CARD-COMPLETION-BATCH-123";
@@ -181,11 +192,10 @@ internal static class CardEffectSpecRegistry
                             effectTarget,
                             amount,
                             owner);
-                        // CoopBots multiplayer port: the Applier name is recorded by
-                        // SimulatedCombatState.ApplyPower from its own player-name
-                        // table. Overwriting it here used the live platform lookup,
-                        // which threw outside a Steam host and disagreed with the
-                        // simulated state compared by SemanticStateFieldPolicy.
+                        // CoopBots multiplayer port: SimulatedCombatState.ApplyPower
+                        // records the Applier from its own player-name table. The
+                        // live platform lookup that used to run here threw outside a
+                        // Steam host and disagreed with the simulated state.
                         break;
                     }
                     case CardEffectTarget.AllEnemies:
@@ -220,70 +230,26 @@ internal static class CardEffectSpecRegistry
                 applied = true;
                 break;
             }
-            case Outrage:
-                // CoopBots multiplayer port: the damage is the generic attack
-                // recipe; what the snapshot could not express is the copy every
-                // player receives. One per player, the caster included, matching
-                // the native "EVERYONE'S discard pile" wording.
-                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
-                {
-                    simulator.CreateAndAddGeneratedCardsToCombat<Outrage>(
-                        recipient, PileType.Discard, 1, card.Owner);
-                    if (simulator.HasPendingChoice)
-                        return true;
-                }
-                applied = true;
-                break;
-            case BladeSymphony:
-                // "ALL players get {Cards} Shivs into their Hand."
-                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
-                {
-                    simulator.CreateAndAddGeneratedCardsToCombat<Shiv>(
-                        recipient, PileType.Hand, card.DynamicVars.Cards.IntValue, card.Owner);
-                    if (simulator.HasPendingChoice)
-                        return true;
-                }
-                applied = true;
-                break;
-            case GlimpseBeyond:
-                // "ALL players get {Cards} Souls into their Draw Pile."
-                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
-                {
-                    simulator.CreateAndAddGeneratedCardsToCombat<Soul>(
-                        recipient, PileType.Draw, card.DynamicVars.Cards.IntValue, card.Owner);
-                    if (simulator.HasPendingChoice)
-                        return true;
-                }
-                applied = true;
-                break;
-            case LegionOfBone when combat is ICombatPredictionEffectSink summonSink:
-                // "ALL players Summon {Summon}."
-                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
-                {
-                    summonSink.SummonOsty(simulator, recipient, card.DynamicVars["Summon"].IntValue);
-                    if (simulator.HasPendingChoice)
-                        return true;
-                }
-                applied = true;
-                break;
-            case Plot:
-                // "Next turn ALL players draw {Cards} cards." One draw power per
-                // player, matching the native loop over every player.
-                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
-                    ApplyPower(combat, typeof(DrawCardsNextTurnPower), recipient.Creature,
-                        card.DynamicVars.Cards.IntValue, ownerCreature);
-                applied = true;
-                break;
-            case DemonicShield when target is { IsPlayer: true }:
-                // "Lose {HpLoss} HP. Give another player Block equal to your Block."
-                // CalculatedBlock is already resolved to the caster's current block.
-                simulator.Damage(card.Owner.Creature, card.DynamicVars.HpLoss.IntValue,
-                    ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move, card.Owner.Creature);
-                if (simulator.HasPendingChoice)
-                    return true;
-                simulator.GainBlock(target, card.DynamicVars["CalculatedBlock"].IntValue, ValueProp.Unpowered);
-                applied = true;
-                break;
+            // CoopBots multiplayer port: ENERGY_SURGE pays every living teammate and
+            // BELIEVE_IN_YOU pays the chosen ally. Upstream models only the caster,
+            // which is the same card in single player.
+            //
+            // This case label used to be MISSING. Without it AllForOne fell through into
+            // EnergySurge's body while AllForOne's own body sat below as an unlabelled block —
+            // unreachable, and flagged by `warning CS0162: unreachable code`.
+            //
+            // The verified consequence is that ALL_FOR_ONE was UNUSABLE, not mispriced:
+            // AllForOne carries only a DamageVar, so EnergySurge's body evaluated
+            // `card.DynamicVars.Energy` and threw KeyNotFoundException out of this method. The
+            // search records that as a prediction exception, so the card could never appear in
+            // a plan. The evidence had been printed on EVERY kernel-suite run, all session:
+            //   COVERAGE BROKEN: ALL_FOR_ONE:prediction-exception:KeyNotFoundException:
+            //   The given key 'Energy' was not present in the dictionary.
+            //   @ …CardEffectSpecRegistry.Apply(…) in …/CardEffectSpecRegistry.cs:line 221
+            // It named this file and this exact call, and it was read as background noise
+            // because it appeared on both sides of a pass/fail run. That is R5b's lesson in a
+            // second costume: a diagnostic that is always present is a diagnostic nobody reads.
+            // Before trusting "the tests are green", read the lines that are not PASS.
             case EnergySurge:
                 // Every living teammate, matching the native GetTeammatesOf loop.
                 foreach (Creature ally in combat.GetTeammatesOf(ownerCreature))
@@ -300,8 +266,58 @@ internal static class CardEffectSpecRegistry
                 simulator.GainEnergy(believeInYouTarget, card.DynamicVars.Energy.IntValue);
                 applied = true;
                 break;
-            case Adrenaline:
-                simulator.GainEnergy(card.Owner, card.DynamicVars.Energy.IntValue);
+            case Outrage:
+                // One copy per player, the caster included.
+                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
+                {
+                    simulator.CreateAndAddGeneratedCardsToCombat<Outrage>(
+                        recipient, PileType.Discard, 1, card.Owner);
+                    if (simulator.HasPendingChoice)
+                        return true;
+                }
+                applied = true;
+                break;
+            case BladeSymphony:
+                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
+                {
+                    simulator.CreateAndAddGeneratedCardsToCombat<Shiv>(
+                        recipient, PileType.Hand, card.DynamicVars.Cards.IntValue, card.Owner);
+                    if (simulator.HasPendingChoice)
+                        return true;
+                }
+                applied = true;
+                break;
+            case GlimpseBeyond:
+                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
+                {
+                    simulator.CreateAndAddGeneratedCardsToCombat<Soul>(
+                        recipient, PileType.Draw, card.DynamicVars.Cards.IntValue, card.Owner);
+                    if (simulator.HasPendingChoice)
+                        return true;
+                }
+                applied = true;
+                break;
+            case LegionOfBone when combat is ICombatPredictionEffectSink summonSink:
+                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
+                {
+                    summonSink.SummonOsty(simulator, recipient, card.DynamicVars["Summon"].IntValue);
+                    if (simulator.HasPendingChoice)
+                        return true;
+                }
+                applied = true;
+                break;
+            case Plot:
+                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
+                    ApplyPower(combat, typeof(DrawCardsNextTurnPower), recipient.Creature,
+                        card.DynamicVars.Cards.IntValue, ownerCreature);
+                applied = true;
+                break;
+            case DemonicShield when target is { IsPlayer: true }:
+                simulator.Damage(card.Owner.Creature, card.DynamicVars.HpLoss.IntValue,
+                    ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move, card.Owner.Creature);
+                if (simulator.HasPendingChoice)
+                    return true;
+                simulator.GainBlock(target, card.DynamicVars["CalculatedBlock"].IntValue, ValueProp.Unpowered);
                 applied = true;
                 break;
             case BigBang:
@@ -321,6 +337,7 @@ internal static class CardEffectSpecRegistry
                 break;
             case BrightestFlame:
             {
+                combat.RecordBrightestFlameMaxHpLoss(card.DynamicVars.MaxHp.IntValue);
                 simulator.GainEnergy(card.Owner, card.DynamicVars.Energy.IntValue);
                 SimCreatureState ownerState = simulator.State.GetCreature(card.Owner.Creature);
                 int newMaxHp = Math.Max(1, ownerState.MaxHp - card.DynamicVars.MaxHp.IntValue);
@@ -344,21 +361,6 @@ internal static class CardEffectSpecRegistry
                 break;
             case Glow:
                 simulator.GainStars(card.Owner, card.DynamicVars.Stars.IntValue);
-                applied = true;
-                break;
-            case Neurosurge:
-                simulator.GainEnergy(card.Owner, card.DynamicVars.Energy.IntValue);
-                applied = true;
-                break;
-            case Offering:
-                simulator.Damage(
-                    card.Owner.Creature,
-                    card.DynamicVars.HpLoss.IntValue,
-                    ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move,
-                    card.Owner.Creature);
-                if (simulator.HasPendingChoice)
-                    return true;
-                simulator.GainEnergy(card.Owner, card.DynamicVars.Energy.IntValue);
                 applied = true;
                 break;
             case ShiningStrike or SolarStrike:
@@ -480,10 +482,6 @@ internal static class CardEffectSpecRegistry
                 applied = true;
                 break;
             }
-            case SpoilsOfBattle:
-                PersistentPowerSupport.Forge(simulator, card.Owner, card.DynamicVars.Forge.IntValue);
-                applied = true;
-                break;
             case WroughtInWar:
                 PersistentPowerSupport.Forge(simulator, card.Owner, card.DynamicVars.Forge.IntValue);
                 applied = true;

@@ -282,8 +282,35 @@ internal static class BuildValue
     private const double EloPerPoint = 10.0;
     private const double RulesPivot = 20.0;
     private const double RulesScale = 0.25;
+    // A card the deck itself has a use for is not an average-play question, so a
+    // structural fit is priced against a lower break-even: it reaches the same
+    // ceiling from a lower legacy score, and the ceiling itself never moves.
+    //
+    // This used to be a steeper *slope* on the same pivot (0.5 against 0.25).
+    // Read on a live A10 four-player log (2026-09-19), a fitted card's legacy
+    // total clusters below RulesPivot, so a steeper slope did not lift it toward
+    // the ceiling - it doubled its penalty. Concretely the Silent bot scored
+    // BLUR at -7.8 and skipped it (rules -15.88 against -7.94 on the flat scale),
+    // while the community's four-player winners run Blur. The pivot is the lever
+    // this comment always described; the slope was the wrong knob.
+    private const double FitPivot = 10.0;
     private const double RulesMin = -20.0;
     private const double RulesMax = 8.0;
+
+    // Tokens the legacy heuristic only ever emits when the deck has a
+    // demonstrable use for the card: a functional gap it fills, a mechanism whose
+    // trigger is already present, a route the deck is already on, or a teammate's
+    // plan. Everything else in the legacy total ("generically decent") stays on
+    // the generic scale, which is why the whole apparatus used to be
+    // indistinguishable from filler once it was clamped into one scalar.
+    private static readonly string[] FitTokens =
+    {
+        "needs-block", "needs-damage", "needs-aoe", "needs-draw", "needs-energy",
+        "fits-route", "scaling-supported:", "team-fit",
+    };
+
+    private static bool HasDeckFit(string reason) =>
+        FitTokens.Any(token => reason.Contains(token, StringComparison.Ordinal));
     private const double DevelopmentDeckTarget = 22.0;
     private const double DevelopmentPerCard = 1.0;
     private const double DevelopmentMax = 8.0;
@@ -308,6 +335,7 @@ internal static class BuildValue
         double SkipElo,
         double EloBase,
         double Rules,
+        bool DeckFit,
         double Development,
         double Affinity,
         double LegacyTotal,
@@ -339,7 +367,7 @@ internal static class BuildValue
 
     private static string FormatTerms(AddBreakdown terms) =>
         $"elo:{terms.Elo:F1},skip:{terms.SkipElo:F1},elo-base:{terms.EloBase:F2},"
-        + $"rules:{terms.Rules:F2},development:{terms.Development:F2},affinity:{terms.Affinity:F2},"
+        + $"rules:{terms.Rules:F2},fit:{terms.DeckFit},development:{terms.Development:F2},affinity:{terms.Affinity:F2},"
         + $"legacy:{terms.LegacyReason}";
 
     internal static AddBreakdown AddDetailed(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
@@ -363,25 +391,27 @@ internal static class BuildValue
         var legacy = AddLegacy(card, player, deck);
         var oldWithoutAffinity = legacy.Total - legacy.Affinity;
         var eloBase = (candidateElo - BakedCardElo.SkipElo) / EloPerPoint;
-        var rules = Math.Clamp((oldWithoutAffinity - RulesPivot) * RulesScale, RulesMin, RulesMax);
+        var deckFit = HasDeckFit(legacy.Reason);
+        var rules = Math.Clamp((oldWithoutAffinity - (deckFit ? FitPivot : RulesPivot)) * RulesScale,
+            RulesMin, RulesMax);
         var development = Math.Clamp((DevelopmentDeckTarget - deck.Count) * DevelopmentPerCard, 0, DevelopmentMax);
         var affinity = CommunityDraft.Affinity(card, deck);
         var total = eloBase + rules + development + affinity;
-        return new AddBreakdown(candidateElo, BakedCardElo.SkipElo, eloBase, rules, development, affinity,
+        return new AddBreakdown(candidateElo, BakedCardElo.SkipElo, eloBase, rules, deckFit, development, affinity,
             legacy.Total, legacy.Affinity, legacy.Reason, total, UsedFallback: false, GuardRefusal: false);
     }
 
     private static AddBreakdown Guard(string reason, double total) =>
-        new(0, 0, 0, 0, 0, 0, total, 0, reason, total, UsedFallback: true, GuardRefusal: true);
+        new(0, 0, 0, 0, false, 0, 0, total, 0, reason, total, UsedFallback: true, GuardRefusal: true);
 
     // The fallback path keeps the legacy total exactly and labels the reason.
     private static AddBreakdown Fallback(CardModel card, Player player, IReadOnlyList<CardModel> deck,
         string reason, double? forcedTotal)
     {
         if (forcedTotal is { } total)
-            return new AddBreakdown(0, 0, 0, 0, 0, 0, total, 0, reason, total, UsedFallback: true, GuardRefusal: false);
+            return new AddBreakdown(0, 0, 0, 0, false, 0, 0, total, 0, reason, total, UsedFallback: true, GuardRefusal: false);
         var legacy = AddLegacy(card, player, deck);
-        return new AddBreakdown(0, 0, 0, 0, 0, 0, legacy.Total, legacy.Affinity, legacy.Reason,
+        return new AddBreakdown(0, 0, 0, 0, false, 0, 0, legacy.Total, legacy.Affinity, legacy.Reason,
             legacy.Total, UsedFallback: true, GuardRefusal: false);
     }
 

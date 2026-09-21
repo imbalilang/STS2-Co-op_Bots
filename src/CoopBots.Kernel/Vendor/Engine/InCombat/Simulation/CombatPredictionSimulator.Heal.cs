@@ -19,6 +19,8 @@ internal sealed partial class CombatPredictionSimulator
         int hpBeforeHeal = creatureState.CurrentHp;
         creatureState.Heal(amount);
         int restoredHp = creatureState.CurrentHp - hpBeforeHeal;
+        ActionRelicTriggers?.RecordHealth("heal", creature.CombatId, ResolveDamageSource(null),
+            amount, restoredHp, hpBeforeHeal, creatureState.CurrentHp);
         if (restoredHp > 0 && State.CombatState is ICombatPredictionCardEventSink eventSink)
         {
             eventSink.RecordHpRecovered(creature, restoredHp);

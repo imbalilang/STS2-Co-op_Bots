@@ -14,6 +14,10 @@ internal interface ICombatPredictionHookListenerSource
     IReadOnlyList<MegaCrit.Sts2.Core.Models.AbstractModel> HookListeners { get; }
 
     IReadOnlyList<MegaCrit.Sts2.Core.Models.AbstractModel> RunHookListeners { get; }
+
+    IReadOnlyList<MegaCrit.Sts2.Core.Models.AbstractModel> MirroredHookListeners => HookListeners;
+
+    IReadOnlyList<MegaCrit.Sts2.Core.Models.AbstractModel> MirroredRunHookListeners => RunHookListeners;
 }
 
 /// <summary>
@@ -34,6 +38,13 @@ internal interface ICombatPredictionRunSnapshot
     CoopBots.Kernel.Vendor.Engine.InCombat.Simulation.CombatPredictionRngSet CreatePredictionRngSet();
 }
 
+internal enum CharacterCombatGenerationPool
+{
+    NonBasicAndAncient,
+    Powers,
+    Common,
+}
+
 internal interface ICombatPredictionCardGenerationPoolSnapshot
 {
     bool TryGetRootEligibleCards(
@@ -43,6 +54,19 @@ internal interface ICombatPredictionCardGenerationPoolSnapshot
         out IReadOnlyList<MegaCrit.Sts2.Core.Models.CardModel> cards);
 
     bool TryGetRootEligibleCharacterAttackCards(
+        MegaCrit.Sts2.Core.Entities.Players.Player player,
+        MegaCrit.Sts2.Core.Models.CardPoolModel cardPool,
+        MegaCrit.Sts2.Core.Entities.Cards.CardMultiplayerConstraint multiplayerConstraint,
+        out IReadOnlyList<MegaCrit.Sts2.Core.Models.CardModel> cards);
+
+    bool TryGetRootEligibleCharacterCards(
+        MegaCrit.Sts2.Core.Entities.Players.Player player,
+        MegaCrit.Sts2.Core.Models.CardPoolModel cardPool,
+        MegaCrit.Sts2.Core.Entities.Cards.CardMultiplayerConstraint multiplayerConstraint,
+        CharacterCombatGenerationPool selection,
+        out IReadOnlyList<MegaCrit.Sts2.Core.Models.CardModel> cards);
+
+    bool TryGetRootUnlockedTransformationCards(
         MegaCrit.Sts2.Core.Entities.Players.Player player,
         MegaCrit.Sts2.Core.Models.CardPoolModel cardPool,
         MegaCrit.Sts2.Core.Entities.Cards.CardMultiplayerConstraint multiplayerConstraint,
@@ -87,6 +111,8 @@ internal interface ICombatPredictionRootMaterializable
 
 internal interface ICombatPredictionCardEventSink
 {
+    void RecordPoweredCardBlockGained(MegaCrit.Sts2.Core.Entities.Creatures.Creature cardOwner);
+
     void RecordCardExhausted(MegaCrit.Sts2.Core.Entities.Creatures.Creature actor);
 
     void RecordDamageReceived(
@@ -140,9 +166,6 @@ internal interface ICombatPredictionCardExecutionSink
 {
     IDisposable BeginCardExecutionScope();
 
-    IDisposable BeginHistorySensitiveCardModifierScope(
-        CoopBots.Kernel.Vendor.Engine.Common.PredictedCard card);
-
     IDisposable BeginCardPowerApplication(CoopBots.Kernel.Vendor.Engine.Common.PredictedCard card);
 
     void RecordCardPlayStarted(
@@ -177,6 +200,12 @@ internal interface ICombatPredictionEnemyDeathSink
 
 internal interface ICombatPredictionEffectSink
 {
+    void RecordTenderCardPlayed(MegaCrit.Sts2.Core.Entities.Creatures.Creature owner);
+
+    void SpawnStockReplacement(
+        CoopBots.Kernel.Vendor.Engine.InCombat.Simulation.CombatPredictionSimulator simulator,
+        MegaCrit.Sts2.Core.Models.Powers.StockPower power);
+
     void SummonOsty(
         CoopBots.Kernel.Vendor.Engine.InCombat.Simulation.CombatPredictionSimulator simulator,
         MegaCrit.Sts2.Core.Entities.Players.Player player,
@@ -189,6 +218,13 @@ internal interface ICombatPredictionEffectSink
         MegaCrit.Sts2.Core.Entities.Creatures.Creature? applier = null);
 
     void SetPowerAmount(MegaCrit.Sts2.Core.Models.PowerModel power, int amount);
+
+    void ApplyPowerFromSource(
+        Type powerType,
+        MegaCrit.Sts2.Core.Entities.Creatures.Creature target,
+        int amount,
+        MegaCrit.Sts2.Core.Entities.Creatures.Creature? applier,
+        MegaCrit.Sts2.Core.Models.CardModel? cardSource);
 
     void SetPowerDynamicVar(
         CoopBots.Kernel.Vendor.Engine.InCombat.Simulation.CombatPredictionSimulator simulator,
@@ -224,7 +260,8 @@ internal interface ICombatPredictionEffectSink
         Type powerType,
         MegaCrit.Sts2.Core.Entities.Creatures.Creature target,
         int amount,
-        MegaCrit.Sts2.Core.Entities.Creatures.Creature? applier = null);
+        MegaCrit.Sts2.Core.Entities.Creatures.Creature? applier,
+        MegaCrit.Sts2.Core.Models.CardModel? cardSource);
 
     void ApplyTemporaryDexterity(
         Type powerType,

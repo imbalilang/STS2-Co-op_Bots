@@ -131,6 +131,20 @@ internal sealed class SearchInteractionState
         StoppedStamp = null;
         return result;
     }
+
+    // Worker completion and UI takeover completion are separate boundaries. Setup keeps its
+    // native choice session alive after a result, so it must retire the request explicitly.
+    public SearchTakeoverRequest? CompleteTakeover()
+    {
+        lock (_gate)
+        {
+            SearchTakeoverRequest? completed = _takeoverRequest;
+            Volatile.Write(ref _takeoverRequest, null);
+            Volatile.Write(ref _acceptingTakeover, 0);
+            RenderedRouteAdoptionSeed = null;
+            return completed;
+        }
+    }
 }
 
 internal sealed record SolverInterimResult(
@@ -144,6 +158,9 @@ internal sealed record SolverInterimResult(
     double Score,
     int? CombatEndedTurn = null)
 {
+    public SolverTheftPolicy? TheftPolicy { get; init; }
+    public bool Survives { get; init; }
+    public int DeathSaveUseCount { get; init; }
     public int GrowthHpCredit { get; init; }
     public int GrowthRewardCount { get; init; }
 }
@@ -239,4 +256,5 @@ internal sealed record SolverProgress(
     SolverInterimResult? CurrentBestResult = null,
     SolverCurrentTurnPreview? CurrentTurnPreview = null,
     SolverSpeculativeRoutePreview? SpeculativeRoutePreview = null,
-    SolverRouteAdoptionSeed? RouteAdoptionSeed = null);
+    SolverRouteAdoptionSeed? RouteAdoptionSeed = null,
+    int RequestBudgetMilliseconds = 0);

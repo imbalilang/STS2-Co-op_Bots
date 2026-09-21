@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using System.Reflection;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.CardSelection;
@@ -15,7 +15,7 @@ internal static class BotCardChoiceDispatcher
     public static bool TrySelect(MethodBase originalMethod, object[] args, out object? value)
     {
         var player = args.OfType<Player>().FirstOrDefault();
-        if (player is null || !BotRegistry.IsBot(player.NetId))
+        if (player is null || !AutoPilot.Drives(player.NetId))
         {
             value = null;
             return false;
@@ -81,15 +81,44 @@ internal static class BotCardChoiceDispatcher
         IEnumerable<CardModel> fallback = methodName.Contains("Hand", StringComparison.Ordinal) && player.PlayerCombatState is not null
             ? player.PlayerCombatState.Hand.Cards
             : player.Deck.Cards;
-        // FromDeckForTransformation filters its own deck to cards that can really
-        // be transformed before it ever reaches a selector. Intercepting the call
-        // as a prefix bypasses that body, so the old fallback handed the brain the
-        // whole deck and it could pick an Eternal curse; the transform then threw
-        // "Non-removable cards cannot be transformed". Mirror the native predicate
-        // exactly rather than guessing at curse ids.
-        if (methodName == nameof(CardSelectCmd.FromDeckForTransformation))
-            fallback = fallback.Where(NativeTransformable);
+        // EVERY FromDeckFor* filters its own deck before any selector sees it, and
+        // intercepting the call as a prefix bypasses that body. Mirror each predicate
+        // exactly rather than guessing — this is not a hypothetical: the first version
+        // patched only the transformation case (below) and left the other three handing the
+        // brain the WHOLE deck. A live report on 2026-09-20: after picking up the Neow relic
+        // that removes a card, the bot removed 永恒 / Eternal Ascender's Bane — a card the
+        // game's own predicate exists to protect.
+        //
+        // CardSelectCmd.cs:537  FromDeckForUpgrade        c.IsUpgradable
+        // CardSelectCmd.cs:589  FromDeckForTransformation c.Type != Quest && c.IsTransformable
+        // CardSelectCmd.cs:657  FromDeckForEnchantment    enchantment.CanEnchant(c) && additionalFilter(c)
+        // CardSelectCmd.cs:742  FromDeckForRemoval        c.IsRemovable && filter(c)
+        fallback = NativeDeckPredicate(methodName, fallback, args);
         return ApplyFilter(fallback, args);
+    }
+
+    /// <summary>
+    /// The predicate the intercepted <c>FromDeckFor*</c> would have applied to its own deck.
+    /// </summary>
+    /// <remarks>
+    /// Extracted so it can be asserted directly, because the bug it fixes is a filter and a
+    /// filter is the cheapest thing here to pin: our prefix runs before the native body, so
+    /// every deck the brain previously saw was UNFILTERED. Measured live: after the Neow
+    /// relic that removes a card, the bot removed 永恒 / Eternal Ascender's Bane.
+    /// </remarks>
+    internal static IEnumerable<CardModel> NativeDeckPredicate(
+        string methodName, IEnumerable<CardModel> deck, IEnumerable<object> args)
+    {
+        if (methodName == nameof(CardSelectCmd.FromDeckForTransformation))
+            return deck.Where(NativeTransformable);
+        if (methodName == nameof(CardSelectCmd.FromDeckForUpgrade))
+            return deck.Where(card => card.IsUpgradable);
+        if (methodName == nameof(CardSelectCmd.FromDeckForRemoval))
+            return deck.Where(card => card.IsRemovable);
+        if (methodName == nameof(CardSelectCmd.FromDeckForEnchantment)
+            && args.OfType<EnchantmentModel>().FirstOrDefault() is { } enchantment)
+            return deck.Where(card => enchantment.CanEnchant(card));
+        return deck;
     }
 
     private static bool NativeTransformable(CardModel card) =>
@@ -155,7 +184,7 @@ internal static class BotRelicSelectPatch
 {
     private static bool Prefix(Player player, IReadOnlyList<RelicModel> relics, ref Task<RelicModel?> __result)
     {
-        if (!BotRegistry.IsBot(player.NetId))
+        if (!AutoPilot.Drives(player.NetId))
             return true;
         // Boss relics are not interchangeable: the chain in RelicValue prices a
         // Brimstone by its team-wide downside, and a capsule or Astrolabe by what

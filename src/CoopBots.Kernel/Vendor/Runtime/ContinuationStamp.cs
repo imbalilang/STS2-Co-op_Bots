@@ -96,6 +96,9 @@ internal sealed record ContinuationStamp(string StateText)
         AppendPotions(text, player, player.GetPotionAtSlotIndex);
         SimulatedCombatState.AppendLiveStatefulRelics(text, player);
         RelicPredictionStateSupport.AppendLiveContinuation(text, player);
+        ModelPredictionStateMirrors.AppendLiveContinuation(text, state);
+        if (AdaptedCardOnPlayMirrors.CaptureLiveStamp() is { } onPlayStamp)
+            text.Append(";onplay_configuration=").Append(onPlayStamp);
         AppendPowers(text, state.Creatures.SelectMany(creature => creature.Powers));
         AppendRng(text,
             state.RunState.Rng.Shuffle.CaptureState(),
@@ -155,17 +158,21 @@ internal sealed record ContinuationStamp(string StateText)
             text,
             simulator,
             combat.RelicsOf(player));
+        StateFingerprintBuilder adapterFingerprint = new();
+        ModelPredictionStateMirrors.AppendPredicted(ref adapterFingerprint, text, simulator, combat);
+        if (combat.AdaptedOnPlay is { } adaptedOnPlay)
+            text.Append(";onplay_configuration=").Append(adaptedOnPlay.Stamp);
         AppendPowers(text, combat.EffectivePowers(), simulator);
         AppendRng(text,
-            simulator.Rng.Shuffle.CaptureState(),
-            simulator.Rng.CombatCardGeneration.CaptureState(),
-            simulator.Rng.CombatPotionGeneration.CaptureState(),
-            simulator.Rng.CombatCardSelection.CaptureState(),
-            simulator.Rng.CombatEnergyCosts.CaptureState(),
-            simulator.Rng.CombatTargets.CaptureState(),
-            simulator.Rng.CombatOrbGeneration.CaptureState(),
-            simulator.Rng.MonsterAi.CaptureState(),
-            simulator.Rng.Niche.CaptureState());
+            simulator.Rng.ShuffleState,
+            simulator.Rng.CombatCardGenerationState,
+            simulator.Rng.CombatPotionGenerationState,
+            simulator.Rng.CombatCardSelectionState,
+            simulator.Rng.CombatEnergyCostsState,
+            simulator.Rng.CombatTargetsState,
+            simulator.Rng.CombatOrbGenerationState,
+            simulator.Rng.MonsterAiState,
+            simulator.Rng.NicheState);
         return new ContinuationStamp(text.ToString());
     }
 
@@ -369,7 +376,9 @@ internal sealed record ContinuationStamp(string StateText)
                 text.Append('-');
                 break;
         }
-        text.Append("/baselib=");
+        text.Append("/keywords=[");
+        text.AppendJoin(',', card.GetKeywordsWithSources(KeywordSources.Local).Order());
+        text.Append("]/baselib=");
         if (!PredictionModModelSupport.AppendBaseLibCardModifierState(
                 text,
                 card,
@@ -410,8 +419,9 @@ internal sealed record ContinuationStamp(string StateText)
         {
             text.Append(power.Owner.CombatId).Append(':').Append(power.Id.Entry).Append('=')
                 .Append(power.Amount).Append('/')
-                .Append(PowerLifecycleSupport.SemanticallyRelevantAmountOnTurnStart(power))
-                .Append('[');
+                .Append(PowerLifecycleSupport.SemanticallyRelevantAmountOnTurnStart(power));
+            if (PowerLifecycleSupport.SemanticallyRelevantSkipNextDurationTick(power)) text.Append("/skip");
+            text.Append('[');
             foreach (var dynamicVar in power.DynamicVars.OrderBy(item => item.Key, StringComparer.Ordinal))
             {
                 if (!SemanticStateFieldPolicy.IsSemantic(power, dynamicVar.Key, dynamicVar.Value))
@@ -424,6 +434,18 @@ internal sealed record ContinuationStamp(string StateText)
             if (power is SurroundedPower surrounded)
                 text.Append("Facing=").Append(simulator == null ? surrounded.Facing
                     : PowerPredictionStateSupport.SurroundedFacing(simulator, surrounded)).Append(',');
+            if (power is NightmarePower nightmare)
+            {
+                CardModel selected = simulator == null
+                    ? nightmare.GetInternalData<NightmarePower.Data>().selectedCard
+                        ?? throw new InvalidOperationException("Native Nightmare has no selected card at continuation capture.")
+                    : ((SimulatedCombatState)simulator.State.CombatState).GetNightmareSelection(nightmare).Preview;
+                text.Append("Selected=");
+                AppendCard(text, selected, discoverUnregisteredBaseLibModifiers: simulator == null);
+            }
+            if (power is OrbitPower orbit)
+                text.Append("EnergyRemainder=").Append(simulator == null ? (4 - orbit.DisplayAmount) % 4
+                    : ((SimulatedCombatState)simulator.State.CombatState).GetOrbitEnergyRemainder(orbit)).Append(',');
             text.Append("],");
         }
     }

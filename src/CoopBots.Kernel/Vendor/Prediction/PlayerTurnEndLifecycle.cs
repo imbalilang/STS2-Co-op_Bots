@@ -1,5 +1,7 @@
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Combat;
+using CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors;
 using CoopBots.Kernel.Vendor.Engine.InCombat.Simulation;
 
 namespace CoopBots.Kernel.Vendor;
@@ -13,14 +15,17 @@ internal static class PlayerTurnEndLifecycle
         int etherealExhaustCount = 0, IReadOnlyDictionary<Creature, int>? etherealByOwner = null)
     {
         if (!CorePowerSupport.TriggerPlayerRegularSideTurnEndEffects(
-                simulator, combat, participants, etherealExhaustCount, etherealByOwner)
+                simulator, combat, participants, etherealExhaustCount)
             || !TurnStartRelicSupport.TriggerAfterSideTurnEnd(
                 simulator, combat, participants, etherealExhaustCount, etherealByOwner)
-            || !EndTurnPowerSupport.TriggerLate(simulator, combat, participants))
+            || !HookMirrors.AfterSideTurnEndLate(simulator, CombatSide.Player, participants))
         {
             return false;
         }
         combat.NormalizeCardAfflictions(simulator);
+        foreach (Creature participant in participants)
+            if (participant.Player is { } player)
+                simulator.State.GetPlayerCombatState(player).Phase = PlayerTurnPhase.None;
         return true;
     }
 
@@ -30,12 +35,17 @@ internal static class PlayerTurnEndLifecycle
         Player player,
         IReadOnlyList<Creature> participants)
     {
+        simulator.State.GetPlayerCombatState(player).Phase = PlayerTurnPhase.End;
         EndTurnPowerSupport.TriggerVeryEarly(combat, participants);
         if (combat.HasPendingChoice)
             return false;
         TurnStartRelicSupport.TriggerBeforeSideTurnEnd(simulator, combat, participants);
         if (combat.HasPendingChoice)
             return false;
+        if (!simulator.SimulateEndPlayerTurnBeforeOrbPassives(combat.GetPlayerTurnNumber(player)))
+            return false;
+        if (simulator.IsOverOrEnding)
+            return true;
         if (!OrbLifecycleSupport.TriggerBeforeTurnEnd(simulator, combat, player)
             || combat.HasPendingChoice
             || !simulator.SimulateEndPlayerTurnAfterOrbPassives(combat.GetPlayerTurnNumber(player)))

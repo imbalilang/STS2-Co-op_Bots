@@ -23,6 +23,58 @@ internal static class TeamCombatPlanner
     private const int MaxDepth = 9;
     private const int BeamWidth = 44;
     private const double HumanConfidence = 0.35;
+    // What a point of progress is worth against a point of health.
+    //
+    // 0.25 means a point of enemy HP is worth a quarter of a point of party HP,
+    // and the health-deficit term below makes a wound taken near death worth up
+    // to 3x. That is a 4:1 to 12:1 bias towards blocking, and it is where the
+    // `team-survival` tag that produced a whole round of nine block plays and
+    // zero attacks comes from. It is deliberate risk aversion, not a unit error,
+    // so moving it is a policy change.
+    //
+    // Doubled to 0.5 on 2026-09-19 to raise the bots' willingness to trade.
+    // A policy choice, not a fitted value - nothing here can measure it.
+    //
+    // One known consequence, so it is not a surprise: at this value 6 damage
+    // (x0.5 = 3.0) outvalues the shared block in the LastStandScenarios Beacon
+    // board, where a dying bot spent its last energy on block that Beacon shares
+    // to survivors. That assertion encodes a property which only held while
+    // damage was priced at a quarter. The shared block itself is credited
+    // through node.ExtraBlock, i.e. as carried block at 0.25/point, not as
+    // damage prevented for the recipients - worth about 0.3-0.6 per point where
+    // blocking a point of party damage should be worth about 1.0.
+    private const double EnemyHpWeight = 0.5;
+    // Kept at the old hard:soft ratio (2.5:1) so only the overall exchange moves.
+    private const double SoftEnemyHpWeight = 0.2;
+    // What a point of party HP *actually prevented* is worth in DecisionPriority.
+    //
+    // This was 24 and uncapped, while every sibling term in the same function is
+    // capped (enemy HP x4 up to 360, human synergy x4 up to 220). At six times
+    // the enemy-HP rate it dominated every attack term, which is exactly what a
+    // live A10 four-player log showed on 2026-09-19: one DEFEND_IRONCLAD
+    // (5 block x 24 = 120) walked down a precise 120-per-card ladder - 1019.0,
+    // 762.5, 583.5, 463.5, 343.5, 223.5 - so the sixth Defend of a turn still
+    // outbid every attack on the board (those scored 3-20 on the kernel path and
+    // 119-275 on the legacy path). The bots blocked far past the incoming damage
+    // and always blocked before attacking: block is credited at every step of the
+    // plan, damage only pays off on a kill.
+    //
+    // The coefficient is left at 24. Lowering it flat was tried first and broke
+    // StrengthScenarios: a 2-HP bot stopped blocking one point of chip damage,
+    // because the flat rate cannot tell "chip damage at 80 HP" from "chip damage
+    // at 2 HP" - the health-deficit weighting lives in TriageCost, not here.
+    // Capping is the part that is safe to move: `WeightedHpLoss` is summed over
+    // every party member across the MaxRounds projection, so in a four-player
+    // game it grows with party size and horizon and the priority ran to four
+    // digits. The ceiling is the enemy-HP term's own, which keeps a confirmed
+    // kill (720) outbidding raw blocking.
+    //
+    // Still open: whether 24 (six times the enemy-HP rate) is the right exchange
+    // rate at all. That is a policy value and the offline ruler that could have
+    // measured it is retired, so the reading that judges it is the
+    // block-versus-attack score ratio in the next live log.
+    private const double HpSavedPriority = 24;
+    private const double HpSavedPriorityCap = 360;
     private const double BotDeathBasePenalty = 40;
     private const double BotDeathMaxHpPenalty = 0.25;
 
@@ -717,7 +769,9 @@ internal static class TeamCombatPlanner
         var targetPartyIndex = candidate.Move.Target is { IsPlayer: true } targetPlayer
             ? IndexOfCreature(context.Party, targetPlayer)
             : casterPartyIndex;
-        if (targetPartyIndex >= 0 && !BotRegistry.IsBot(context.Party[targetPartyIndex].NetId))
+        // Drives: a buff aimed at a handed-over seat lands, so it must not be priced
+        // as a speculative gift to someone who may not spend it.
+        if (targetPartyIndex >= 0 && !AutoPilot.Drives(context.Party[targetPartyIndex].NetId))
         {
             var buffFit = candidate.Facts.Strength * Math.Max(1, context.Human.AttackCards) * 3
                 + candidate.Facts.Dexterity * Math.Max(1, context.Human.BlockCards) * 2
@@ -921,7 +975,7 @@ internal static class TeamCombatPlanner
     // a small nonfatal wound may be worth meaningful damage or modeled growth.
     // Unknown damage receives less credit and never becomes a confirmed kill.
     private static double TacticalCost(Metrics metrics)
-        => metrics.TriageCost + metrics.HardEnemyHp * 0.25 + metrics.SoftEnemyHp * 0.10
+        => metrics.TriageCost + metrics.HardEnemyHp * EnemyHpWeight + metrics.SoftEnemyHp * SoftEnemyHpWeight
             - metrics.SetupValue * 0.35 + metrics.FocusCost - metrics.BoundaryValue;
 
     private static Metrics EvaluateUncached(PlanNode node, PlanningContext context)
@@ -998,7 +1052,11 @@ internal static class TeamCombatPlanner
                         * growthUse * 0.35;
             }
             var hardLoss = node.HpSpent[partyIndex] + (forcedDeath ? hpAfterCost : Math.Min(hpAfterCost, Math.Max(0, hardIncoming - block)));
-            var humanWeight = BotRegistry.IsBot(player.NetId) ? 1.0 : 1.5;
+            // Drives, not IsBot: this weight feeds softHpLoss, i.e. the score. Seats the
+            // table is driving are all equal there; `humanDeaths` below stays on IsBot
+            // because it reports who was a human, which is a fact about the party rather
+            // than a planning weight.
+            var humanWeight = AutoPilot.Drives(player.NetId) ? 1.0 : 1.5;
             weightedHpLoss += hardLoss;
             if (forcedDeath || hpAfterCost <= 0 || hardIncoming - block >= hpAfterCost)
             {
@@ -1263,7 +1321,7 @@ internal static class TeamCombatPlanner
         var threat = 0.0;
         for (var partyIndex = 0; partyIndex < context.Party.Count; partyIndex++)
         {
-            var weight = BotRegistry.IsBot(context.Party[partyIndex].NetId) ? 1.0 : 1.5;
+            var weight = AutoPilot.Drives(context.Party[partyIndex].NetId) ? 1.0 : 1.5;
             threat += context.IncomingByEnemyAndPartyMember[enemyIndex, partyIndex] * weight;
         }
         return threat;
@@ -1346,7 +1404,8 @@ internal static class TeamCombatPlanner
         if (best.WeightedDeaths < root.WeightedDeaths) priority += 2400;
         if (best.ConfirmedVictory) priority += 1900;
         priority += Math.Max(0, best.ConfirmedKills - root.ConfirmedKills) * 720;
-        priority += Math.Max(0, root.WeightedHpLoss - best.WeightedHpLoss) * 24;
+        priority += Math.Min(HpSavedPriorityCap,
+            Math.Max(0, root.WeightedHpLoss - best.WeightedHpLoss) * HpSavedPriority);
         priority += Math.Min(360, Math.Max(0, root.HardEnemyHp - best.HardEnemyHp) * 4);
         priority += Math.Min(220, Math.Max(0, plan.HumanSynergy) * 4);
         return priority;

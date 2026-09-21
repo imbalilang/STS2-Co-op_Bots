@@ -33,13 +33,13 @@ internal struct StateFingerprintBuilder
 
     public void Add(ulong value)
     {
-        _first ^= value;
-        _first *= FirstPrime;
-        _first ^= _first >> 32;
-
-        _second += value + 0x9e3779b97f4a7c15UL;
-        _second = BitOperations.RotateLeft(_second, 27) * SecondPrime;
-        _second ^= _second >> 29;
+        // Keep each independent mixing chain in registers. Repeated field updates
+        // otherwise generate store/reload dependencies in the non-inlined Tier1 body.
+        ulong first = (_first ^ value) * FirstPrime;
+        ulong second = BitOperations.RotateLeft(_second + value + 0x9e3779b97f4a7c15UL, 27)
+            * SecondPrime;
+        _first = first ^ (first >> 32);
+        _second = second ^ (second >> 29);
     }
 
     public void Add(string? value)

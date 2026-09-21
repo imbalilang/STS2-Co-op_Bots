@@ -26,7 +26,7 @@ internal static class BotRewardDriver
 
     public static void TrackCardReward(CardReward reward)
     {
-        if (BotRegistry.IsBot(reward.Player.NetId))
+        if (AutoPilot.Drives(reward.Player.NetId))
             ActiveCardRewards[reward.Player.NetId] = reward;
     }
 
@@ -94,6 +94,14 @@ internal static class BotRewardsSetPatch
 {
     private static bool Prefix(RewardsSet __instance, ref Task __result)
     {
+        // IsBot, deliberately NOT Drives. This prefix replaces Offer wholesale, and for
+        // a synthetic bot that is right: the original only generates rewards on the
+        // backend for a non-local player. A handed-over seat IS the local player, and
+        // the original's local branch is the only thing that ever calls
+        // NRewardsScreen.ShowScreen — replace it and the rewards screen is never
+        // created, so the room has nothing to advance through. The seat instead rides
+        // the normal flow: the screen appears, BotCardSelector answers the card,
+        // BotRewardsScreenDriver clicks the rest, BotRoomProceedDriver presses continue.
         if (!BotRegistry.IsBot(__instance.Player.NetId))
             return true;
         __result = BotRewardDriver.Offer(__instance);
@@ -113,7 +121,7 @@ internal static class BotRemoteChoicePatch
 {
     private static bool Prefix(Player player, ref Task<PlayerChoiceResult> __result)
     {
-        if (!BotRegistry.IsBot(player.NetId))
+        if (!AutoPilot.Drives(player.NetId))
             return true;
         __result = Task.FromResult(BotRewardDriver.ChoiceForWait(player));
         return false;

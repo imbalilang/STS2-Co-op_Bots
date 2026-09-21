@@ -54,16 +54,24 @@ internal static class CombatAssessment
         - (target.Player is { } player ? TurnBoundaryProjection.CurrentEndBlockFor(player) : 0));
     internal static bool InDanger(Creature target) => target.IsAlive
         && (MonsterHazards.Imminent(target) || Uncovered(target) >= target.CurrentHp);
-    internal static double HumanWeight(Creature target) => target.Player is { } p && !BotRegistry.IsBot(p.NetId) ? 1.5 : 1;
+    // Drives, not IsBot: a handed-over seat is played by the bot logic, so it has to
+    // weigh the same as a synthetic bot on every planning axis. The distinction that
+    // survives is about a *connection* — SyncBarrierPatches and the shop ack set still
+    // ask "does this player have a peer of its own" — not about who decides.
+    internal static double HumanWeight(Creature target) => target.Player is { } p && !AutoPilot.Drives(p.NetId) ? 1.5 : 1;
 
     // A buff handed to someone who can no longer act is wasted. A bot always
     // spends what it is given; a human only while still deciding, and even then
     // with a discount, because we cannot make them use it. This is what keeps a
     // multiplayer card pointed at the team rather than at a spectator.
+    //
+    // A handed-over seat is on the bot side of that sentence: the logic plays it, so
+    // the buff is used, and discounting it to 0.7 would under-price every multiplayer
+    // buff aimed at a seat the table is actually driving.
     internal static double RecipientConfidence(Creature target)
     {
         if (target.Player is not { } player) return 0;
-        if (BotRegistry.IsBot(player.NetId)) return 1.0;
+        if (AutoPilot.Drives(player.NetId)) return 1.0;
         return CanStillAct(player) ? 0.7 : 0.15;
     }
 

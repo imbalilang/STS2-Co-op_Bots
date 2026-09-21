@@ -10,15 +10,21 @@
 # First upload creates the item (publishedfileid 0) and prints the new id; pass
 # it back with -PublishedFileId on later runs, or let the script remember it in
 # work/workshop/publishedfileid.txt.
+#
+# Visibility is deliberately not settable here. The item is public and stays
+# public unless the owner asks for a change, so this script never writes the
+# `visibility` line -- it only reports the value the VDF already carries
+# (RELEASING.md §2 asks for appid / publishedfileid / visibility to be validated
+# before a release). To change it, edit work/workshop/workshop_build_item.vdf or
+# use the Workshop page; a flag here would make it possible to drift by accident.
 param(
     [Parameter(Mandatory = $true)][string]$Account,
     [string]$PublishedFileId = '',
-    [switch]$Public,
     [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
-$root = 'B:\slay-the-spire-2-mod-mod'
+$root = Split-Path -Parent $PSScriptRoot
 $steamcmd = Join-Path $root 'work\steamcmd\steamcmd.exe'
 $workshop = Join-Path $root 'work\workshop'
 $vdf = Join-Path $workshop 'workshop_build_item.vdf'
@@ -56,12 +62,13 @@ if ($PublishedFileId) {
 } else {
     Write-Output "no item id yet: this run will CREATE a new Workshop item"
 }
-if ($Public) {
-    $current = [regex]::Replace($current, '"visibility"\s+"\d+"', '"visibility"		"0"')
-    Write-Output "visibility: public"
-} else {
-    Write-Output "visibility: private (change it on the Workshop page, or pass -Public)"
-}
+# Reported, never written. The previous version had a -Public switch that rewrote this
+# line to "0" -- which is what the VDF already says, so the flag was a no-op while the
+# message it printed in the default branch claimed "private". Both are gone: the value
+# below is what steamcmd will actually apply.
+$declared = [regex]::Match($current, '"visibility"\s+"(\d+)"')
+if (-not $declared.Success) { throw "no visibility field in the Workshop VDF: $vdf" }
+Write-Output "visibility: $($declared.Groups[1].Value) (from the VDF, left unchanged)"
 [System.IO.File]::WriteAllText($vdf, $current, (New-Object System.Text.UTF8Encoding $false))
 
 $arguments = @('+login', $Account, '+workshop_build_item', "`"$vdf`"", '+quit')

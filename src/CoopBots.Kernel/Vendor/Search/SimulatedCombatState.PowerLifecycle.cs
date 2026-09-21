@@ -27,8 +27,8 @@ internal sealed partial class SimulatedCombatState
     private Dictionary<OrbitPower, int>? _orbitEnergyRemainders;
     private Dictionary<PaleBlueDotPower, bool>? _paleBlueDotActivated;
     private Dictionary<PredictedCard, int>? _swordSageReplayBonuses;
-    private ForkableSet<CardModel>? _liveCardsAtSnapshot;
-    private HashSet<PredictedCard>? _powerAfflictionKnownCards;
+    // Captured once and never mutated. Fork shares only this frozen root membership.
+    private HashSet<CardModel>? _liveCardsAtSnapshot;
     private bool _swordSageCardsInitialized;
     private int? _lastNormalizedVitalSparkAmount;
     private ForkableSet<Creature>? _skillsPlayedThisTurn;
@@ -54,11 +54,17 @@ internal sealed partial class SimulatedCombatState
             : string.Join(',', _pendingPowerAmountChanges.Select(change =>
                 $"{change.Power.Id.Entry}:{change.Delta}"));
 
+    private void InitializeOrbit(OrbitPower power, int remainder)
+        => (_orbitEnergyRemainders ??= [])[power] = remainder;
+
+    public int GetOrbitEnergyRemainder(OrbitPower power)
+        => _orbitEnergyRemainders != null && _orbitEnergyRemainders.TryGetValue(power, out int value)
+            ? value
+            : throw new InvalidOperationException("Orbit energy remainder was not initialized in branch state.");
+
     public int AdvanceOrbitEnergy(OrbitPower power, int energySpent)
     {
-        int remainder;
-        if (_orbitEnergyRemainders?.TryGetValue(power, out remainder) != true)
-            remainder = (4 - power.DisplayAmount) % 4;
+        int remainder = GetOrbitEnergyRemainder(power);
         int total = remainder + energySpent;
         (_orbitEnergyRemainders ??= [])[power] = total % 4;
         return total / 4;
@@ -71,15 +77,23 @@ internal sealed partial class SimulatedCombatState
     {
         if (_paleBlueDotActivated?.TryGetValue(power, out bool activated) == true)
             return activated;
+        activated = ReadPaleBlueDotActivated(power);
+        (_paleBlueDotActivated ??= [])[power] = activated;
+        return activated;
+    }
+
+    public void CapturePaleBlueDotRootState(PaleBlueDotPower target, PaleBlueDotPower source)
+        => InitializePaleBlueDot(target, ReadPaleBlueDotActivated(source));
+
+    private static bool ReadPaleBlueDotActivated(PaleBlueDotPower power)
+    {
         object data = PowerInternalDataField.GetValue(power)
             ?? throw new InvalidOperationException("苍蓝星球没有内部回合状态。");
         FieldInfo field = data.GetType().GetField(
             "alreadyActivatedThisTurn",
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
             ?? throw new MissingFieldException(data.GetType().FullName, "alreadyActivatedThisTurn");
-        activated = (bool)field.GetValue(data)!;
-        (_paleBlueDotActivated ??= [])[power] = activated;
-        return activated;
+        return (bool)field.GetValue(data)!;
     }
 
     public void SetPaleBlueDotActivated(PaleBlueDotPower power, bool activated)
@@ -123,7 +137,7 @@ internal sealed partial class SimulatedCombatState
     {
         if (_liveCardsAtSnapshot != null)
             throw new InvalidOperationException("Power affliction root cards were captured more than once.");
-        _liveCardsAtSnapshot = new ForkableSet<CardModel>(Players
+        _liveCardsAtSnapshot = new HashSet<CardModel>(Players
             .SelectMany(player => simulator.State.GetPlayerCombatState(player).AllCards)
             .Select(card => card.Original));
     }
@@ -157,7 +171,7 @@ internal sealed partial class SimulatedCombatState
     /// </remarks>
     private void NormalizePowerAfflictions(CombatPredictionSimulator simulator)
     {
-        ForkableSet<CardModel> liveCardsAtSnapshot = _liveCardsAtSnapshot
+        HashSet<CardModel> liveCardsAtSnapshot = _liveCardsAtSnapshot
             ?? throw new InvalidOperationException("Power affliction root cards were not captured.");
         IReadOnlyList<PowerModel> powers = EffectivePowers();
         int vitalSparkAmount = 0;
@@ -184,12 +198,11 @@ internal sealed partial class SimulatedCombatState
             // Skill, not creatures on the Power owner's side.
             foreach (PredictedCard card in simulator.State.GetPlayerCombatState(player).AllCards)
             {
-                // Root cards are already represented by _liveCardsAtSnapshot, so recording every
-                // one here only makes each search fork clone a deck-sized HashSet. Track generated
-                // cards sparsely; they still need identity-based first-entry detection across forks.
-                bool enteredCombat = false;
-                if (!liveCardsAtSnapshot.Contains(card.Original))
-                    enteredCombat = (_powerAfflictionKnownCards ??= []).Add(card);
+                // Root identity never changes. Both root and generated wrappers need
+                // this membership lookup only on their first normalization; the bit
+                // survives Fork, while a new Clone is independently inspected.
+                bool enteredCombat = card.TryMarkPowerAfflictionEntryChecked()
+                    && !liveCardsAtSnapshot.Contains(card.Original);
                 if (card.Preview.Affliction is Tainted tainted)
                 {
                     // VitalSparkPower.AfterRemoved 会清掉所有污染。
@@ -234,20 +247,28 @@ internal sealed partial class SimulatedCombatState
 
     private void NormalizeSwordSageReplays(CombatPredictionSimulator simulator)
     {
-        _swordSageReplayBonuses ??= [];
         IReadOnlyList<Player> players = Players;
         for (int playerIndex = 0; playerIndex < players.Count; playerIndex++)
         {
             Player player = players[playerIndex];
             int desired = GetAmount<SwordSagePower>(player.Creature);
-            int liveAmount = player.Creature.GetPower<SwordSagePower>()?.Amount ?? 0;
+            // Existing blades already include the captured root bonus. Later generated
+            // blades start at zero; neither case may read a moving live Power in a worker.
+            int rootAmount = _swordSageCardsInitialized
+                ? 0
+                : _rootPowerAmounts.GetValueOrDefault((player.Creature, typeof(SwordSagePower)));
+            // Record zero bonuses too: a clone already present before the next Power
+            // gain needs that delta, while a newly generated clone carries its bonus.
             foreach (PredictedCard card in simulator.State.GetPlayerCombatState(player).AllCards)
             {
-                if (card.Preview is not SovereignBlade || card.Preview.IsClone)
+                if (card.Preview is not SovereignBlade)
                     continue;
+                _swordSageReplayBonuses ??= [];
                 if (!_swordSageReplayBonuses.TryGetValue(card, out int applied))
                 {
-                    applied = _swordSageCardsInitialized ? 0 : liveAmount;
+                    // A gameplay clone carries its source's replay state on entry. Later
+                    // power changes still affect that instance, just like every other blade.
+                    applied = _swordSageCardsInitialized && card.Preview.IsClone ? desired : rootAmount;
                     _swordSageReplayBonuses.Add(card, applied);
                 }
                 int delta = desired - applied;
@@ -267,11 +288,13 @@ internal sealed partial class SimulatedCombatState
         int count = 0;
         if (_orbitEnergyRemainders != null)
         {
-            foreach ((OrbitPower power, int remainder) in _orbitEnergyRemainders)
+            foreach (OrbitPower power in EffectivePowers().OfType<OrbitPower>())
             {
                 StateFingerprintBuilder item = new();
+                item.Add(count);
                 item.Add(power.Owner.CombatId ?? uint.MaxValue);
-                item.Add(remainder);
+                item.Add(power.Amount);
+                item.Add(GetOrbitEnergyRemainder(power));
                 AddUnorderedItem(item.Finish(), ref first, ref second);
                 count++;
             }

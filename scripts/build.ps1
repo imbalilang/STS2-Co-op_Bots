@@ -1,7 +1,12 @@
 param(
-    [string]$GameData = 'B:\SteamLibrary\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64',
+    [string]$GameData = 'D:\Steam\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64',
     [string]$Dotnet = '',
-    [string]$Version = ''
+    [string]$Version = '',
+    # Suffixes the release name, for builds that are not the release. A test build
+    # of the working tree must never land on outputs\CoopBots-v<version>.zip: that
+    # file is the artifact that shipped, and overwriting it with a dirty tree has
+    # already happened once (an unreleased build sat there under a release name).
+    [string]$Label = ''
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
@@ -14,7 +19,8 @@ $manifest = Get-Content -Raw -Encoding utf8 (Join-Path $repo 'src\CoopBots\mod_m
 if (!$Version) { $Version = $manifest.version }
 if ($Version -ne $manifest.version -or $Version -notmatch '^\d+\.\d+\.\d+(-[a-z0-9.]+)?$') { throw 'Version must match the manifest.' }
 $build = Join-Path $repo "work\build-$Version"
-$release = Join-Path $repo "outputs\CoopBots-v$Version"
+$stem = if ($Label) { "CoopBots-v$Version-$Label" } else { "CoopBots-v$Version" }
+$release = Join-Path $repo "outputs\$stem"
 $project = Join-Path $repo 'src\CoopBots\CoopBots.csproj'
 & $Dotnet build $project -c Release "-p:STS2DataDir=$GameData" "-p:OutputPath=$build\" -p:NuGetAudit=false
 if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }

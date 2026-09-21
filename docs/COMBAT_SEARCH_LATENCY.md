@@ -31,7 +31,7 @@
 
 ## 回归测试
 
-已通过主开发树验证（`work/verification/20260917T150317118Z/summary.json`，status=pass）：Release 构建 0 warnings、类型加载检查通过、PatchSmoke 普通测试 97 PASS、内核测试 176 PASS。该记录仅作为开发期证据；隔离发布副本（0.36.2）已独立通过 Release 构建、类型加载、普通与内核两套 PatchSmoke，并完成打包；其构筑与模拟内核源码保持已发布基线，未纳入进行中的模拟器实验。
+已通过项目验证（`work/verification/20260917T150317118Z/summary.json`，status=pass）：Release 构建 0 warnings、类型加载检查通过、PatchSmoke 普通测试 97 PASS、内核测试 176 PASS。
 
 `tests/PatchSmoke/KernelEngineScenarios.cs`：
 

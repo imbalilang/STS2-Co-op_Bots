@@ -17,7 +17,7 @@ internal static partial class EndTurnPowerSupport
         SimulatedCombatState combat,
         CombatSide side,
         IEnumerable<Creature> participants,
-        int etherealExhaustCount = 0, IReadOnlyDictionary<Creature, int>? etherealByOwner = null)
+        int etherealExhaustCount = 0)
     {
         HashSet<Creature> participantSet = participants.ToHashSet();
         // EffectivePowers 的数组发布后不会被就地改写（失效只把缓存字段置空），所以先取一次
@@ -30,7 +30,6 @@ internal static partial class EndTurnPowerSupport
                 continue;
 
             Creature owner = power.Owner;
-            int ownerEthereal = etherealByOwner?.GetValueOrDefault(owner) ?? etherealExhaustCount;
             bool ownerParticipates = participantSet.Contains(owner);
             switch (power)
             {
@@ -116,11 +115,16 @@ internal static partial class EndTurnPowerSupport
                     simulator.StateStore.GetPowerAmount(power).Consume();
                     combat.SetPowerAmount(power, 0);
                     break;
-                case DarkEmbracePower when ownerParticipates
-                                                 && ownerEthereal > 0
-                                                 && owner.Player is { } player:
-                    simulator.Draw(player, power.Amount * ownerEthereal);
+                case DarkEmbracePower darkEmbrace when ownerParticipates && owner.Player is { } player:
+                {
+                    var state = simulator.StateStore.Get(darkEmbrace,
+                        () => new CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks.Card.DarkEmbracePredictionState(darkEmbrace));
+                    simulator.Draw(player, power.Amount * state.EtherealCount);
+                    if (simulator.HasPendingChoice)
+                        return false;
+                    state.EtherealCount = 0;
                     break;
+                }
                 case DoomPower when ownerParticipates
                                     && side != CombatSide.Enemy
                                     && simulator.State.GetCreature(owner).IsAlive
@@ -171,28 +175,6 @@ internal static partial class EndTurnPowerSupport
         {
             combat.DoomKill(simulator, doomed);
         }
-    }
-
-    public static bool TriggerLate(
-        CombatPredictionSimulator simulator,
-        SimulatedCombatState combat,
-        IEnumerable<Creature> participants)
-    {
-        foreach (Creature owner in participants)
-        {
-            int amount = combat.GetAmount<DisintegrationPower>(owner);
-            if (amount > 0 && simulator.State.GetCreature(owner).IsAlive)
-            {
-                using (simulator.PushDamageSource(
-                    CombatDamageSource.For(CombatDamageSourceKind.Power, nameof(DisintegrationPower))))
-                {
-                    simulator.Damage(owner, amount, ValueProp.Unpowered, owner);
-                }
-            }
-            if (simulator.HasPendingChoice)
-                return false;
-        }
-        return true;
     }
 
     private static bool EvokeLastOrbs(

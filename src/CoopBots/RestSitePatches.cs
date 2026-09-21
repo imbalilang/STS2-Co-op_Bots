@@ -25,7 +25,7 @@ internal static class BotRestSitePatch
             return;
         // BeginRestSite fires once per camp; forget the previous camp's plans.
         ResetPlanning();
-        foreach (var player in state.Players.Where(player => BotRegistry.IsBot(player.NetId)))
+        foreach (var player in state.Players.Where(player => AutoPilot.Drives(player.NetId)))
             _ = CompleteForBot(__instance, player);
     }
 
@@ -39,18 +39,36 @@ internal static class BotRestSitePatch
                 if (options.Count == 0)
                     return;
 
-                var optionIndex = Choose(player, options);
-                var task = (Task<bool>)ChooseOption.Invoke(synchronizer, new object[] { player, optionIndex })!;
-                if (!await task)
+                // Walk EVERY usable option, not just the preferred one plus a single
+                // fallback taken only when the call returns false. MendRestSiteOption
+                // .OnSelect() THROWS when it has no target, and a throw escaped straight
+                // to the catch below — leaving this seat with its options unspent. One
+                // unchosen seat blocks the whole camp: RestSiteSynchronizer completes a
+                // rest site only once every player has no options left, so the run parked
+                // there permanently (observed as an elite camp that never advanced).
+                var preferred = Choose(player, options);
+                var attempts = options
+                    .Select((option, index) => (option, index))
+                    .Where(pair => IsUsable(pair.option))
+                    .OrderByDescending(pair => pair.index == preferred)
+                    .ThenBy(pair => pair.index)
+                    .ToList();
+                var advanced = false;
+                foreach (var (option, index) in attempts)
                 {
-                    var next = options
-                        .Select((option, index) => (option, index))
-                        .FirstOrDefault(pair => pair.index != optionIndex && IsUsable(pair.option));
-                    if (next.option is null)
-                        return;
-                    task = (Task<bool>)ChooseOption.Invoke(synchronizer, new object[] { player, next.index })!;
-                    await task;
+                    try
+                    {
+                        var task = (Task<bool>)ChooseOption.Invoke(synchronizer, new object[] { player, index })!;
+                        if (await task) { advanced = true; break; }
+                    }
+                    catch (Exception optionFailure)
+                    {
+                        Log.Warn($"CoopBots rest-site option {option.OptionId} refused for "
+                            + $"{player.NetId}: {optionFailure.GetBaseException().Message}");
+                    }
                 }
+                if (!advanced)
+                    return;
             }
         }
         catch (Exception exception)
@@ -87,14 +105,22 @@ internal static class BotRestSitePatch
 
     private static int Choose(Player player, IReadOnlyList<RestSiteOption> options)
     {
+        decimal EffectiveHp(Player candidate) => candidate.Creature.CurrentHp + PlannedHeal.GetValueOrDefault(candidate.NetId);
+        // Mend must not even be OFFERED when it has no target: MendRestSiteOption.OnSelect()
+        // dereferences one, and offering an option that cannot resolve is how a seat ended up
+        // unchosen and stalled the whole camp. Resolved before `usable` so the filter sees it.
+        var mendTarget = player.RunState.Players
+            .Where(candidate => candidate.NetId != player.NetId && candidate.Creature.IsAlive)
+            .OrderBy(candidate => (double)EffectiveHp(candidate) / Math.Max(1, candidate.Creature.MaxHp))
+            .ThenBy(candidate => candidate.NetId)
+            .FirstOrDefault();
         var usable = options
             .Select((option, index) => (option, index))
             .Where(pair => IsUsable(pair.option))
+            .Where(pair => pair.option.OptionId != "MEND" || mendTarget is not null)
             .ToList();
         if (usable.Count == 0)
             return 0;
-
-        decimal EffectiveHp(Player candidate) => candidate.Creature.CurrentHp + PlannedHeal.GetValueOrDefault(candidate.NetId);
 
         var hp = (double)player.Creature.CurrentHp / Math.Max(1, player.Creature.MaxHp);
         var act = player.RunState.CurrentActIndex;
@@ -117,16 +143,12 @@ internal static class BotRestSitePatch
         var restReward = player.Relics.Any(relic => relic.GetType().Name is "DreamCatcher" or "TinyMailbox") ? 12
             : player.Relics.Any(relic => relic.GetType().Name is "VenerableTeaSet" or "FakeVenerableTeaSet") ? 8
             : 0;
-        // Mend heals one other player: value it by the most injured teammate
-        // (after what earlier bots already committed), and weight a human's HP
-        // above a bot's.
-        var mendTarget = player.RunState.Players
-            .Where(candidate => candidate.NetId != player.NetId && candidate.Creature.IsAlive)
-            .OrderBy(candidate => (double)EffectiveHp(candidate) / Math.Max(1, candidate.Creature.MaxHp))
-            .ThenBy(candidate => candidate.NetId)
-            .FirstOrDefault();
+        // Mend heals one other player: value it by the most injured teammate (after what
+        // earlier bots already committed), and weight a human's HP above a bot's.
+        // mendTarget was resolved above; MEND is already filtered out of `usable` when there
+        // is nobody it could heal, so this reads only the "how much would it heal" part.
         var mendHeal = mendTarget is null ? 0 : HealAmount(mendTarget, self: false);
-        var mendWeight = mendTarget is not null && !BotRegistry.IsBot(mendTarget.NetId)
+        var mendWeight = mendTarget is not null && !AutoPilot.Drives(mendTarget.NetId)
             ? HealPerHp * HumanHealWeight : HealPerHp;
         // Mending hands the mender's own camp to someone else: one pick, and its
         // deck does not grow. The one way to make it free is a MiniatureTent,

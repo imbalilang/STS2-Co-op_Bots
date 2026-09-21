@@ -115,18 +115,19 @@ internal static class BotPotionPlanner
                         // so only spend the potion on them when it is the difference
                         // between life and death; once they have ended, protecting a
                         // rescue is enough because nobody else can react.
-                        if (!BotRegistry.IsBot(ally.NetId) && CombatAssessment.CanStillAct(ally) && !saves) continue;
+                        // Drives: the guard is "a human who can still act may cover the hit
+                        // themselves". A handed-over seat cannot — nobody is watching the
+                        // bottle — so it belongs on the bot side of both lines.
+                        if (!AutoPilot.Drives(ally.NetId) && CombatAssessment.CanStillAct(ally) && !saves) continue;
                         // With the run ending there is nothing to hold the bottle for,
-                        // so a bot may soak damage it would otherwise walk into. The
-                        // human guard above still stands: a human who can still act may
-                        // cover the hit themselves and must not have it spent for them.
-                        var lastChance = noFuture && BotRegistry.IsBot(ally.NetId) && useful >= FinalEncounterSoak;
+                        // so a driven seat may soak damage it would otherwise walk into.
+                        var lastChance = noFuture && AutoPilot.Drives(ally.NetId) && useful >= FinalEncounterSoak;
                         if (!saves && !lastChance
                             && !TeamCombatPlanner.CanRescueWithProtection(bots, party, ally, useful, heals)) continue;
                         choices.Add(new(potion, ally.Creature,
                             (saves ? 1600 : lastChance ? 1200 : 1450) * CombatAssessment.HumanWeight(ally.Creature) + useful,
                             saves ? "prevent-death" : lastChance ? "final-encounter-no-future" : "potion-plus-team-rescue",
-                            BotRegistry.IsBot(ally.NetId) ? 1 : 3));
+                            AutoPilot.Drives(ally.NetId) ? 1 : 3));
                         continue;
                     }
                     // Full value, late: the whole dose lands — no block spent on
@@ -142,7 +143,7 @@ internal static class BotPotionPlanner
                     choices.Add(new(potion, ally.Creature,
                         1250 * CombatAssessment.HumanWeight(ally.Creature) + nominal,
                         heals ? "full-value-heal" : "full-value-block",
-                        BotRegistry.IsBot(ally.NetId) ? 1 : 3));
+                        AutoPilot.Drives(ally.NetId) ? 1 : 3));
                 }
             }
             else if (name is "FirePotion" or "PotionShapedRock" or "ExplosiveAmpoule" or "FoulPotion")
@@ -177,7 +178,7 @@ internal static class BotPotionPlanner
                     if (cardsAlreadyKill) continue;
                     if (saved.Count > 0)
                         choices.Add(new(potion, target, 1600 * saved.Sum(p => CombatAssessment.HumanWeight(p.Creature)), "lethal-attacker-removal",
-                            saved.Sum(p => BotRegistry.IsBot(p.NetId) ? 1 : 3)));
+                            saved.Sum(p => AutoPilot.Drives(p.NetId) ? 1 : 3)));
                     // Full value, early: the throw converts into a removal nothing
                     // else on the board can make. Front-loaded on purpose — the
                     // team's later plays are worth more once this enemy is gone, and
@@ -204,7 +205,7 @@ internal static class BotPotionPlanner
                         - CombatAssessment.FromEnemy(enemy, p.Creature) * 0.25 < p.Creature.CurrentHp).ToList();
                     if (saved.Count > 0) choices.Add(new(potion, enemy,
                         1450 * saved.Sum(p => CombatAssessment.HumanWeight(p.Creature)), "weak-prevents-death-estimate",
-                        saved.Sum(p => BotRegistry.IsBot(p.NetId) ? 1 : 3)));
+                        saved.Sum(p => AutoPilot.Drives(p.NetId) ? 1 : 3)));
                 }
             }
             // A card-generation bottle cannot save a life: it buys tempo, and only
@@ -271,8 +272,11 @@ internal static class BotPotionEnqueuePatch
         "EnqueueAction", new[] { typeof(GameAction), typeof(ulong) });
     private static bool Prefix(ActionQueueSynchronizer __instance, GameAction action)
     {
-        if (action is not UsePotionAction || !BotRegistry.IsBot(action.OwnerId)
-            || RunManager.Instance.NetService.Type != NetGameType.Host) return true;
+        // Drives, not IsBot: a handed-over seat's potion must carry that seat's own id
+        // in the payload, not the host's — RequestEnqueue attributes to the host, so
+        // leaving this as IsBot would file the seat's potion under the wrong owner.
+        if (action is not UsePotionAction || !AutoPilot.Drives(action.OwnerId)
+            || !RunAuthority.IsSubmittingPeer()) return true;
         EnqueueAs.Invoke(__instance, new object[] { action, action.OwnerId });
         return false;
     }

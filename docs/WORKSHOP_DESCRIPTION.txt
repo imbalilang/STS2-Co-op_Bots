@@ -1,5 +1,5 @@
 [h1]Co-op Bots / 联机机器人[/h1]
-[b]0.36.4：面板默认收起并贴合文本，选牌改用社区数据。[/b]
+[b]0.37.0：全 Bot 模式改为「开局一次长搜索，再严格按剧本打完」。[/b]
 
 为多人房间加入 AI 队友，由房主统一调度。
 
@@ -10,15 +10,13 @@
 [*]游戏版本 v0.111.0
 [/list]
 
-[h2]0.36.4 更新[/h2]
+[h2]0.37.0 更新[/h2]
 [list]
-[*]对局中 Bot 面板默认收起，展开后本次对局内保持
-[*]大厅面板尺寸贴合文字，不再留固定宽度空白
-[*]战斗面板自动避开敌人意图；拖动后不再自动移动
-[*]呼叫补刀时，从真人手牌画箭头指向目标敌人
-[*]离开房间再开房不再残留上一房间名单；单机界面不显示该面板
-[*]选牌改用社区全跑局 Elo 为基底，原启发式降为有界修正，并计入成型度与关联卡牌
-[*]内核战斗搜索回移 0.41 的部分 power-route 策略
+[*][b]全 Bot 模式[/b]（全部席位交给 AI）：开局一次长搜索（基础 3 分钟，整场上限 8 分钟），之后严格按剧本执行，打完一段再从实盘算下一段（限步前瞻 5 回合）
+[*]桌上还有真人时不受影响：仍是有界搜索，不会让人等分钟级；面板实时显示搜索进度与预算
+[*]席位中途阵亡不再丢弃整条剧本；回合跨越校验覆盖结束回合与用药；剧本执行期间旧规划器不再插话
+[*]未建模的机制不再进剧本：BLAZE、ALL_FOR_ONE、九瓶需要选择的药水、两阶段 Boss 转换
+[*]寻路回避当前幕造不出来的房间（原版第四幕宝箱房必崩）；场景转场静置 2 秒
 [/list]
 [url=https://github.com/imbalilang/STS2-Co-op_Bots/blob/main/CHANGELOG.md]完整变更记录[/url]
 
@@ -33,7 +31,7 @@
 [h2]特点[/h2]
 [list]
 [*]团队联合决策：共享易伤 / 虚弱、逐人承伤、格挡投射、斩杀呼叫
-[*]战斗搜索基于[b]真实模拟[/b]（CombatSolver 内核）；无自动长考与脚本回放，按实际局面重新规划
+[*]战斗搜索基于[b]真实模拟[/b]（CombatSolver 内核）：有真人时按实际局面重新规划，全 Bot 模式下开局一次长搜索并按剧本执行
 [*]构筑按离目标流派的距离决策：拿牌 / 商店 / 删牌共用同一目标函数，可跳过
 [*]战斗、奖励、商店、事件、营地、路线建议均由 AI 处理
 [/list]
@@ -43,7 +41,8 @@
 [*]只有房主运行完整逻辑，客户端同步结果
 [*]AI 在真人回合内行动，真人均结束后自动收尾并一次性结束
 [*]固定名称的 AI 队友（Bot 1/2/3）
-[*]本版为隔离离线构建，未做实时 GUI 对局验证，也不宣称胜率提升
+[*]本版为隔离构建，并在真实客户端上做过多人联机验证（4 席 A10 全 Bot 到第二幕）；不宣称胜率提升
+[*]全 Bot 模式下单次搜索可达数十秒到分钟级，这是有意换来的深度
 [/list]
 
 [h2]第三方 / Third-party[/h2]
@@ -73,13 +72,11 @@ Configurable AI teammates for the official multiplayer lobby. The host drives ev
 [*]Game version v0.111.0.
 [/list]
 
-[h2]0.36.3 changes[/h2]
+[h2]0.37.0 changes[/h2]
 [list]
-[*]Collapsible combat panel with a remembered Collapse / Expand state.
-[*]Fixed NewLeaf / Eternal curse selection: transforms filter Quest and un-transformable cards.
-[*]Deck pick / skip: continuous bounded size pressure, with mechanism support and the cost curve.
-[*]Contextual upgrades and sequential removals that protect the last copy of a role.
-[*]Stable team snapshot economy: bounded two-purchase shop comparison, replan after buying, and camp opportunity cost.
+[*][b]All-bot mode[/b] (every seat handed to the AI): one long search at the start (3 min base, 8 min ceiling), then the script is followed step by step, and the next segment is searched from the real board (5-round lookahead).
+[*]Tables with a human are unaffected: still a bounded search, no minute-long waits.
+[*]A dying seat no longer discards the whole script; the round-crossing check covers EndTurn and potions; unmodelled mechanics (BLAZE, ALL_FOR_ONE, choice potions, two-phase bosses) no longer enter a script; routing avoids rooms the current act cannot build.
 [/list]
 [url=https://github.com/imbalilang/STS2-Co-op_Bots/blob/main/CHANGELOG.md]Full changelog[/url]
 
@@ -94,7 +91,7 @@ Configurable AI teammates for the official multiplayer lobby. The host drives ev
 [h2]Features[/h2]
 [list]
 [*]Joint team decisions: shared Vulnerable / Weak, per-member incoming damage, block projection, kill callouts
-[*]Combat search on a [b]real simulation[/b] (CombatSolver kernel); no auto long think and no script replay, replanned from the real state
+[*]Combat search on a [b]real simulation[/b] (CombatSolver kernel): with a human at the table it replans from the real state, in all-bot mode it searches once and follows the script
 [*]Deck building by distance from the target build: rewards, shop and removals share one objective, skipping is real
 [*]Combat, rewards, shop, events, camp and route advice are all handled by the AI
 [/list]
@@ -104,20 +101,13 @@ Configurable AI teammates for the official multiplayer lobby. The host drives ev
 [*]Only the host runs the full logic; clients sync the results.
 [*]Bots act during the human turn and finish on their own once every human has ended.
 [*]Bots have fixed names (Bot 1/2/3).
-[*]Isolated offline build; no live GUI test and no win-rate claim.
+[*]Isolated build, verified live in multiplayer on the real client (A10, all bots, to act 2); no win-rate claim.
+[*]All-bot searches can run for tens of seconds to minutes; that depth is deliberate.
 [/list]
 
 [h2]Third-party[/h2]
-Free, non-commercial mod. The bundled [b]THIRD_PARTY_NOTICES.md[/b] is the authoritative record and must be kept with any distribution.
-[list]
-[*][b]Combat Solver[/b] (simulation core v0.33.9): card and relic simulation adapted from its Engine / Prediction / Search trees, shipped as [b]CoopBots.Kernel.Vendor[/b] in [b]CoopBots.Kernel.dll[/b]; the original startup, UI and automation are not included and its assemblies are never loaded. Copyright [b]Torch[/b] and contributors.
-[*][b]Random Foreseer[/b]: Combat Solver's simulation uses and modifies portions of it, with the original author's permission. Author / copyright: [b]hotwords123[/b].
-[url=https://github.com/hotwords123/StS2.RandomForeseer]github.com/hotwords123/StS2.RandomForeseer[/url]
-[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3747531952]Steam Workshop page[/url]
-[*][b]Spire Codex[/b]: the archetype clusters, card affinity and event option tables come from its data mining (snapshot built_at=2026-08-22, game v0.111.0); only derived identifiers and statistics are baked.
-[url=https://spire-codex.com]spire-codex.com[/url]
-Licensed under the [b]PolyForm Noncommercial License 1.0.0[/b] ([url=https://polyformproject.org/licenses/noncommercial/1.0.0]polyformproject.org/licenses/noncommercial/1.0.0[/url]). Required Notice: Copyright © 2025-present Peter Lord and Spire Codex contributors.
-[*][b]Slay the Spire 2[/b]: the game and its data belong to [b]Mega Crit Games[/b]; this mod redistributes no game assets.
-[/list]
+Free, non-commercial mod. The bundled [b]THIRD_PARTY_NOTICES.md[/b] is the authoritative record and must be kept with any distribution. It covers [b]Combat Solver[/b] (simulation core v0.33.9, shipped as [b]CoopBots.Kernel.Vendor[/b]; copyright [b]Torch[/b] and contributors), [b]Random Foreseer[/b] ([b]hotwords123[/b]), [b]Spire Codex[/b] data, and [b]Slay the Spire 2[/b] ([b]Mega Crit Games[/b]; no game assets are redistributed).
+[url=https://github.com/hotwords123/StS2.RandomForeseer]github.com/hotwords123/StS2.RandomForeseer[/url] [url=https://spire-codex.com]spire-codex.com[/url]
+Spire Codex 数据依 [b]PolyForm Noncommercial License 1.0.0[/b]（[url=https://polyformproject.org/licenses/noncommercial/1.0.0]polyformproject.org/licenses/noncommercial/1.0.0[/url]）。Required Notice: Copyright © 2025-present Peter Lord and Spire Codex contributors.
 
 [citation]CoopBots' own code is MIT (see the repository LICENSE); Combat Solver and Random Foreseer derived portions, and the Spire Codex data, remain under their own terms; the full record is in the bundled THIRD_PARTY_NOTICES.md.[/citation]

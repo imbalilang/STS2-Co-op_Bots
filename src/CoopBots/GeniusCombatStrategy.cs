@@ -290,7 +290,10 @@ internal static class GeniusCombatStrategy
             {
                 var damage = p == player ? EstimateRemainingAttackDamage(p, enemy, card)
                     : EstimateAffordableDamage(p, enemy, p.PlayerCombatState?.Energy ?? 0);
-                if (!BotRegistry.IsBot(p.NetId))
+                // Drives: the discount exists because a visible human hand is an option,
+                // not a promise. A handed-over seat's hand IS a promise — the same logic
+                // is choosing it — so it must count at full weight like any bot's.
+                if (!AutoPilot.Drives(p.NetId))
                 {
                     humanFollowUp += damage;
                     // A visible human hand is useful option value, not a promise
@@ -427,7 +430,7 @@ internal static class GeniusCombatStrategy
                     score -= 120.0;
                     reasons.Add("buff-after-end");
                 }
-                else if (!BotRegistry.IsBot(recipient.NetId))
+                else if (!AutoPilot.Drives(recipient.NetId))
                 {
                     score *= 0.7;
                     reasons.Add("prefer-team-buff");

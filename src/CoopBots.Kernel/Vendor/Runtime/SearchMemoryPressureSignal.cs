@@ -38,10 +38,15 @@ internal sealed class SearchMemoryPressureSignal
     private Action<CancellationToken, string>? _reclaimAndContinue;
     private Action<CancellationToken>? _useDefaultGcAndContinue;
     private Func<bool>? _unexpectedNoGcLossProbe;
+    private Func<long>? _systemMemoryLoadProbe;
+    private long _reusableHeapBytesAtStart;
     private Func<SearchGcLifecycleSnapshot>? _gcLifecycleProbe;
     private long _lastReclaimMaxObservedGcPauseTicks;
     private int _reclaiming;
     private int _conservativeParallelismRequired;
+    private Action<long, CancellationToken>? _noGcRecoveryProbe;
+    private Action<long>? _noGcFallbackObserver;
+    private int _noGcRecoveryAllowed;
 
     public int ReclaimCount { get; private set; }
 
@@ -75,6 +80,8 @@ internal sealed class SearchMemoryPressureSignal
     {
         get
         {
+            Func<long>? probe = Volatile.Read(ref _systemMemoryLoadProbe);
+            if (probe != null) return Math.Max(0, probe());
             long baseline = Volatile.Read(ref _memoryLoadBytesAtStart);
             long allocated = AllocatedBytes;
             return baseline > long.MaxValue - allocated
@@ -120,6 +127,12 @@ internal sealed class SearchMemoryPressureSignal
             long systemRemaining = systemLimit == long.MaxValue
                 ? long.MaxValue
                 : Math.Max(0, systemLimit - ProjectedMemoryLoadBytes);
+            if (systemRemaining > 0 && systemRemaining != long.MaxValue)
+            {
+                long reusableRemaining = Math.Max(0, Volatile.Read(ref _reusableHeapBytesAtStart) - AllocatedBytes);
+                systemRemaining = systemRemaining > long.MaxValue - reusableRemaining
+                    ? long.MaxValue : systemRemaining + reusableRemaining;
+            }
             return Math.Min(allocationRemaining, systemRemaining);
         }
     }
@@ -145,7 +158,9 @@ internal sealed class SearchMemoryPressureSignal
         long systemMemoryLimitBytes,
         Action<CancellationToken> reclaimAndContinue,
         Action<CancellationToken> useDefaultGcAndContinue,
-        Func<bool>? unexpectedNoGcLossProbe = null)
+        Func<bool>? unexpectedNoGcLossProbe = null,
+        Func<long>? systemMemoryLoadProbe = null,
+        long reusableHeapBytesAtStart = 0)
     {
         ArgumentNullException.ThrowIfNull(reclaimAndContinue);
         Configure(
@@ -155,7 +170,9 @@ internal sealed class SearchMemoryPressureSignal
             systemMemoryLimitBytes,
             (token, _) => reclaimAndContinue(token),
             useDefaultGcAndContinue,
-            unexpectedNoGcLossProbe);
+            unexpectedNoGcLossProbe,
+            systemMemoryLoadProbe,
+            reusableHeapBytesAtStart);
     }
 
     public void Configure(
@@ -165,7 +182,9 @@ internal sealed class SearchMemoryPressureSignal
         long systemMemoryLimitBytes,
         Action<CancellationToken, string> reclaimAndContinue,
         Action<CancellationToken> useDefaultGcAndContinue,
-        Func<bool>? unexpectedNoGcLossProbe = null)
+        Func<bool>? unexpectedNoGcLossProbe = null,
+        Func<long>? systemMemoryLoadProbe = null,
+        long reusableHeapBytesAtStart = 0)
     {
         if (allocationLimitBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(allocationLimitBytes));
@@ -173,6 +192,8 @@ internal sealed class SearchMemoryPressureSignal
             throw new ArgumentOutOfRangeException(nameof(memoryLoadBytesAtStart));
         if (systemMemoryLimitBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(systemMemoryLimitBytes));
+        if (reusableHeapBytesAtStart < 0 || (reusableHeapBytesAtStart > 0 && systemMemoryLoadProbe == null))
+            throw new ArgumentOutOfRangeException(nameof(reusableHeapBytesAtStart));
         ArgumentNullException.ThrowIfNull(reclaimAndContinue);
         ArgumentNullException.ThrowIfNull(useDefaultGcAndContinue);
         Volatile.Write(ref _allocatedBytesAtStart, allocatedBytesAtStart);
@@ -181,7 +202,10 @@ internal sealed class SearchMemoryPressureSignal
         Volatile.Write(ref _reclaimAndContinue, reclaimAndContinue);
         Volatile.Write(ref _useDefaultGcAndContinue, useDefaultGcAndContinue);
         Volatile.Write(ref _unexpectedNoGcLossProbe, unexpectedNoGcLossProbe);
+        Volatile.Write(ref _systemMemoryLoadProbe, systemMemoryLoadProbe);
+        Volatile.Write(ref _reusableHeapBytesAtStart, reusableHeapBytesAtStart);
         Volatile.Write(ref _conservativeParallelismRequired, 0);
+        Volatile.Write(ref _noGcRecoveryAllowed, 0);
         Volatile.Write(ref _allocationLimitBytes, allocationLimitBytes);
     }
 
@@ -232,7 +256,30 @@ internal sealed class SearchMemoryPressureSignal
         }
     }
 
+    // Called only by the coordinator at a drained commit boundary; a probe may establish
+    // a new region, but cannot collect or wait for search/deferred work.
+    public void TryRecoverNoGc(long reservedBytes, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(reservedBytes);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!IsEnabled && Volatile.Read(ref _noGcRecoveryAllowed) != 0)
+            Volatile.Read(ref _noGcRecoveryProbe)?.Invoke(reservedBytes, cancellationToken);
+    }
+
+    internal void SetNoGcRecoveryProbe(Action<long, CancellationToken> probe, Action<long>? fallbackObserver = null)
+    {
+        Volatile.Write(ref _noGcRecoveryProbe, probe);
+        Volatile.Write(ref _noGcFallbackObserver, fallbackObserver);
+    }
+
     public void Disable()
+    {
+        DisableLimits();
+        Volatile.Write(ref _noGcRecoveryProbe, null);
+        Volatile.Write(ref _noGcFallbackObserver, null);
+    }
+
+    private void DisableLimits()
     {
         Volatile.Write(ref _allocationLimitBytes, long.MaxValue);
         Volatile.Write(ref _memoryLoadBytesAtStart, 0);
@@ -240,12 +287,19 @@ internal sealed class SearchMemoryPressureSignal
         Volatile.Write(ref _reclaimAndContinue, null);
         Volatile.Write(ref _useDefaultGcAndContinue, null);
         Volatile.Write(ref _unexpectedNoGcLossProbe, null);
+        Volatile.Write(ref _systemMemoryLoadProbe, null);
+        Volatile.Write(ref _reusableHeapBytesAtStart, 0);
         Volatile.Write(ref _conservativeParallelismRequired, 0);
+        Volatile.Write(ref _noGcRecoveryAllowed, 0);
     }
 
-    public void UseDefaultGcFallback(bool systemHeadroomConstrained)
+    public void UseDefaultGcFallback(bool systemHeadroomConstrained, bool allowNoGcRecovery = false,
+        long completedRecoveryGen2Index = 0)
     {
-        Disable();
+        DisableLimits();
+        Volatile.Write(ref _noGcRecoveryAllowed, allowNoGcRecovery ? 1 : 0);
         Volatile.Write(ref _conservativeParallelismRequired, systemHeadroomConstrained ? 1 : 0);
+        if (allowNoGcRecovery)
+            Volatile.Read(ref _noGcFallbackObserver)?.Invoke(completedRecoveryGen2Index);
     }
 }

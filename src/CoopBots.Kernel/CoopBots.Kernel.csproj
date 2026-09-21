@@ -18,7 +18,46 @@
     <Reference Include="STS2-RitsuLib.Runtime" HintPath="$(RitsuLibDir)/STS2-RitsuLib.Runtime.dll" Private="false" />
     <Reference Include="STS2-RitsuLib.Shared" HintPath="$(RitsuLibSharedDir)/STS2-RitsuLib.Shared.dll" Private="false" />
     <Compile Include="Vendor/**/*.cs" /><Compile Include="*.cs" />
-    <Compile Remove="Vendor/Runtime/CombatReplayOutcome.cs" />
+
     <None Include="../../THIRD_PARTY_NOTICES.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Upstream mod entry point: this kernel is a host facade, not the CombatSolver
+         mod, so its initializer, log directory and enable switch stay out. This is the
+         same exclusion the original importer applied at import time. -->
+    <Compile Remove="Vendor/Runtime/Entry.cs" />
+    <!-- Upstream MOD RUNTIME, not search: bug-report export, the solver controller, the
+         instant-mode patch and the turn-setup Harmony hooks all belong to the shipped
+         CombatSolver mod. The original importer left them out at import time; this kernel
+         vendors the search, so they are excluded at compile time instead. -->
+    <Compile Remove="Vendor/Runtime/CombatBugReportExporter.cs" />
+    <Compile Remove="Vendor/Runtime/SolverController.cs" />
+    <Compile Remove="Vendor/Runtime/CombatInstantModePatch.cs" />
+    <Compile Remove="Vendor/Runtime/PlayerTurnSetupPatches.cs" />
+    <Compile Remove="Vendor/Runtime/SolverControllerSessions.cs" />
+    <Compile Remove="Vendor/Runtime/CombatShowcaseCollector.cs" />
+    <Compile Remove="Vendor/Runtime/CombatBugReportMetadata.cs" />
+    <Compile Remove="Vendor/UI/**/*.cs" />
+    <Compile Remove="Vendor/Testing/**/*.cs" />
+    <Compile Remove="Vendor/Api/**/*.cs" />
+    <Compile Remove="Vendor/Runtime/CombatShowcaseRuntime.cs" />
+    <Compile Remove="Vendor/Runtime/SolverController.Testing.cs" />
+    <Compile Remove="Vendor/Runtime/RunStatistics.cs" />
+    <Compile Remove="Vendor/Runtime/PerformanceRecording.cs" />
+    <Compile Remove="Vendor/Runtime/OnlinePresence.cs" />
+    <Compile Remove="Vendor/Runtime/SearchGcPolicy.cs" />
+    <Compile Remove="Vendor/Runtime/NativeChoiceRuntime.cs" />
+    <Compile Remove="Vendor/Runtime/SolverDispatcher.cs" />
+    <Compile Remove="Vendor/Runtime/CombatReplayRecording.cs" />
+    <Compile Remove="Vendor/Runtime/CombatBugReportUploader.cs" />
+    <Compile Remove="Vendor/Runtime/CombatReplayOutcome.cs" />
+    <Compile Remove="Vendor/Runtime/SearchGcPolicy.Recovery.cs" />
+    <Compile Remove="Vendor/Runtime/CombatSolverLog.cs" />
+    <Compile Remove="Vendor/Diagnostics/PerformanceRecording.cs" />
+    <Compile Remove="Vendor/Runtime/SystemMemoryReleaseService.cs" />
+    <Compile Remove="Vendor/Diagnostics/PerformanceLifecycle.cs" />
+    <!-- The rest of that layer: the overlay UI and the progress/diagnostic mirrors it
+         renders from. Same reasoning as the runtime exclusions above. -->
   </ItemGroup>
 </Project>

@@ -17,6 +17,8 @@ internal sealed partial class SimulatedCombatState
             _knownEnemies.Fork(),
             _escapedCreatures.Fork())
         {
+            _mirroredHookLayout = _mirroredHookLayout,
+            _mirroredRunHookLayout = _mirroredRunHookLayout,
             _drawNextTurn = _drawNextTurn?.Fork(),
             _retiredRootPowerSlots = _retiredRootPowerSlots?.Fork(),
             _skipNextDurationTick = _skipNextDurationTick?.Fork(),
@@ -46,6 +48,9 @@ internal sealed partial class SimulatedCombatState
             _statusCardsDrawnThisTurn = _statusCardsDrawnThisTurn?.Fork(),
             _cardPlaySeriesStartedThisTurn = _cardPlaySeriesStartedThisTurn?.Fork(),
             _zeroCostAttackStartsThisTurn = _zeroCostAttackStartsThisTurn?.Fork(),
+            _attackPlayStartsThisTurn = _attackPlayStartsThisTurn?.Fork(),
+            _cardPlayStartsThisTurn = _cardPlayStartsThisTurn?.Fork(),
+            _attackSkillStartsThisTurn = _attackSkillStartsThisTurn?.Fork(),
             _enemiesIntendingAttack = _enemiesIntendingAttack?.Fork(),
             _hasPredictedEnemyIntents = _hasPredictedEnemyIntents,
             _playerTurnNumbers = _playerTurnNumbers?.Fork(),
@@ -68,7 +73,7 @@ internal sealed partial class SimulatedCombatState
             _manualCardsPlayedThisTurn = _manualCardsPlayedThisTurn?.Fork(),
             _fetchCardsPlayedThisTurn = _fetchCardsPlayedThisTurn?.Fork(),
             _simulatedPlayerGold = _simulatedPlayerGold?.Fork(),
-            _liveCardsAtSnapshot = _liveCardsAtSnapshot?.Fork(),
+            _liveCardsAtSnapshot = _liveCardsAtSnapshot,
             _swordSageCardsInitialized = _swordSageCardsInitialized,
             _lastNormalizedVitalSparkAmount = _lastNormalizedVitalSparkAmount,
             _skillsPlayedThisTurn = _skillsPlayedThisTurn?.Fork(),
@@ -78,8 +83,11 @@ internal sealed partial class SimulatedCombatState
             _outstandingStolenCards = _outstandingStolenCards,
             _longTermResourceValue = _longTermResourceValue,
             _growthRewards = _growthRewards,
+            _brightestFlameMaxHpSpent = _brightestFlameMaxHpSpent,
             _angerCopiesGenerated = _angerCopiesGenerated,
             _deathSaveRelicHpRestored = _deathSaveRelicHpRestored,
+            _deathSavePotionHpRestored = _deathSavePotionHpRestored,
+            _deathSaveUseCount = _deathSaveUseCount,
         };
 
         if (_addedPowerInstances is not null)
@@ -116,7 +124,6 @@ internal sealed partial class SimulatedCombatState
         }
         fork._returnToHandNextTurn = ForkCardSet(_returnToHandNextTurn, context);
         fork._swordSageReplayBonuses = ForkCardDictionary(_swordSageReplayBonuses, context);
-        fork._powerAfflictionKnownCards = ForkCardSet(_powerAfflictionKnownCards, context);
         fork._dampenOriginalUpgrades = ForkDampenCards(context);
         fork._lastAttackThisTurn = ForkHistoryCourseCards(_lastAttackThisTurn, context);
         fork._lastAttackPreviousTurn = ForkHistoryCourseCards(_lastAttackPreviousTurn, context);
@@ -124,7 +131,10 @@ internal sealed partial class SimulatedCombatState
         {
             // 观察者只往卡上写一个回调，不读也不写任何被 ForkCard 改动的状态，
             // 所以可以和分叉同一趟走完：卡的顺序、ForkCard 的调用序列都不变。
-            List<PredictedCard> registeredCombatCards = new(_registeredCombatCards.Count);
+            // Generation/transformation first registers one card before removing a replacement.
+            // One spare slot prevents that first insertion from copying the entire forked list.
+            List<PredictedCard> registeredCombatCards = new(
+                _registeredCombatCards.Count == 0 ? 0 : _registeredCombatCards.Count + 1);
             foreach (PredictedCard card in _registeredCombatCards)
             {
                 PredictedCard forkedCard = ForkCard(card, context);
@@ -169,14 +179,38 @@ internal sealed partial class SimulatedCombatState
         if (!CanReuseHookListenerCache)
             return;
 
+        if (_baseHookListenerPrefix is not null)
+            fork._baseHookListenerPrefix = RemapCachedModels(_baseHookListenerPrefix, context);
+        if (_effectiveHookListenerPrefix is not null)
+            fork._effectiveHookListenerPrefix = ReferenceEquals(_effectiveHookListenerPrefix, _baseHookListenerPrefix)
+                ? fork._baseHookListenerPrefix : RemapCachedModels(_effectiveHookListenerPrefix, context);
+        if (_activeHookListenerPrefix is not null)
+            fork._activeHookListenerPrefix = ReferenceEquals(_activeHookListenerPrefix, _effectiveHookListenerPrefix)
+                ? fork._effectiveHookListenerPrefix : RemapCachedModels(_activeHookListenerPrefix, context);
+
         if (_baseHookListeners is not null)
-            fork._baseHookListeners = RemapCachedModels(_baseHookListeners, context);
+        {
+            fork._baseHookListeners = _baseHookListeners is ConcatenatedListenerView baseView
+                && ReferenceEquals(baseView.Prefix, _baseHookListenerPrefix)
+                && fork._baseHookListenerPrefix is { } basePrefix
+                ? new ConcatenatedListenerView(basePrefix, RemapCachedModels(baseView.Suffix, context))
+                : RemapCachedModels(_baseHookListeners, context);
+        }
 
         if (_effectiveHookListeners is not null)
         {
-            fork._effectiveHookListeners = ReferenceEquals(_effectiveHookListeners, _baseHookListeners)
-                ? fork._baseHookListeners
-                : RemapCachedModels(_effectiveHookListeners, context);
+            if (ReferenceEquals(_effectiveHookListeners, _baseHookListeners))
+                fork._effectiveHookListeners = fork._baseHookListeners;
+            else if (_effectiveHookListeners is ConcatenatedListenerView effectiveView
+                && _baseHookListeners is ConcatenatedListenerView baseView
+                && ReferenceEquals(effectiveView.Suffix, baseView.Suffix)
+                && fork._baseHookListeners is ConcatenatedListenerView forkedBase)
+                fork._effectiveHookListeners = new ConcatenatedListenerView(
+                    ReferenceEquals(effectiveView.Prefix, _effectiveHookListenerPrefix)
+                        && fork._effectiveHookListenerPrefix is { } effectivePrefix
+                        ? effectivePrefix : RemapCachedModels(effectiveView.Prefix, context), forkedBase.Suffix);
+            else
+                fork._effectiveHookListeners = RemapCachedModels(_effectiveHookListeners, context);
         }
 
         if (_effectiveRunHookListeners is not null)
@@ -192,7 +226,12 @@ internal sealed partial class SimulatedCombatState
                 // 逐元素重映射对拼接是可分配的：remap(前缀 ++ 后缀) == remap(前缀) ++ remap(后缀)。
                 // 后缀就是刚刚重映射好的战斗监听表，前缀是根牌组快照（只含 CardModel/Enchantment，
                 // 从不作为 Fork 源登记），两段都没变时连视图对象一起复用。
-                IReadOnlyList<AbstractModel> forkedPrefix = RemapCachedModels(view.Prefix, context);
+                // This exact prefix contains only captured deck cards/enchantments.
+                // State.Fork registers wrappers, creatures, orbs and powers, never these
+                // root models; StateStore.Fork runs afterward. Other prefixes still
+                // use the ordinary mapping path.
+                IReadOnlyList<AbstractModel> forkedPrefix = ReferenceEquals(view.Prefix, _rootRunHookListeners)
+                    ? _rootRunHookListeners : RemapCachedModels(view.Prefix, context);
                 fork._effectiveRunHookListeners =
                     ReferenceEquals(forkedPrefix, view.Prefix)
                         && ReferenceEquals(forkedSuffix, view.Suffix)
@@ -211,6 +250,13 @@ internal sealed partial class SimulatedCombatState
         IReadOnlyList<AbstractModel> source,
         PredictionForkContext context)
     {
+        if (source is ConcatenatedListenerView view)
+        {
+            IReadOnlyList<AbstractModel> prefix = RemapCachedModels(view.Prefix, context);
+            IReadOnlyList<AbstractModel> suffix = RemapCachedModels(view.Suffix, context);
+            return ReferenceEquals(prefix, view.Prefix) && ReferenceEquals(suffix, view.Suffix)
+                ? source : new ConcatenatedListenerView(prefix, suffix);
+        }
         AbstractModel[]? remapped = null;
         for (int index = 0; index < source.Count; index++)
         {
@@ -297,7 +343,7 @@ internal sealed partial class SimulatedCombatState
     {
         if (source is null)
             return null;
-        List<PredictedCard> fork = new(source.Count);
+        List<PredictedCard> fork = new(source.Count == 0 ? 0 : source.Count + 1);
         foreach (PredictedCard card in source)
             fork.Add(ForkCard(card, context));
         return fork;

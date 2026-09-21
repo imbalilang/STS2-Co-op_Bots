@@ -52,6 +52,18 @@ internal static class BotCooperation
     private static string _intentSignature = "";
     internal static uint? FocusTarget { get; private set; }
     internal static string LastAction = "";
+    // Set by BotRuntime from the kernel planner each tick. A plain flag rather than a
+    // reference to the planner, so the panel stays a renderer and the runtime stays the
+    // only thing that knows what the planner is doing.
+    internal static bool Searching;
+    // Elapsed and budget for the in-flight search, published by BotRuntime on the same
+    // tick. An all-bot opening search may legitimately think for five minutes, so a bare
+    // "searching" cannot be told apart from "hung".
+    internal static long SearchingElapsedMs;
+    internal static int SearchingBudgetMs;
+    // Deepest fight round the in-flight search has simulated. A node or worldline count
+    // cannot tell a player whether the tree is exploring round 1 or round 4; rounds can.
+    internal static int SearchingRounds;
     internal static string Callout = "";
     private static long _calloutUntilMs;
     private static ulong _calloutActor;
@@ -78,7 +90,7 @@ internal static class BotCooperation
     {
         var combat = state.Players.FirstOrDefault()?.Creature.CombatState;
         Gate.Observe(combat, combat?.RoundNumber ?? 0);
-        var isHost = RunManager.Instance.NetService.Type == MegaCrit.Sts2.Core.Multiplayer.Game.NetGameType.Host;
+        var isHost = RunAuthority.IsSubmittingPeer();
         var humansFinished = HumansFinished(state);
         var run = NRun.Instance;
         if (run is null || !state.Players.Any(p => BotRegistry.IsBot(p.NetId))) return;
@@ -225,15 +237,55 @@ internal static class BotCooperation
         }
         var zh = BotUiTheme.Chinese();
         _pause!.Text = Gate.Paused ? (zh ? "继续" : "Resume") : (zh ? "暂停" : "Pause");
-        // Planning is bounded in every phase: no long think, and no replay of a
-        // stored script. Say that rather than promising a full-fight optimum or
-        // back-to-back scripted play the team no longer attempts.
-        _status!.Text = (Gate.Paused
-            ? (zh ? "已暂停：不再提交新的 Bot 行动" : "Paused: no new bot actions")
-            : humansFinished
-                ? (zh ? "机器人行动中" : "Bots are acting")
-                : (zh ? "协作节奏：等待真人决策" : "Co-op pace: waiting for the humans"))
+        // The search spans frames, so it has a visible duration and the panel should say
+        // so — a team that looks idle while it is thinking reads as a team that is stuck.
+        // This leads the status because it is the only state where waiting is the correct
+        // thing for the player to do.
+        _status!.Text = (Searching
+            ? (zh ? "正在搜索最优解…" : "Searching for the optimal line…")
+                + DescribeSearchClock(zh)
+            : Gate.Paused
+                ? (zh ? "已暂停：不再提交新的 Bot 行动" : "Paused: no new bot actions")
+                : humansFinished
+                    ? (zh ? "机器人行动中" : "Bots are acting")
+                    : (zh ? "协作节奏：等待真人决策" : "Co-op pace: waiting for the humans"))
             + (string.IsNullOrEmpty(LastAction) ? "" : "\n" + LastAction);
+    }
+
+    /// <summary>
+    /// " (7:30 / 10:00 · 已算到第 3 回合)" while the opening ladder runs, " (12.4s)" for a
+    /// per-tier search.
+    ///
+    /// The budget is only shown when it is long enough to be worth waiting out — a
+    /// 300 ms tier search against a 5-minute opening would otherwise read as two
+    /// identical clocks. Minutes are used as soon as the elapsed reaches one, because
+    /// the number this is here to make legible is the five-to-ten-minute opening.
+    ///
+    /// During that opening the runtime publishes the WHOLE episode and the ten-minute
+    /// ceiling, not the current attempt, so an extension reads "7:30 / 10:00" instead of
+    /// "33.0s / 1:00" — the cap is what the player is waiting out. The round count is the
+    /// depth signal: a node count cannot tell round 1 from round 4.
+    /// </summary>
+    private static string DescribeSearchClock(bool zh)
+    {
+        if (SearchingElapsedMs <= 0) return "";
+        var elapsed = Clock(SearchingElapsedMs);
+        // No budget for a sub-10s tier search: "0.3s / 0.3s" would be noise.
+        var budget = SearchingBudgetMs < 10_000 ? "" : $" / {Clock(SearchingBudgetMs)}";
+        // During the opening ladder the runtime publishes the WHOLE episode against the
+        // ten-minute cap, so this reads "7:30 / 10:00" rather than "33.0s / 1:00" — the
+        // number the player is waiting out is the cap, not the current attempt.
+        var depth = SearchingRounds > 0
+            ? (zh ? $" · 已算到第 {SearchingRounds} 回合" : $" · round {SearchingRounds}")
+            : "";
+        return $" ({elapsed}{budget}{depth})";
+    }
+
+    private static string Clock(long milliseconds)
+    {
+        if (milliseconds < 60_000) return $"{milliseconds / 1000.0:F1}s";
+        var total = (long)(milliseconds / 1000);
+        return $"{total / 60}:{total % 60:D2}";
     }
 
     /// <summary>

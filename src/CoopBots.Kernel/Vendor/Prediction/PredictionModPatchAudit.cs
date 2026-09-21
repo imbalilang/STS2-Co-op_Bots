@@ -21,7 +21,7 @@ namespace CoopBots.Kernel.Vendor;
 /// </remarks>
 internal static class PredictionModPatchAudit
 {
-    private const string OnPlayName = "OnPlay";
+    private static readonly string[] IncompatibleModIds = ["WheelchairSpire", "PengoTarot", "BetterCharacterRelics"];
 
     private readonly record struct ForeignPatch(string ModId, string ModName, string Description);
 
@@ -33,61 +33,56 @@ internal static class PredictionModPatchAudit
     /// visible at capture time and are not audited here.
     /// </remarks>
     public static void ValidateCardOnPlay(IEnumerable<CardModel> cards)
+        => CaptureCardOnPlay(cards);
+
+    internal static AdaptedOnPlaySnapshot? CaptureCardOnPlay(IEnumerable<CardModel> cards)
     {
         ValidateLoadedMods(ModManager.GetLoadedMods());
+        bool adapted = AdaptedCardOnPlayMirrors.Seal();
+        Dictionary<Type, AdaptedCardOnPlayMirrors.Registration?>? selections = adapted ? [] : null;
         HashSet<Type> checkedTypes = [];
         foreach (CardModel card in cards)
         {
             // Harmony patches can be installed or removed between root captures.
-            if (!checkedTypes.Add(card.GetType())
-                || FindForeignOnPlayPatch(card.GetType()) is not { } foreign)
-                continue;
-            throw new IncompatibleGameplayModException(
-                foreign.ModId,
-                foreign.ModName,
-                foreign.Description,
-                "combat");
+            Type type = card.GetType();
+            if (!checkedTypes.Add(type)) continue;
+            MethodInfo target = AdaptedCardOnPlayMirrors.ResolveOnPlay(type)
+                ?? throw new PredictionUnsupportedException($"Missing OnPlay for {type.FullName}.");
+            Patches? patches = Harmony.GetPatchInfo(target);
+            ForeignPatch? firstForeign = null;
+            if (patches is not null)
+                foreach (var group in AdaptedCardOnPlayMirrors.Groups(patches))
+                    foreach (Patch patch in group.Patches)
+                    {
+                        // Resolve every source even when the full combination is registered.
+                        ForeignPatch? foreign = TryDescribeForeignPatch(patch, target);
+                        firstForeign ??= foreign;
+                    }
+            var selected = adapted ? AdaptedCardOnPlayMirrors.Select(type, target, patches) : null;
+            if (selected is null && firstForeign is { } unsupported)
+                throw new IncompatibleGameplayModException(unsupported.ModId, unsupported.ModName,
+                    unsupported.Description, "combat");
+            selections?.Add(type, selected);
         }
+        return selections is null ? null : new(selections, AdaptedCardOnPlayMirrors.CaptureLiveStamp()!);
     }
 
     internal static void ValidateLoadedMods(IEnumerable<Mod> mods)
     {
         foreach (Mod mod in mods)
         {
-            if (!string.Equals(mod.manifest?.id, "WheelchairSpire", StringComparison.OrdinalIgnoreCase)
-                && !mod.assemblies.Any(assembly => string.Equals(
-                    assembly.GetName().Name, "WheelchairSpire", StringComparison.OrdinalIgnoreCase)))
+            string? incompatibleId = IncompatibleModIds.FirstOrDefault(id =>
+                string.Equals(mod.manifest?.id, id, StringComparison.OrdinalIgnoreCase)
+                || mod.assemblies.Any(assembly => string.Equals(
+                    assembly.GetName().Name, id, StringComparison.OrdinalIgnoreCase)));
+            if (incompatibleId is null)
                 continue;
             throw new IncompatibleGameplayModException(
                 mod.manifest?.id ?? string.Empty,
-                mod.manifest?.name ?? "WheelchairSpire",
-                "WheelchairSpire gameplay changes",
+                mod.manifest?.name ?? incompatibleId,
+                $"{incompatibleId} gameplay changes",
                 "combat");
         }
-    }
-
-    private static ForeignPatch? FindForeignOnPlayPatch(Type cardType)
-    {
-        MethodInfo? onPlay = AccessTools.Method(
-            cardType,
-            OnPlayName,
-            [typeof(PlayerChoiceContext), typeof(CardPlay)]);
-        if (onPlay == null)
-            return null;
-
-        Patches? patches = Harmony.GetPatchInfo(onPlay);
-        if (patches == null)
-            return null;
-
-        foreach (Patch patch in patches.Prefixes
-                     .Concat(patches.Postfixes)
-                     .Concat(patches.Transpilers)
-                     .Concat(patches.Finalizers))
-        {
-            if (TryDescribeForeignPatch(patch, onPlay) is { } foreign)
-                return foreign;
-        }
-        return null;
     }
 
     private static ForeignPatch? TryDescribeForeignPatch(Patch patch, MethodInfo target)

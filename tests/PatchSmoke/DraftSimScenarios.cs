@@ -9,6 +9,7 @@ using DeckSim;
 //   --deck-sim --chars=IRONCLAD      one character
 //   --deck-sim --seed=123            a different seed block
 //   --deck-sim --ascension=0         the same sweep without A10
+//   --deck-sim --players=1           score against a solo reference (default 4)
 //   --deck-sim --baseline            diff against the last stored report
 //   --deck-sim --out=path.json       where to write the report
 //
@@ -36,14 +37,17 @@ internal static class DraftSimScenarios
 
         // The previous report is read before this one is written, so "diff against
         // the last run" compares against the last run and not against itself.
-        var baselinePath = ArgValue(args, "--baseline") ?? DraftSimHarness.FindBaseline(report.Label + ".json");
+        var baselinePath = ArgValue(args, "--baseline") ?? DraftSimHarness.FindBaseline(report.Label);
         var baseline = baselinePath is not null && File.Exists(baselinePath)
             ? System.Text.Json.JsonSerializer.Deserialize<SimReport>(File.ReadAllText(baselinePath))
             : null;
 
         var path = DraftSimHarness.Write(report, ArgValue(args, "--out"));
         Console.WriteLine($"report: {path}  ({Environment.TickCount64 - started} ms)");
-        if (baseline is not null) DraftSimHarness.PrintDiff(baseline, report);
+        if (baseline is not null)
+            DraftSimHarness.PrintDiff(baseline, report, baselinePath);
+        else
+            Console.WriteLine("note: first report for this label — the next run with the same settings will compare against this one.");
     }
 
     private static SimConfig Parse(string[] args, SimConfig config)
@@ -54,6 +58,8 @@ internal static class DraftSimScenarios
         if (chars is not null) config = config with { Characters = chars.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) };
         var seed = ArgValue(args, "--seed");
         if (seed is not null) config = config with { Seed = ulong.Parse(seed) };
+        var players = ArgValue(args, "--players");
+        if (players is not null) config = config with { Players = Math.Max(1, int.Parse(players)) };
         // --ascension=0 runs the identical sweep at ascension 0, which is how the
         // pipeline's own A10 model is checked: the difference between the two
         // reports is exactly what the ascension is worth.
@@ -80,7 +86,9 @@ internal static class DraftSimScenarios
         var player = DraftRunner.NewPlayer("Ironclad", 1);
         var offense = DraftRunner.DeckOf(player, "STRIKE_IRONCLAD", 10);
         var defence = DraftRunner.DeckOf(player, "DEFEND_IRONCLAD", 10);
-        var reference = config.References[0];
+        // Through ReferenceFor, never the raw array: the par values live on the
+        // character's profile, and an unfilled reference saturates every component.
+        var reference = config.ReferenceFor("Ironclad", 0);
         var attack = DeckScorer.Score(offense, reference, config, 1);
         var guard = DeckScorer.Score(defence, reference, config, 1);
         if (!(attack.Offence > guard.Offence))
@@ -107,6 +115,58 @@ internal static class DraftSimScenarios
                 + $"({drag.DamagePerTurn:F1} vs {clean.DamagePerTurn:F1}).");
         Console.WriteLine($"PASS: deck-sim scorer separates offence, defence and curse drag "
             + $"(strikes {attack.Offence:F0}/{guard.Defence:F0}, curses {drag.DamagePerTurn:F1} vs {clean.DamagePerTurn:F1} dmg/turn).");
+
+        // Negative control: the score must not be buyable by piling on defence.
+        // A review of this tool found the previous scoring monotone in block — a
+        // sweep of BuildValue.BlockWeight took power from 30 to 48 while the kill
+        // rate fell from 30% to 12% — because nothing charged for the offence the
+        // extra block displaced. If this assertion fails, that hole is back.
+        var turtle = DraftRunner.DeckOf(player, "DEFEND_IRONCLAD", 18, "STRIKE_IRONCLAD", 2);
+        var balanced = DraftRunner.DeckOf(player, "STRIKE_IRONCLAD", 8, "DEFEND_IRONCLAD", 6);
+        var turtleScore = DeckScorer.Score(turtle, reference, config, 1);
+        var balancedScore = DeckScorer.Score(balanced, reference, config, 1);
+        if (!(balancedScore.Power > turtleScore.Power))
+            throw new Exception($"DECK-SIM scorer: a deck that only blocks must not outscore a balanced one "
+                + $"(turtle {turtleScore.Power:F1} dmg/turn {turtleScore.DamagePerTurn:F1}, "
+                + $"balanced {balancedScore.Power:F1} dmg/turn {balancedScore.DamagePerTurn:F1}).");
+        Console.WriteLine($"PASS: deck-sim scorer rejects defence bought at the cost of closing "
+            + $"(block-only {turtleScore.Power:F1} vs balanced {balancedScore.Power:F1}).");
+
+        VerifyLevers(config);
+    }
+
+    /// <summary>
+    /// Turns each of the pipeline's own knobs and checks the run actually moved.
+    ///
+    /// A sweep is only evidence if the thing being swept is connected: a constant
+    /// that nothing reads produces a perfectly stable, perfectly meaningless
+    /// report, and the stability looks like a result. Each check below is a
+    /// direction that must hold if the knob is wired — camps off must mean fewer
+    /// upgrades, ascension off must mean fewer curses.
+    ///
+    /// This covers the simulation's own settings. The drafting constants in
+    /// <c>BuildValue</c> are compiled in, so their sensitivity cannot be tested
+    /// from inside one process; that is what the report delta is for.
+    /// </summary>
+    private static void VerifyLevers(SimConfig config)
+    {
+        var quick = config with { RunsPerCharacter = 2 };
+        var baseline = DraftRunner.Run("Ironclad", config.Seed, quick);
+        if (!(baseline.Upgrades > 0))
+            throw new Exception("DECK-SIM lever check: the baseline run smithed nothing, so the camp lever cannot be read.");
+
+        var noCamps = DraftRunner.Run("Ironclad", config.Seed, quick with { SmithAtCamp = false });
+        if (noCamps.Upgrades >= baseline.Upgrades)
+            throw new Exception($"DECK-SIM lever check: SmithAtCamp=false did not reduce upgrades "
+                + $"({noCamps.Upgrades} vs {baseline.Upgrades}).");
+
+        var noAscension = DraftRunner.Run("Ironclad", config.Seed, quick with { Ascension10 = false });
+        if (noAscension.CursesAdded >= baseline.CursesAdded)
+            throw new Exception($"DECK-SIM lever check: turning ascension off did not reduce curses added "
+                + $"({noAscension.CursesAdded} vs {baseline.CursesAdded}).");
+
+        Console.WriteLine($"PASS: deck-sim levers are wired (camps {noCamps.Upgrades} vs {baseline.Upgrades} upgrades, "
+            + $"ascension {noAscension.CursesAdded} vs {baseline.CursesAdded} curses).");
     }
 
     /// <summary>

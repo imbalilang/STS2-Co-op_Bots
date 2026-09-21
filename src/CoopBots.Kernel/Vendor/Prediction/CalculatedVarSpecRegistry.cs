@@ -33,7 +33,9 @@ internal static class CalculatedVarSpecRegistry
     ];
 
     public static IReadOnlyDictionary<Type, string> EvidenceByType { get; }
-        = SupportedTypes.ToDictionary(type => type, _ => "CALCULATED-CARD-BATCH-136");
+        = SupportedTypes.ToDictionary(type => type, type => type == typeof(Murder)
+            ? "MURDER-ROOT-HISTORY"
+            : "CALCULATED-CARD-BATCH-136");
 
     public static bool TryCalculate(
         CalculatedVar calculatedVar,
@@ -107,7 +109,7 @@ internal static class CalculatedVarSpecRegistry
             HelixDrill => Math.Max(0, combat.GetEnergySpentThisTurn(model.Owner)
                 - card.GetEnergyCostWithModifiers(simulator, playerState)),
             PullFromBelow => CountEtherealPlays(simulator, model.Owner),
-            Normality => Math.Min(3, combat.GetCardsPlayedThisTurn(owner)),
+            Normality => Math.Min(3, combat.GetCardPlayStartsThisTurn(owner)),
             Synchronize or CompileDriver => playerState.OrbQueue.Orbs.Select(orb => orb.Id).Distinct().Count(),
             Protector => simulator.State.GetOsty(model.Owner) is { } protectorOsty
                 && simulator.State.GetCreature(protectorOsty).IsAlive
@@ -175,8 +177,7 @@ internal static class CalculatedVarSpecRegistry
            + simulator.History.OfType<CombatPredictionCardPlayFinishedEntry>().Count();
 
     private static int CountDrawnCards(CombatPredictionSimulator simulator, Player player)
-        => CombatManager.Instance.History.Entries.OfType<CardDrawnEntry>()
-               .Count(entry => entry.Actor.Player == player)
+        => ((SimulatedCombatState)simulator.State.CombatState).GetCardsDrawnBeforePrediction(player)
            + simulator.History.OfType<CombatPredictionCardDrawnEntry>()
                .Count(entry => entry.Card.Owner == player);
 }

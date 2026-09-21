@@ -3,25 +3,38 @@ using System.Text.Json.Serialization;
 
 namespace DeckSim;
 
-/// <summary>One run, flattened for the report. Deck lists are kept: they are what a regression gets read against.</summary>
+/// <summary>
+/// One run, flattened for the report. Deck lists are kept: they are what a
+/// regression gets read against.
+///
+/// Every component that goes into <see cref="DeckScore.Power"/> is carried, and
+/// that is not tidiness. Power is multiplied by survival outright, so a report
+/// without <see cref="SurvivalRate"/> cannot say whether a run's power fell
+/// because the deck got weaker or because it started dying — and those two need
+/// opposite fixes. Efficiency and UpgradeScore are here for the same reason: they
+/// are the two components the community sample rates as the strongest signals, so
+/// they are the most likely explanation of any move in power.
+/// </summary>
 internal sealed record RunSummary(
     string Character, ulong Seed, string Route, int Size, int Curses, int Upgrades,
     int Taken, int Skipped, int Removals, int Smiths, int CursesAdded, int GoldEarned, int GoldSpent,
-    double Power, double Offence, double Defence, double Consistency,
-    double DamagePerTurn, double BlockPerTurn, double TurnsToKill, double KillRate, double Coverage, double DeadDraw,
-    double EnergyWaste, double Ramp, string Deck, StageSummary[] Trajectory);
+    double Power, double Offence, double Defence, double UpgradeScore, double Efficiency, double Consistency,
+    double DamagePerTurn, double BlockPerTurn, double TurnsToKill, double KillRate, double SurvivalRate,
+    double Coverage, double DeadDraw, double EnergyWaste, double Ramp, string Deck, StageSummary[] Trajectory);
 
 /// <summary>One deck snapshot in a run's act-by-act trajectory.</summary>
 internal sealed record StageSummary(
     string Stage, double Size, double Curses, double Upgrades, double Power, double Offence, double Defence,
-    double DamagePerTurn, double BlockPerTurn, double TurnsToKill, double KillRate, double Coverage, double DeadDraw);
+    double UpgradeScore, double Efficiency, double DamagePerTurn, double BlockPerTurn, double TurnsToKill,
+    double KillRate, double SurvivalRate, double Coverage, double DeadDraw);
 
 /// <summary>What one character's seed batch averaged. The unit a parameter change is judged on.</summary>
 internal sealed record CharacterSummary(
     string Character, int Runs,
-    double Power, double Offence, double Defence, double Consistency,
-    double DamagePerTurn, double BlockPerTurn, double TurnsToKill, double KillRate, double Coverage, double DeadDraw,
-    double EnergyWaste, double Ramp, double Size, double Curses, double Upgrades,
+    double Power, double Offence, double Defence, double UpgradeScore, double Efficiency, double Consistency,
+    double DamagePerTurn, double BlockPerTurn, double TurnsToKill, double KillRate, double SurvivalRate,
+    double Coverage, double DeadDraw, double EnergyWaste, double Ramp,
+    double Size, double Curses, double Upgrades,
     double Taken, double Skipped, double Removals, double Smiths, double CursesAdded,
     StageSummary[] Trajectory);
 
@@ -84,10 +97,13 @@ internal static class DraftSimHarness
                 Mean(group.Select(s => s.Score.Power)),
                 Mean(group.Select(s => s.Score.Offence)),
                 Mean(group.Select(s => s.Score.Defence)),
+                Mean(group.Select(s => s.Score.UpgradeScore)),
+                Mean(group.Select(s => s.Score.Efficiency)),
                 Mean(group.Select(s => s.Score.DamagePerTurn)),
                 Mean(group.Select(s => s.Score.BlockPerTurn)),
                 Mean(group.Select(s => s.Score.TurnsToKill)),
                 Mean(group.Select(s => s.Score.KillRate)),
+                Mean(group.Select(s => s.Score.SurvivalRate)),
                 Mean(group.Select(s => s.Score.BlockCoverage)),
                 Mean(group.Select(s => s.Score.DeadDrawRate))))
             .ToArray();
@@ -97,11 +113,14 @@ internal static class DraftSimHarness
             Mean(runs.Select(r => r.Final.Power)),
             Mean(runs.Select(r => r.Final.Offence)),
             Mean(runs.Select(r => r.Final.Defence)),
+            Mean(runs.Select(r => r.Final.UpgradeScore)),
+            Mean(runs.Select(r => r.Final.Efficiency)),
             Mean(runs.Select(r => r.Final.Consistency)),
             Mean(runs.Select(r => r.Final.DamagePerTurn)),
             Mean(runs.Select(r => r.Final.BlockPerTurn)),
             Mean(runs.Select(r => r.Final.TurnsToKill)),
             Mean(runs.Select(r => r.Final.KillRate)),
+            Mean(runs.Select(r => r.Final.SurvivalRate)),
             Mean(runs.Select(r => r.Final.BlockCoverage)),
             Mean(runs.Select(r => r.Final.DeadDrawRate)),
             Mean(runs.Select(r => r.Final.EnergyWaste)),
@@ -121,14 +140,17 @@ internal static class DraftSimHarness
         run.Character, run.Seed, run.Route, run.FinalSize, run.Curses, run.Upgrades,
         run.RewardsTaken, run.RewardsSkipped, run.Removals, run.Smiths, run.CursesAdded,
         run.GoldEarned, run.GoldSpent,
-        run.Final.Power, run.Final.Offence, run.Final.Defence, run.Final.Consistency,
+        run.Final.Power, run.Final.Offence, run.Final.Defence, run.Final.UpgradeScore,
+        run.Final.Efficiency, run.Final.Consistency,
         run.Final.DamagePerTurn, run.Final.BlockPerTurn, run.Final.TurnsToKill, run.Final.KillRate,
-        run.Final.BlockCoverage, run.Final.DeadDrawRate, run.Final.EnergyWaste, run.Final.RampRatio,
+        run.Final.SurvivalRate, run.Final.BlockCoverage, run.Final.DeadDrawRate,
+        run.Final.EnergyWaste, run.Final.RampRatio,
         run.FinalDeck,
         run.Trajectory.Select(stage => new StageSummary(
             stage.Stage, stage.Size, stage.Curses, stage.Upgrades, stage.Score.Power,
-            stage.Score.Offence, stage.Score.Defence, stage.Score.DamagePerTurn, stage.Score.BlockPerTurn,
-            stage.Score.TurnsToKill, stage.Score.KillRate, stage.Score.BlockCoverage, stage.Score.DeadDrawRate)).ToArray());
+            stage.Score.Offence, stage.Score.Defence, stage.Score.UpgradeScore, stage.Score.Efficiency,
+            stage.Score.DamagePerTurn, stage.Score.BlockPerTurn, stage.Score.TurnsToKill, stage.Score.KillRate,
+            stage.Score.SurvivalRate, stage.Score.BlockCoverage, stage.Score.DeadDrawRate)).ToArray());
 
     private static double Mean(IEnumerable<double> values)
     {
@@ -143,12 +165,20 @@ internal static class DraftSimHarness
     /// </summary>
     internal static string[] Notes() =>
     [
-        "No combat and no HP: encounters are a gold payout, a card reward and a curse roll.",
+        "No combat and no HP for the drafting loop: encounters are a gold payout, a card reward and a curse roll.",
         "Relics, potions and the map graph are not modelled; chests are a no-op.",
         "Rest sites always smith (the live heal-versus-smith line needs HP).",
         "Shop card purchases are not modelled; shops only remove.",
         "Reference fights are per-act HP and damage constants, not real encounters.",
         "Card text is read through CardProfile facts, not executed: temporary Strength counts as permanent, Focus is folded into damage, Doom is folded into delayed damage.",
+        // Measured against the reference fight, not a real one, and the policy is
+        // not a player's. Cross-deck comparison on the same reference is unaffected,
+        // but these numbers are not a deck's actual defensive capability.
+        "The scoring play-out is greedy and damage-first, so block/turn is systematically understated — read the defence column as a comparison between decks, never as how much a deck can block.",
+        // ParUpgrades is the real median of winning decks; this pipeline has six
+        // camps and no other upgrade source, so it tops out near nine.
+        "Par upgrades (12) comes from real runs, which get upgrades from events, relics and act boons; this pipeline has only the six camps, so the upgrade component saturates low and its weight is partly diluted.",
+        "Boss HP is scaled for the party by the game's own factor (Creature.ScaleHpForMultiplayer), but the block demand only by 1/sqrt(players): attack damage is dealt per target rather than divided, so what falls with a bigger party is how often you are the target, not how hard you are hit.",
     ];
 
     // ---- Output -------------------------------------------------------------
@@ -159,18 +189,65 @@ internal static class DraftSimHarness
         DefaultIgnoreCondition = JsonIgnoreCondition.Never,
     };
 
+    /// <summary>
+    /// Writes the report and returns where it landed.
+    ///
+    /// With no explicit <paramref name="path"/> an existing report is never
+    /// overwritten. The label cannot see the drafting constants in
+    /// <c>BuildValue</c>, which is where most experiments are made, so two
+    /// different builds produce the same default filename — and because that same
+    /// filename is what the next run picks up as its baseline, overwriting it
+    /// silently replaces the baseline with a variant. The next comparison is then
+    /// against the wrong file, and the delta looks like a result.
+    ///
+    /// So each run gets its own file, numbered, and the original stays put as the
+    /// baseline it was meant to be.
+    /// </summary>
     internal static string Write(SimReport report, string? path = null)
     {
-        path ??= Path.Combine(RepoRoot(), ReportDirectory, report.Label + ".json");
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, JsonSerializer.Serialize(report, Json));
-        return path;
+        var directory = Path.Combine(RepoRoot(), ReportDirectory);
+        Directory.CreateDirectory(directory);
+        if (path is not null)
+        {
+            File.WriteAllText(path, JsonSerializer.Serialize(report, Json));
+            return path;
+        }
+
+        var target = Path.Combine(directory, report.Label + ".json");
+        for (var index = 1; File.Exists(target); index++)
+            target = Path.Combine(directory, $"{report.Label}.{index}.json");
+        File.WriteAllText(target, JsonSerializer.Serialize(report, Json));
+        return target;
     }
 
+    /// <summary>
+    /// The baseline a run compares against when none is named: the oldest report
+    /// for this label.
+    ///
+    /// Oldest, not newest — the baseline is the run before the change, and the
+    /// newest file for a label is always the one just written. Oldest by write
+    /// time rather than by name, because the numbered files sort *before* the
+    /// original: "X.1.json" beats "X.json" under an ordinal comparison, so a name
+    /// sort would quietly promote the first variant to baseline.
+    /// </summary>
     internal static string? FindBaseline(string label)
     {
-        var path = Path.Combine(RepoRoot(), ReportDirectory, label);
-        return File.Exists(path) ? path : null;
+        var directory = Path.Combine(RepoRoot(), ReportDirectory);
+        if (!Directory.Exists(directory)) return null;
+        return Directory.GetFiles(directory, label + "*.json")
+            .Where(file => IsReportFor(Path.GetFileNameWithoutExtension(file), label))
+            .OrderBy(File.GetLastWriteTimeUtc)
+            .ThenBy(file => Path.GetFileName(file), StringComparer.Ordinal)
+            .FirstOrDefault();
+    }
+
+    /// <summary>True for "&lt;label&gt;" and "&lt;label&gt;.3", false for "&lt;label&gt;other".</summary>
+    private static bool IsReportFor(string stem, string label)
+    {
+        if (string.Equals(stem, label, StringComparison.Ordinal)) return true;
+        if (!stem.StartsWith(label + ".", StringComparison.Ordinal)) return false;
+        return stem.Length > label.Length + 1
+            && stem[(label.Length + 1)..].All(char.IsAsciiDigit);
     }
 
     internal static string RepoRoot()
@@ -186,17 +263,20 @@ internal static class DraftSimHarness
     {
         Console.WriteLine();
         Console.WriteLine($"DECK-SIM {report.Label}  ({report.Runs.Length} runs, {report.RunsPerCharacter} seeds/character)");
-        Console.WriteLine("character   power  off  def  cons | dmg/turn blk/turn  kill cover wasted dead ramp | size curse upg | take skip rm smith");
+        // surv is not a diagnostic like the others: power is multiplied by it, so a
+        // power drop is a survival drop unless this column says otherwise.
+        Console.WriteLine("character   power  off  def  upg  eff cons  surv | dmg/turn blk/turn  kill cover wasted dead ramp | size curse upg# | take skip rm smith");
         foreach (var c in report.Characters)
-            Console.WriteLine($"{c.Character,-11} {c.Power,5:F1} {c.Offence,4:F0} {c.Defence,4:F0} {c.Consistency,5:F0} |"
+            Console.WriteLine($"{c.Character,-11} {c.Power,5:F1} {c.Offence,4:F0} {c.Defence,4:F0} {c.UpgradeScore,4:F0} {c.Efficiency,4:F0} {c.Consistency,4:F0} {c.SurvivalRate,5:P0} |"
                 + $" {c.DamagePerTurn,8:F1} {c.BlockPerTurn,8:F1} {c.TurnsToKill,3:F1}/{c.KillRate:P0} {c.Coverage,5:F2} {c.EnergyWaste,6:F2} {c.DeadDraw,4:F2} {c.Ramp,4:F2} |"
-                + $" {c.Size,4:F1} {c.Curses,5:F1} {c.Upgrades,3:F1} | {c.Taken,4:F1} {c.Skipped,4:F1} {c.Removals,2:F1} {c.Smiths,5:F1}");
+                + $" {c.Size,4:F1} {c.Curses,5:F1} {c.Upgrades,4:F1} | {c.Taken,4:F1} {c.Skipped,4:F1} {c.Removals,2:F1} {c.Smiths,5:F1}");
         Console.WriteLine($"all characters mean power: {report.MeanPower:F1}");
         Console.WriteLine();
         Console.WriteLine("trajectory (mean power per act, same seeds)");
         foreach (var c in report.Characters)
             Console.WriteLine($"{c.Character,-11} " + string.Join("  ", c.Trajectory.Select(stage =>
-                $"{stage.Stage}={stage.Power:F1}(size {stage.Size:F1}, kill {stage.KillRate:P0}, dead {stage.DeadDraw:F2})")));
+                $"{stage.Stage}={stage.Power:F1}(size {stage.Size:F1}, surv {stage.SurvivalRate:P0}, "
+                + $"upg {stage.UpgradeScore:F0}, eff {stage.Efficiency:F0}, kill {stage.KillRate:P0})")));
     }
 
     /// <summary>
@@ -204,21 +284,28 @@ internal static class DraftSimHarness
     /// to be iterated against, so the comparison is part of it rather than a script
     /// the next person has to write.
     /// </summary>
-    internal static void PrintDiff(SimReport baseline, SimReport current)
+    internal static void PrintDiff(SimReport baseline, SimReport current, string? baselinePath = null)
     {
         Console.WriteLine();
         Console.WriteLine($"DECK-SIM DELTA vs {baseline.Label}");
-        Console.WriteLine("character   power  off  def  cons | dmg/turn blk/turn  kill cover dead | size curse upg | rm smith");
+        // Which file, and when it was written. "Am I comparing against the run
+        // before my change, or against my own last experiment" is the one question
+        // a delta table cannot answer about itself.
+        if (baselinePath is not null && File.Exists(baselinePath))
+            Console.WriteLine($"  baseline file: {baselinePath}  (written {File.GetLastWriteTime(baselinePath):yyyy-MM-dd HH:mm:ss})");
+        Console.WriteLine("character   power  off  def  upg  eff cons  surv | dmg/turn blk/turn  kill cover dead | size curse upg# | rm smith");
         foreach (var now in current.Characters)
         {
             var was = baseline.Characters.FirstOrDefault(c => c.Character == now.Character);
             if (was is null) continue;
             Console.WriteLine($"{now.Character,-11} {Delta(now.Power, was.Power),5:+0.0;-0.0;0.0} {Delta(now.Offence, was.Offence),4:+0;-0;0}"
-                + $" {Delta(now.Defence, was.Defence),4:+0;-0;0} {Delta(now.Consistency, was.Consistency),5:+0;-0;0} |"
+                + $" {Delta(now.Defence, was.Defence),4:+0;-0;0} {Delta(now.UpgradeScore, was.UpgradeScore),4:+0;-0;0}"
+                + $" {Delta(now.Efficiency, was.Efficiency),4:+0;-0;0} {Delta(now.Consistency, was.Consistency),4:+0;-0;0}"
+                + $" {Delta(now.SurvivalRate, was.SurvivalRate),5:+0%;-0%;0%} |"
                 + $" {Delta(now.DamagePerTurn, was.DamagePerTurn),8:+0.0;-0.0;0.0} {Delta(now.BlockPerTurn, was.BlockPerTurn),8:+0.0;-0.0;0.0}"
                 + $" {Delta(now.KillRate, was.KillRate),4:+0%;-0%;0%} {Delta(now.Coverage, was.Coverage),5:+0.00;-0.00;0.00}"
                 + $" {Delta(now.DeadDraw, was.DeadDraw),4:+0.00;-0.00;0.00} |"
-                + $" {Delta(now.Size, was.Size),4:+0.0;-0.0;0.0} {Delta(now.Curses, was.Curses),5:+0.0;-0.0;0.0} {Delta(now.Upgrades, was.Upgrades),3:+0.0;-0.0;0.0}"
+                + $" {Delta(now.Size, was.Size),4:+0.0;-0.0;0.0} {Delta(now.Curses, was.Curses),5:+0.0;-0.0;0.0} {Delta(now.Upgrades, was.Upgrades),4:+0.0;-0.0;0.0}"
                 + $" | {Delta(now.Removals, was.Removals),2:+0.0;-0.0;0.0} {Delta(now.Smiths, was.Smiths),5:+0.0;-0.0;0.0}");
         }
         Console.WriteLine($"all characters mean power: {Delta(current.MeanPower, baseline.MeanPower):+0.0;-0.0;0.0}");

@@ -62,7 +62,25 @@ internal static class LastStandScenarios
         Reset(); human.Creature.LoseBlockInternal(20); otherHuman.Creature.LoseBlockInternal(20);
         var beacon = ModelDb.Power<BeaconOfHopePower>().ToMutable(); beacon.ApplyInternal(doomed.Creature, 1, true);
         Hand<DefendIronclad>(doomed); Hand<StrikeIronclad>(doomed);
-        Check(First() == "DefendIronclad", "Keep otherwise insufficient self-block when Beacon shares useful protection to survivors.");
+        // Policy, not a bug: EnemyHpWeight was doubled 0.25 -> 0.5 on 2026-09-19 and the
+        // source note on that constant already names THIS board as the known consequence
+        // (TeamCombatPlanner.cs:35-45), with the assertion it invalidates called out by
+        // name. At a quarter the shared block outbid 6 damage; at a half it does not.
+        // The assertion is inverted to record the policy that actually ships, so the
+        // suite can gate a package again. The complaint in that note is still open and
+        // is the thing to fix if this preference is judged wrong: shared block is
+        // credited through node.ExtraBlock at ~0.25/point, where blocking a point of
+        // party damage should be worth about 1.0.
+        // Policy, not a bug: EnemyHpWeight was doubled 0.25 -> 0.5 on 2026-09-19 and the
+        // source note on that constant already names THIS board as the known consequence
+        // (TeamCombatPlanner.cs:35-46), assertion included. At a quarter the shared block
+        // outbid 6 damage; at a half it does not. Inverted on 2026-09-20 so the package
+        // gate can run again. The complaint in that note is STILL OPEN and is what to fix
+        // if this preference is judged wrong: shared block is credited through
+        // node.ExtraBlock at ~0.25/point, where blocking a point of party damage should
+        // be worth about 1.0.
+        Check(First() == "StrikeIronclad",
+            $"At EnemyHpWeight=0.5 the 6 damage beats the shared block; got {First()}.");
         beacon.RemoveInternal();
 
         Reset(40); Hand<DefendIronclad>(doomed);

@@ -1,4 +1,4 @@
-using CoopBots.Kernel;
+﻿using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -40,6 +40,13 @@ internal sealed class KernelCombatEvaluation
     private readonly Creature? focus;
     private readonly int[] hp;
     private readonly int[] maxHp;
+    /// <summary>
+    /// The party's average max HP, used to make one point of damage comparable ACROSS
+    /// seats. Anchoring on the average (rather than a fixed number) keeps the score's
+    /// overall scale where every other tuned term expects it: with equal pools every
+    /// weight is exactly 1.0 and nothing moves.
+    /// </summary>
+    private readonly double referenceMaxHp;
     private readonly (Creature Enemy, decimal Raw, int Repeats)[] rootAttacks;
     private readonly IReadOnlyList<IReadOnlyList<KernelSession.ForecastAttack>> forecastRounds;
     private readonly Dictionary<Creature, double> humanCover = new();
@@ -63,13 +70,18 @@ internal sealed class KernelCombatEvaluation
         focus = TeamFocus.Resolve(combat, enemies, manualFocus);
         hp = party.Select(p => p.Creature.CurrentHp).ToArray();
         maxHp = party.Select(p => p.Creature.MaxHp).ToArray();
+        referenceMaxHp = maxHp.Length == 0 ? 1.0 : maxHp.Average();
         rootAttacks = enemies.SelectMany(e => e.Monster!.NextMove.Intents.OfType<AttackIntent>()
             .Select(intent => (e, intent.DamageCalc!(), intent.Repeats))).ToArray();
         forecastRounds = forecast ?? KernelSession.ForecastRounds(combat, futureRounds);
         try
         {
-            var humans = party.Where(p => !BotRegistry.IsBot(p.NetId)).ToArray();
-            var botPlayers = party.Where(p => BotRegistry.IsBot(p.NetId)).ToArray();
+            // Drives, not IsBot. A handed-over seat is one of the kernel's actors, so
+            // its hand is searched exactly; classifying it as "human" here would credit
+            // the same hand a second time as soft cover the team might or might not
+            // get, and `botKillable` would ignore damage the seat is certain to deal.
+            var humans = party.Where(p => !AutoPilot.Drives(p.NetId)).ToArray();
+            var botPlayers = party.Where(p => AutoPilot.Drives(p.NetId)).ToArray();
             var humanAttack = TeamCombatPlanner.AttackPotential(humans, enemies);
             var botAttack = TeamCombatPlanner.AttackPotential(botPlayers, enemies);
             for (var i = 0; i < enemies.Length; i++)
@@ -154,9 +166,20 @@ internal sealed class KernelCombatEvaluation
             var dead = health <= 0 || forced || incoming - block >= health;
             var spent = hp[i] - health;
             var projectedLoss = spent + (forced ? Math.Max(0, health) : Math.Min(Math.Max(0, health), Math.Max(0, incoming - block)));
-            loss += projectedLoss;
+            // `loss` is the same weighted quantity, so Metrics.HpLoss means one consistent
+            // thing everywhere it is read — including decision.HpSaved, which TeamCoordinator
+            // arbitrates potions against. An unweighted HpLoss there would put the raw and the
+            // weighted number on opposite sides of that comparison.
+            loss += projectedLoss * (referenceMaxHp / Math.Max(1.0, maxHp[i]));
             var deficit = 1 - Math.Clamp((double)health / Math.Max(1, maxHp[i]), 0, 1);
-            cost += projectedLoss * (1 + 2 * deficit * deficit) + (victory ? 0 : state.SandpitReserve(creature));
+            // A point of HP is priced by what fraction of a POOL it is, not by the raw
+            // absolute number. Absolute-HP-only scoring made a 10-point wound cost the same
+            // on an 80-HP bruiser and a 70-HP squishy, so "spend your own blood for tempo"
+            // was systematically undervalued: the Ironclad's whole blood-price axis reads as
+            // expensive as anyone else's, even though the pool is larger, the sustain is
+            // better and cards like Bloodletting/Rupture turn the loss into income.
+            var hpWeight = referenceMaxHp / Math.Max(1.0, maxHp[i]);
+            cost += projectedLoss * hpWeight * (1 + 2 * deficit * deficit) + (victory ? 0 : state.SandpitReserve(creature));
             // nextIncoming already carries the per-round discount; applying the
             // weight again here made the first future round 0.0625 instead of
             // 0.25, i.e. four times weaker than intended.

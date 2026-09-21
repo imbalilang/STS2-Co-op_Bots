@@ -8,7 +8,8 @@ namespace DeckSim;
 
 /// <summary>One real Ascension 10 winning deck, as the community API reports it.</summary>
 internal sealed record CommunityDeck(
-    string RunHash, string Character, bool Win, string? KilledBy, IReadOnlyList<CommunityCard> Deck, int Skipped);
+    string RunHash, string Character, int Players, bool Win, string? KilledBy,
+    IReadOnlyList<CommunityCard> Deck, IReadOnlyList<string> Picks, int Skipped);
 
 internal sealed record CommunityCard(string Id, int Upgrades);
 
@@ -38,12 +39,25 @@ internal static class CommunityDecks
     internal static bool Available => Directory.Exists(DeckPath) && Directory.GetFiles(DeckPath, "*.json").Length > 0
         && File.Exists(ScorePath);
 
-    internal static IReadOnlyList<CommunityDeck> Load()
+    /// <summary>
+    /// What the cache held and what was usable. The dropped counts are returned
+    /// rather than swallowed: a record skipped for a missing party size is a
+    /// smaller sample than the cache suggests, and the validation has to be able
+    /// to say so out loud.
+    /// </summary>
+    internal sealed record Sample(
+        IReadOnlyList<CommunityDeck> Decks, int SkippedNoParty, int SkippedNoCards, int Files);
+
+    internal static Sample Load()
     {
         var decks = new List<CommunityDeck>();
+        var noParty = 0;
+        var noCards = 0;
+        var files = 0;
         var known = ModelDb.AllCards.Select(card => card.Id.Entry).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var file in Directory.GetFiles(DeckPath, "*.json").OrderBy(path => path, StringComparer.Ordinal))
         {
+            files++;
             using var document = JsonDocument.Parse(File.ReadAllText(file));
             var element = document.RootElement;
             // Only ascension 10 runs: the whole point of the sample is the pressure
@@ -63,15 +77,26 @@ internal static class CommunityDecks
                 }
                 cards.Add(new CommunityCard(id, card.GetProperty("upgrades").GetInt32()));
             }
-            if (cards.Count == 0) continue;
+            if (cards.Count == 0) { noCards++; continue; }
+            // A record written before the party size was captured is skipped rather
+            // than defaulted to 1: the boss scales with party size and so does the
+            // damage each player takes, so an unknown party size is not a value that
+            // can be assumed. It is counted, because a cache full of these is a
+            // sample far smaller than it looks.
+            if (!element.TryGetProperty("players", out var party) || party.GetInt32() <= 0) { noParty++; continue; }
             decks.Add(new CommunityDeck(
                 element.GetProperty("run_hash").GetString() ?? string.Empty,
                 element.GetProperty("character").GetString() ?? string.Empty,
+                party.GetInt32(),
                 element.GetProperty("win").GetBoolean(),
                 element.TryGetProperty("killed_by", out var killed) ? killed.GetString() : null,
-                cards, skipped));
+                cards,
+                element.TryGetProperty("picks", out var picks)
+                    ? picks.EnumerateArray().Select(entry => entry.GetString() ?? string.Empty).ToList()
+                    : [],
+                skipped));
         }
-        return decks;
+        return new Sample(decks, noParty, noCards, files);
     }
 
     internal static IReadOnlyDictionary<string, CommunityCardScore> LoadScores()

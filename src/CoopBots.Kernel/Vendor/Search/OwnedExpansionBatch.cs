@@ -123,10 +123,48 @@ internal class OwnedExpansionBatch<TSnapshot, TCard, TNode> : IDisposable
         Potions.Add(candidate);
     }
 
+    protected void TransferPotionTo(OwnedExpansionBatch<TSnapshot, TCard, TNode> target,
+        TSnapshot snapshot, TNode candidate)
+    {
+        if (!CurrentStorage.Owned.Contains(snapshot))
+            throw new InvalidOperationException("并行药水快照没有可移交的所有权。");
+        target.Own(snapshot);
+        try { target.Potions.Add(candidate); }
+        catch
+        {
+            target.CurrentStorage.Owned.Remove(snapshot);
+            throw;
+        }
+        if (!CurrentStorage.Owned.Remove(snapshot))
+        {
+            target.Release(snapshot);
+            throw new InvalidOperationException("并行药水快照移交时丢失所有权。");
+        }
+    }
+
     protected void AddEndTurn(TSnapshot snapshot, TNode candidate)
     {
         Own(snapshot);
         EndTurns.Add(candidate);
+    }
+
+    protected void TransferEndTurnTo(OwnedExpansionBatch<TSnapshot, TCard, TNode> target,
+        TSnapshot snapshot, TNode candidate)
+    {
+        if (!CurrentStorage.Owned.Contains(snapshot))
+            throw new InvalidOperationException("回合尾部快照没有可移交的所有权。");
+        target.Own(snapshot);
+        try { target.EndTurns.Add(candidate); }
+        catch
+        {
+            target.CurrentStorage.Owned.Remove(snapshot);
+            throw;
+        }
+        if (!CurrentStorage.Owned.Remove(snapshot))
+        {
+            target.Release(snapshot);
+            throw new InvalidOperationException("回合尾部快照移交时丢失所有权。");
+        }
     }
 
     public void Transfer(TSnapshot snapshot)

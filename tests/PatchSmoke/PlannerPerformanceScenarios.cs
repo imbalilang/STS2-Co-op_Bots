@@ -15,8 +15,31 @@ using MegaCrit.Sts2.Core.Unlocks;
 
 internal static class PlannerPerformanceScenarios
 {
+    /// <summary>
+    /// One search, one search-complete line. Guards the measurement the plan's whole P0 rests
+    /// on: if several reports claim the same search's accumulators, every wall / GC / alloc
+    /// figure in the log becomes unattributable — measured at 738 lines for ~116 searches,
+    /// with one search's compute value repeated byte-identically 21 times.
+    /// </summary>
+    private static void AuditSearchMetricsGate()
+    {
+        var gate = new SearchMetricsGate();
+        gate.BeginSearch();
+        if (!gate.ClaimSearchLine()) throw new Exception("the first report of a search must carry its metrics.");
+        for (var i = 0; i < 5; i++)
+            if (gate.ClaimSearchLine())
+                throw new Exception($"report #{i + 2} of the same search claimed the metrics again; "
+                    + "a script step would reprint the finished search's stale wall/GC/alloc numbers.");
+        gate.BeginSearch();
+        if (!gate.ClaimSearchLine()) throw new Exception("a NEW search must own the metrics again.");
+        if (gate.ClaimSearchLine()) throw new Exception("the gate stopped limiting after the second search.");
+        Console.WriteLine("PASS: exactly one search-complete report per search carries the wall/GC/alloc "
+            + "metrics; every later report is a plan step, so a script's runtime is never charged to the search.");
+    }
+
     internal static void Run(bool withDraw = false, bool withPlating = false)
     {
+        AuditSearchMetricsGate();
         var party = Enumerable.Range(0, 4).Select(i => Player.CreateForNewRun<Deprived>(UnlockState.all,
             i == 0 ? 1UL : BotRegistry.CreateId(BotDifficulty.Pro, i, i))).ToArray();
         var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "PERFORMANCE-OPENING"));

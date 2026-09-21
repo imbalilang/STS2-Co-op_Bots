@@ -148,7 +148,9 @@ internal sealed record PlanAction(
     int ReplayCount = 0,
     string CardStateKey = "",
     int CardStateOccurrence = 0,
-    bool EndsPlayerTurn = false)
+    bool EndsPlayerTurn = false,
+    int CardUpgradeLevel = 0,
+    string CardEnchantmentId = "")
 {
     public bool IsExecutable => Kind is PlanActionKind.PlayCard or PlanActionKind.UsePotion;
     public string ActionTitle => Kind == PlanActionKind.UsePotion ? PotionTitle : CardTitle;
@@ -1113,6 +1115,7 @@ internal sealed record SearchNode(
     public CycleExitObservation? CycleExitObservation { get; set; }
     public PendingCycleExitObservation? PendingCycleExitObservation { get; set; }
     public CrossTurnProbeState? CrossTurnProbe { get; set; }
+    public PowerCommitment? PowerCommitment { get; set; }
     public IReadOnlyList<CrossTurnStandPatBaseline>? CrossTurnStandPatBaselines { get; set; }
     public bool CrossTurnSemanticStateChanged { get; set; }
     public bool CrossTurnSemanticEvidenceAttached { get; set; }
@@ -1252,12 +1255,21 @@ internal sealed class SimulationSnapshot(
     public int RecoveredPlayerHp { get; } = recoveredPlayerHp;
 
     /// <summary>HP a one-shot death-save relic put back on this route.</summary>
-    /// <seealso cref="ActEndingBossPolicy.DeathSaveRelicPremium"/>
+    /// <seealso cref="ActEndingBossPolicy.DeathSavePremium"/>
     public int DeathSaveRelicHpRestored { get; } = deathSaveRelicHpRestored;
+    public int DeathSavePotionHpRestored { get; init; }
+    public int DeathSaveHpRestored => DeathSaveRelicHpRestored + DeathSavePotionHpRestored;
+    public int DeathSaveUseCount { get; init; }
+    public int ProjectedDeathSaveUseCount { get; init; }
 
     public int LongTermResourceValue { get; } = longTermResourceValue;
+    public RelicCounterEvaluation RelicCounters { get; init; }
+    public int StrategyGoalHpCredit => GrowthHpCredit + RelicCounters.HpCredit;
+    public int StrategicHpCredit => StrategyGoalHpCredit + RelicCounters.HealingHpCredit;
+    public int StrategyGoalCount => GrowthRewards.Total + RelicCounters.SatisfiedPriority;
     public int GrowthHpCredit { get; init; }
     public GrowthValues GrowthRewards { get; init; }
+    public int BrightestFlameMaxHpSpent { get; init; }
     public int AngerCopiesGenerated { get; } = angerCopiesGenerated;
     public int ProjectedPlayerHp { get; } = projectedPlayerHp;
     public int PlayerBlock { get; } = playerBlock;
@@ -1299,6 +1311,8 @@ internal sealed class SimulationSnapshot(
     public int LiveDeckClutter { get; } = liveDeckClutter;
     public int LiveDeckSize { get; } = liveDeckSize;
     public int OutstandingStolenResource { get; } = outstandingStolenResource;
+    public int? UnrecoveredGold { get; init; }
+    public int? UnrecoveredCards { get; init; }
     public int OffensiveProgressValue { get; } = offensiveProgressValue;
     public int Energy { get; } = energy;
     public int Stars { get; } = stars;
@@ -1375,6 +1389,16 @@ internal sealed record SolverSnapshot(
     SearchBoundaryReason BoundaryReason,
     IReadOnlyList<PredictionGap> PredictionGaps)
 {
+    public int DeathSavePotionHpRestored { get; init; }
+    public int DeathSaveHpRestored => DeathSaveRelicHpRestored + DeathSavePotionHpRestored;
+    public int DeathSaveUseCount { get; init; }
+    public int ProjectedDeathSaveUseCount { get; init; }
+    public int? UnrecoveredGold { get; init; }
+    public int? UnrecoveredCards { get; init; }
+    public RelicCounterEvaluation RelicCounters { get; init; }
+    public int StrategyGoalHpCredit => GrowthHpCredit + RelicCounters.HpCredit;
+    public int StrategicHpCredit => StrategyGoalHpCredit + RelicCounters.HealingHpCredit;
+    public int StrategyGoalCount => GrowthRewards.Total + RelicCounters.SatisfiedPriority;
     public int GrowthHpCredit { get; init; }
     public GrowthValues GrowthRewards { get; init; }
 }
@@ -1388,18 +1412,16 @@ internal sealed class SolverResult
 {
     public bool WasRestoredFromCache { get; internal set; }
     public SolverResultScope ResultScope { get; internal set; } = SolverResultScope.SearchCompletion;
-    public SolverSearchPhase SearchPhase { get; internal set; } = SolverSearchPhase.Short;
-    public bool DeepSearchTriggered { get; internal set; }
-    public bool DeepSearchImprovedResult { get; internal set; }
+    public bool DeterministicBlockPotionInserted { get; internal set; }
     public bool SingleSessionSearch { get; internal set; }
-    public TimeSpan ShortSearchElapsed { get; internal set; }
-    public TimeSpan DeepSearchElapsed { get; internal set; }
+
+    /// <summary>
+    /// 本次请求的宽度组合诊断（首条路线发布时刻、逐成员明细、各成员结束后的托管堆峰值）。
+    /// 组合开关关闭时也有，那时是单成员一行。
+    /// </summary>
+    public BeamWidthPortfolioTelemetry? PortfolioTelemetry { get; internal set; }
     public TimeSpan TotalSearchElapsed { get; internal set; }
     public long TotalWorkerAllocatedBytes { get; internal set; }
-    public int ShortExpandedNodes { get; internal set; }
-    public int DeepExpandedNodes { get; internal set; }
-    public int ShortTransitionCount { get; internal set; }
-    public int DeepTransitionCount { get; internal set; }
     public int TotalGen0Collections { get; internal set; }
     public int TotalGen1Collections { get; internal set; }
     public int TotalGen2Collections { get; internal set; }
@@ -1416,6 +1438,7 @@ internal sealed class SolverResult
     public int MainThreadFramesOver100Milliseconds { get; internal set; }
     public SearchPhaseMetric ForkMetric { get; internal set; }
     public SearchPhaseMetric ActionMetric { get; internal set; }
+    public SearchPhaseMetric ExecutionChoiceResumeMetric { get; internal set; }
     public SearchPhaseMetric CardExecutionMetric { get; internal set; }
     public SearchPhaseMetric CardPostProcessingMetric { get; internal set; }
     public SearchPhaseMetric PotionExecutionMetric { get; internal set; }
@@ -1448,6 +1471,8 @@ internal sealed class SolverResult
     public required IntentForecast Forecast { get; init; }
     public required int ExpandedNodes { get; init; }
     public long TotalExpandedNodes { get; internal set; }
+    public NoveltySearchTelemetry? NoveltySearch { get; init; }
+    public NoveltyPortfolioTelemetry? NoveltyPortfolio { get; internal set; }
     public required int DominatedActionsPruned { get; init; }
     public required int TopQueueActionsDropped { get; init; }
     public required int ActionAdmissionRepresentativesProtected { get; init; }
@@ -1462,6 +1487,18 @@ internal sealed class SolverResult
     public required int HpInvestmentBranchesProtected { get; init; }
     public required int ReplayCount { get; init; }
     public required int ForkCount { get; init; }
+    public int RoundReplayPrefixCaptures { get; init; }
+    public int RoundReplayPrefixReuses { get; init; }
+    public int ExecutionChoiceCaptures { get; init; }
+    public int ExecutionChoiceReuses { get; init; }
+    public int CardChoicePrefixAttempts { get; init; }
+    public int CardChoicePrefixCaptures { get; init; }
+    public int CardChoicePrefixReuses { get; init; }
+    public int CardChoicePrefixFallbacks { get; init; }
+    public int PotionChoicePrefixForks { get; init; }
+    public int PotionChoicePrefixCaptures { get; init; }
+    public int PotionChoicePrefixReuses { get; init; }
+    public int PotionChoicePrefixFallbacks { get; init; }
     public required int TransitionCount { get; init; }
     public long TotalTransitionCount { get; internal set; }
     public required int ReusedNodeSnapshots { get; init; }
@@ -1531,7 +1568,6 @@ internal sealed class SolverResult
     public required int PotionBranchesRejected { get; init; }
     public required SolverTheftPolicy? TheftPolicy { get; init; }
     public required int OutstandingStolenResource { get; init; }
-    public required int SoldHpThreshold { get; init; }
     public required IReadOnlyDictionary<int, int> SoldHpByTurn { get; init; }
     public required IReadOnlyDictionary<int, int> HpLostByTurn { get; init; }
     public required IReadOnlyDictionary<int, int> HpRecoveredByTurn { get; init; }
@@ -1682,7 +1718,6 @@ internal sealed class SolverResult
             PotionBranchesRejected = 0,
             TheftPolicy = TheftPolicy,
             OutstandingStolenResource = Snapshot.OutstandingStolenResource,
-            SoldHpThreshold = SoldHpThreshold,
             SoldHpByTurn = soldByTurn,
             HpLostByTurn = HpLostByTurn,
             HpRecoveredByTurn = HpRecoveredByTurn,
@@ -1718,7 +1753,7 @@ internal sealed class SolverResult
             $"洗牌边界前预计：玩家 {Snapshot.PlayerHp} HP / {Snapshot.PlayerBlock} 格挡；敌方合计 {Snapshot.EnemyHp} HP",
             $"置信度：{ConfidenceText()}　展开 {ExpandedNodes} 节点　{Elapsed.TotalMilliseconds:F0} ms",
             $"动态范围：{SearchedTurns} 回合，边界 {BoundaryReason}；洗牌分支停止 {ShuffleBranchesPruned}",
-            $"本局战损：已发生 {BattleHpLostSoFar}，路线预计累计 {ProjectedBattleHpLost}；主动卖血 {SoldHp}/{SoldHpThreshold}",
+            $"本局战损：已发生 {BattleHpLostSoFar}，路线预计累计 {ProjectedBattleHpLost}；主动卖血 {SoldHp}",
             BattlePotionsUsedSoFar > 0
                 ? $"本局已喝药：{BattlePotionsUsedSoFar} 瓶；路线还需使用 {PotionCount} 瓶"
                 : $"路线预计用药：{PotionCount} 瓶",

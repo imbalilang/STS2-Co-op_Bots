@@ -15,6 +15,14 @@ namespace CoopBots.Kernel.Vendor;
 
 internal sealed partial class SimulatedCombatState
 {
+    // Each native replay has its own started entry. Capture scalar costs before the worker runs.
+    private static int CaptureBrightestFlameMaxHpSpent(IEnumerable<CardPlayStartedEntry> entries)
+        => entries.Where(entry => entry.CardPlay.Card is BrightestFlame)
+            .Sum(entry => entry.CardPlay.Card.DynamicVars.MaxHp.IntValue);
+
+    public int GetCardsDrawnBeforePrediction(Player player)
+        => _rootHistory.CardsDrawn.Count(entry => entry.Actor.Player == player);
+
     public void RecordCardExhausted(Creature actor)
         => (_cardsExhaustedThisTurn ??= [])[actor] = GetCardsExhaustedThisTurn(actor) + 1;
 
@@ -88,27 +96,53 @@ internal sealed partial class SimulatedCombatState
             && entry.CardPlay.Player == player
             && entry.CardPlay.Card.Type == CardType.Attack
             && entry.CardPlay.Resources.EnergyValue == 0);
-        AppendTurnCardHistory(text, statusCardsDrawn, zeroCostAttackStarts);
+        int cardPlayStarts = CombatManager.Instance.History.CardPlaysStarted.Count(entry =>
+            entry.HappenedThisTurn(combatState) && entry.CardPlay.Player == player);
+        int attackSkillStarts = CombatManager.Instance.History.CardPlaysStarted.Count(entry =>
+            entry.HappenedThisTurn(combatState) && entry.CardPlay.Player == player
+            && entry.CardPlay.Card.Type is CardType.Attack or CardType.Skill);
+        AppendTurnCardHistory(text, statusCardsDrawn, zeroCostAttackStarts, cardPlayStarts, attackSkillStarts);
+        text.Append(";FlameHp=").Append(CaptureBrightestFlameMaxHpSpent(CombatManager.Instance.History.CardPlaysStarted));
+        text.Append(";AttackStarts=").Append(CombatManager.Instance.History.CardPlaysStarted.Count(entry =>
+            entry.HappenedThisTurn(combatState) && entry.CardPlay.Player == player
+            && entry.CardPlay.Card.Type == CardType.Attack));
     }
 
     public void AppendPredictedTurnCardHistory(StringBuilder text, Player player)
-        => AppendTurnCardHistory(
+    {
+        AppendTurnCardHistory(
             text,
             GetStatusCardsDrawnThisTurn(player),
-            GetZeroCostAttackStartsThisTurn(player.Creature));
+            GetZeroCostAttackStartsThisTurn(player.Creature),
+            GetCardPlayStartsThisTurn(player.Creature),
+            GetAttackSkillStartsThisTurn(player.Creature));
+        text.Append(";FlameHp=").Append(_brightestFlameMaxHpSpent);
+        text.Append(";AttackStarts=").Append(GetAttackPlayStartsThisTurn(player.Creature));
+    }
 
     private static void AppendTurnCardHistory(
         StringBuilder text,
         int statusCardsDrawn,
-        int zeroCostAttackStarts)
+        int zeroCostAttackStarts,
+        int cardPlayStarts,
+        int attackSkillStarts)
         => text.Append(";Y=")
             .Append(statusCardsDrawn)
             .Append('/')
-            .Append(zeroCostAttackStarts);
+            .Append(zeroCostAttackStarts)
+            .Append('/')
+            .Append(cardPlayStarts)
+            .Append('/')
+            .Append(attackSkillStarts);
 
     public void AfterCardEnteredCombat(CombatPredictionSimulator simulator, PredictedCard card)
     {
         RegisterGeneratedCombatCard(card);
+        foreach (PhantomBladesPower power in EffectivePowers().OfType<PhantomBladesPower>())
+            CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks.Card.PhantomBladesPowerMirrors.AfterCardEnteredCombat(power, card);
+        foreach (var relic in RelicsOf(card.Preview.Owner).OfType<MegaCrit.Sts2.Core.Models.Relics.GhostSeed>())
+            if (!relic.IsMelted)
+                CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks.Card.GhostSeedMirrors.AfterCardEnteredCombat(relic, card);
         CardModel preview = card.MutablePreview;
         if (preview.IsClone)
             return;

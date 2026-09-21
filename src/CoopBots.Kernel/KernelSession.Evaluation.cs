@@ -91,7 +91,7 @@ public sealed partial class KernelSession
     /// </summary>
     public string StateText(Player player)
     {
-        var pcs = player.PlayerCombatState ?? throw new InvalidOperationException("Player has no combat state.");
+        if (player.PlayerCombatState is null) throw new InvalidOperationException("Player has no combat state.");
         IntentForecast forecast;
         try { forecast = IntentForecaster.Build(liveRoot ?? throw new InvalidOperationException(), 1); }
         catch
@@ -102,8 +102,13 @@ public sealed partial class KernelSession
                 UnsupportedDetails = [], ApproximationDetails = [], MonsterAiCountersByRound = [],
             };
         }
+        // The branch's OWN turn number, never the live PlayerCombatState's. This render
+        // happens right after the search finishes, while the live board is still on the
+        // old turn, and deployment compares it after the boundary has been crossed — so
+        // reading the live value here guaranteed `field=turn` drift on the first step past
+        // every crossing. See KernelSession.TurnNumber.
         return ContinuationStamp.CapturePredicted(
-            player, simulator, pcs.TurnNumber, forecast, pcs.TurnNumber).StateText;
+            player, simulator, TurnNumber, forecast, rootTurnNumber).StateText;
     }
     public bool SandpitDeath(Creature target) => Combat.EffectivePowers().OfType<SandpitPower>()
         .Any(p => p.Target == target && p.Amount <= 1 && Hp(p.Owner) > 0);

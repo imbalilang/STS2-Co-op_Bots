@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using CoopBots;
 using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.Combat;
@@ -29,6 +29,7 @@ internal static class KernelEngineScenarios
             prefix: new HarmonyLib.HarmonyMethod(typeof(KernelEngineScenarios), nameof(FormatText)));
         KernelPowerRouteScenarios.Run();
         KernelRoundScenarios.Run();
+        RunContinuationInvariants();
         var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
         var a = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
         var b = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 2));
@@ -99,7 +100,7 @@ internal static class KernelEngineScenarios
         var offering = Hand<Offering>(a);
         for (var i = 0; i < 6; i++) a.PlayerCombatState!.DrawPile.AddInternal(combat.CreateCard<StrikeIronclad>(a));
         var drawRoot = KernelSession.Capture(combat); var drawBranch = drawRoot.Fork();
-        Check(drawBranch.Play(offering, a.Creature, out reason), "Offering: " + reason);
+        Check(drawBranch.Play(offering, null, out reason), "Offering: " + reason);
         Check(drawBranch.Hp(a.Creature) == 74 && drawBranch.Energy(a) == 5 && drawBranch.Hand(a).Count == 3,
             "Offering must lose six HP, gain two energy and draw three exact cards.");
         using (var drawSearch = new KernelTeamSearch(drawRoot, [a], s => 200 - s.Hp(enemy) - (80 - s.Hp(a.Creature))))
@@ -113,16 +114,16 @@ internal static class KernelEngineScenarios
         // NoDraw is an upstream power model, not a CoopBots per-card approximation.
         var offeringAfterTrance = combat.CreateCard<Offering>(a); a.PlayerCombatState!.Hand.AddInternal(offeringAfterTrance);
         var noDraw = KernelSession.Capture(combat);
-        Check(noDraw.Play(battleTrance, a.Creature, out reason), "BattleTrance repeat: " + reason);
+        Check(noDraw.Play(battleTrance, null, out reason), "BattleTrance repeat: " + reason);
         var handBefore = noDraw.Hand(a).Count;
-        Check(noDraw.Play(offeringAfterTrance, a.Creature, out reason) && noDraw.Hand(a).Count == handBefore - 1,
+        Check(noDraw.Play(offeringAfterTrance, null, out reason) && noDraw.Hand(a).Count == handBefore - 1,
             "NoDraw must suppress Offering draw.");
         Check(enemy.CurrentHp == 200 && a.Creature.CurrentHp == 80 && a.PlayerCombatState.Energy == 3,
             "All searches must leave the real combat unchanged.");
         ClearHands();
         var voidForm = Hand<VoidForm>(a);
         var endRoot = KernelSession.Capture(combat); var endBranch = endRoot.Fork();
-        Check(endBranch.Play(voidForm, a.Creature, out reason) && endBranch.IsReady(a), "VoidForm must end only its caster's turn: " + reason);
+        Check(endBranch.Play(voidForm, null, out reason) && endBranch.IsReady(a), "VoidForm must end only its caster's turn: " + reason);
         Check(endBranch.Fork().IsReady(a) && !endBranch.IsReady(b) && !endBranch.EnemyPhaseCompleted && endRoot.Energy(a) == 3,
             "Settled forced end may fork but must not flush teammates or mutate root.");
         using (var boundarySearch = new KernelTeamSearch(endRoot, [a], s => s.Block(a.Creature)))
@@ -157,7 +158,7 @@ internal static class KernelEngineScenarios
         var softAttack = softRoot.Fork();
         Check(softAttack.Play(softStrike, softEnemy, out reason), "soft-finish strike: " + reason);
         var softBlock = softRoot.Fork();
-        Check(softBlock.Play(softDefend, a.Creature, out reason), "soft-finish defend: " + reason);
+        Check(softBlock.Play(softDefend, null, out reason), "soft-finish defend: " + reason);
         var attackValue = softEval.Evaluate(softAttack);
         var blockValue = softEval.Evaluate(softBlock);
         Check(attackValue.SoftFinish > 0, "Damage that reaches the human's finish range must be credited.");
@@ -176,7 +177,6 @@ internal static class KernelEngineScenarios
         AuditTeamPotionMirrors();
         AuditProactivePotion();
         AuditJointPotionSequence();
-        AuditRedundantPotionDeclined();
         AuditPotionOnlyWhenCardsCannotFinisher();
         AuditSoloTakeover();
         AuditBoundedSearchPolicy();
@@ -193,6 +193,7 @@ internal static class KernelEngineScenarios
         AuditHeldStatusPenalty();
         AuditHeldPenaltyBlockSplit();
         AuditOutrage();
+        AuditAllForOne();
         AuditMultiplayerBatchA();
         AuditFlankingKnockdown();
         AuditReplanAfterAction();
@@ -220,7 +221,12 @@ internal static class KernelEngineScenarios
         // PowerVar, one ally) so the structural fallback deliberately prices it
         // instead of dropping it. Asserted positively so a future regression to
         // "unplayable" is caught just as loudly.
-        var structurallyPriced = new HashSet<string> { "Concoct" };
+        // Concoct left this bucket on 2026-09-20: it is properly modelled now
+        // (CardEffectSpecRegistry: [typeof(Concoct)] = [Target<ConcoctPower>("ConcoctPower")]),
+        // so it is MODELED on its own merits rather than priced from DynamicVars. Anything
+        // that drifts back into this bucket is an unmodelled card, and an unmodelled card
+        // must be skipped — see the loop below.
+        var structurallyPriced = new HashSet<string>();
         var names = new[]
         {
             "TagTeam", "GangUp", "OneForAll", "Sneaky", "BeaconOfHope", "Rally", "Mimic", "DemonicShield",
@@ -249,9 +255,15 @@ internal static class KernelEngineScenarios
         foreach (var name in mustBoundary)
             if (outcome[name] != "BOUNDARY")
                 throw new Exception($"Kernel must fail closed for {name}, got {outcome[name]}.");
+        // POLICY REVERSAL 2026-09-20. These are the cards StructuralCardMirror used to price
+        // from their own DynamicVars so they stayed playable. Live evidence ended that: a
+        // structurally priced card (CONCOCT) went into a 90-action route whose hand then
+        // diverged from reality, and the plan was refused at its turn boundary eighteen times.
+        // An unmodelled OnPlay is a boundary again — upstream's answer — so the card is
+        // skipped rather than played on an estimate. The cost is stated in KernelSession.Play.
         foreach (var name in structurallyPriced)
-            if (outcome[name] != "MODELED")
-                throw new Exception($"A structurally priced ally buff must stay playable: {name} was {outcome[name]}.");
+            if (outcome[name] != "BOUNDARY")
+                throw new Exception($"An unmodelled ally buff must now be SKIPPED, not estimated: {name} was {outcome[name]}.");
         Console.WriteLine($"PASS: kernel multiplayer audit: {outcome.Count(p => p.Value == "BOUNDARY")} cards defer to the multiplayer planner, "
             + $"{outcome.Count(p => p.Value == "MODELED")} resolve in the kernel, none throw.");
 
@@ -290,7 +302,7 @@ internal static class KernelEngineScenarios
         a.PlayerCombatState!.Hand.AddInternal(sneaky);
         var sneakyRoot = KernelSession.Capture(combat);
         var sneakyBranch = sneakyRoot.Fork();
-        if (!sneakyBranch.Play(sneaky, a.Creature, out var sneakyReason)) throw new Exception("Kernel Sneaky: " + sneakyReason);
+        if (!sneakyBranch.Play(sneaky, null, out var sneakyReason)) throw new Exception("Kernel Sneaky: " + sneakyReason);
         if (sneakyBranch.Power<SneakyPower>(a.Creature) <= 0)
             throw new Exception("Kernel Sneaky must apply SneakyPower to its owner.");
 
@@ -299,7 +311,7 @@ internal static class KernelEngineScenarios
         a.PlayerCombatState!.Hand.AddInternal(beacon);
         var beaconRoot = KernelSession.Capture(combat);
         var beaconBranch = beaconRoot.Fork();
-        if (!beaconBranch.Play(beacon, a.Creature, out var beaconReason)) throw new Exception("Kernel BeaconOfHope: " + beaconReason);
+        if (!beaconBranch.Play(beacon, null, out var beaconReason)) throw new Exception("Kernel BeaconOfHope: " + beaconReason);
         if (beaconBranch.Power<BeaconOfHopePower>(a.Creature) <= 0)
             throw new Exception("Kernel BeaconOfHope must apply BeaconOfHopePower to its owner.");
         Console.WriteLine("PASS: kernel models EnergySurge/BelieveInYou/Sneaky/BeaconOfHope with team-correct effects.");
@@ -473,7 +485,7 @@ internal static class KernelEngineScenarios
             var eval = new KernelCombatEvaluation(c, [bot], null);
             var root = KernelSession.Capture(c);
             var branch = root.Fork();
-            if (!branch.Play(skill, bot.Creature, out var reason)) throw new Exception("Enrage skill: " + reason);
+            if (!branch.Play(skill, null, out var reason)) throw new Exception("Enrage skill: " + reason);
             // Positive means playing the Skill made the team worse off.
             return eval.Evaluate(root).Score - eval.Evaluate(branch).Score;
         }
@@ -522,6 +534,49 @@ internal static class KernelEngineScenarios
         if (status == KernelCombatPlanner.Status.Ready && decision is null)
             throw new Exception("Kernel Ready without a plan skips the legacy planner and leaves the bots idle.");
         Console.WriteLine($"PASS: kernel planner resolves to {status} within {ticks} ticks and never idles the bots.");
+
+        // `maxRound` is a post-mortem field: it has to say how long the fight RAN.
+        // It is only right if every poll samples the live round, because a solved fight
+        // is ONE search replayed to the end — nothing starts a second search, so a value
+        // tied to the search-start path is frozen at whatever round that search began in.
+        // Every multi-turn fight in the 2026-09-20 live round printed `maxRound=1`, which
+        // makes a two-turn fight indistinguishable from a twenty-turn one.
+        //
+        // This polls a seat with no playable card and no potion, which returns BEFORE any
+        // search begins. The round still has to be recorded. Reverting the sampling to
+        // ObserveCombat was CHECKED (R2) and goes red with exactly:
+        //   System.Exception: maxRound did not follow a poll that started no search:
+        //   0 != 4; the summary would report the round its last search began in,
+        //   not the last round the fight reached.
+        var sampler = new KernelCombatPlanner();
+        var roundBefore = combat.RoundNumber;
+        combat.RoundNumber = 4;
+        sampler.Poll(combat, new[] { ally }, 0, null, false, BotDifficulty.Pro, out _);
+        if (sampler.MaxRoundSeen != 4)
+            throw new Exception($"maxRound did not follow a poll that started no search: "
+                + $"{sampler.MaxRoundSeen} != 4; the summary would report the round its last search began in, "
+                + "not the last round the fight reached.");
+        Console.WriteLine("PASS: combat summary's maxRound is sampled on every poll, including ones that start no search.");
+        combat.RoundNumber = roundBefore;
+
+        // `routes=` is `plansWithRoute/plans`. `plans` is cleared per fight; `plansWithRoute`
+        // was NOT — it was the fourth counter that reset block forgot (its own comment
+        // already names `routes=3/2` as the symptom, and names only three of the four).
+        // Measured live 2026-09-20, one round printed a run-cumulative numerator over a
+        // per-fight denominator: 1/6, 2/5, 3/3, 4/6, 6/4 … 13/5, 14/2. So every `routes=`
+        // in a long run mixed two different units and could not be read at all.
+        // CHECKED (R2): removing the reset turns this red with exactly
+        //   System.Exception: plansWithRoute survived Reset(newCombat: true) as 7; the
+        //   summary's `routes=N/M` would then be a run-cumulative numerator over a
+        //   per-fight denominator.
+        var routeField = typeof(KernelCombatPlanner).GetField("plansWithRoute", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new Exception("plansWithRoute field was not found.");
+        routeField.SetValue(planner, 7);
+        planner.Reset(newCombat: true);
+        if ((int)routeField.GetValue(planner)! != 0)
+            throw new Exception($"plansWithRoute survived Reset(newCombat: true) as {routeField.GetValue(planner)}; "
+                + "the summary's `routes=N/M` would then be a run-cumulative numerator over a per-fight denominator.");
+        Console.WriteLine("PASS: plansWithRoute is cleared per fight, so `routes=N/M` is one fight's ratio.");
 
         // The real trigger: the live root keeps moving while the search expands
         // (human actions, sync updates). Modelled by churning the action version
@@ -661,6 +716,59 @@ internal static class KernelEngineScenarios
         foreach (var required in new[] { "SpeedPotion", "GigantificationPotion", "ShipInABottle" })
             if (missing.Contains(required))
                 throw new Exception($"{required} must be simulatable by the kernel.");
+
+        // CHOOSER potions must NOT be reported as modelable. Their mirror rolls the three
+        // offered cards but returns `AddsToHand: false` — it never applies the pick — so the
+        // search would plan the rest of the fight as if the bottle added NOTHING while the live
+        // game adds the card the chooser picked. Measured live 2026-09-20 (`SLIMES_WEAK`): live
+        // hand +1 (`BLOODLETTING`), the plan's step 4 never replayed, eleven drift lines that
+        // were all that one displacement, and `card-left-hand` at step 12 — the whole
+        // `card-left-hand` family's root cause.
+        // R4 stands: an unmodelled effect is a BOUNDARY, not something to plan across.
+        // NINE, not four: `PotionChoiceSupport.RequiresChoice` also covers the five pile/pick
+        // potions, and none of them can be replayed because the search records no choice
+        // (`new Action(actor, null, target, potion)`) and UsePotion passes `choice: null`. The
+        // guard used to cover only the four, which is how DROPLET_OF_PRECOGNITION reached a live
+        // plan and cost a script (SLIMES_NORMAL, 2026-09-20).
+        foreach (var chooser in new[] { "AttackPotion", "SkillPotion", "PowerPotion", "ColorlessPotion",
+            "Ashwater", "DropletOfPrecognition", "GamblersBrew", "LiquidMemories", "TouchOfInsanity" })
+            if (!missing.Contains(chooser))
+                throw new Exception($"{chooser} is a CHOOSER potion whose mirror never applies the pick "
+                    + "(AddsToHand: false); it must report unmodelable so the search treats it as a boundary "
+                    + "instead of planning across a board that is wrong by one card.");
+        // ...and the exclusion has to stay narrow: an ordinary potion must remain modelable.
+        foreach (var plain in new[] { "BlockPotion", "EnergyPotion", "FirePotion" })
+            if (missing.Contains(plain))
+                throw new Exception($"{plain} must stay modelable; only the chooser potions are half-modelled.");
+        Console.WriteLine("PASS: chooser potions report unmodelable (boundary) while ordinary potions stay modelable.");
+
+        // Reporting it is not enough — the search must actually REFUSE it, or a branch still
+        // expands across the same wrong board and the reporting was cosmetic.
+        // DROPLET_OF_PRECOGNITION, not SkillPotion: SkillPotion was ALREADY refused by the
+        // narrower four-potion guard, so using it here would pass even after a revert to that
+        // guard and could never catch the bug that cost SLIMES_NORMAL its script. This one is
+        // only refused once the predicate is `RequiresChoice`.
+        var chooserType = typeof(PotionModel).Assembly.GetType("MegaCrit.Sts2.Core.Models.Potions.DropletOfPrecognition")!;
+        var chooserBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
+        var chooserCombat = new CombatState(runState: RunState.CreateForTest(new[] { chooserBot }, seed: "CHOOSER-REFUSE"));
+        chooserBot.ResetCombatState(); chooserCombat.AddPlayer(chooserBot);
+        chooserBot.Creature.SetMaxHpInternal(80); chooserBot.Creature.SetCurrentHpInternal(80);
+        chooserBot.PlayerCombatState!.Phase = PlayerTurnPhase.Play; chooserBot.PlayerCombatState.GainEnergy(3);
+        chooserBot.AddPotionInternal(((PotionModel)factory.MakeGenericMethod(chooserType).Invoke(null, null)!).ToMutable());
+        var chooserPotion = chooserBot.Potions.Single();
+        var chooserRoot = KernelSession.Capture(chooserCombat);
+        var refused = false; var refusalBoundary = "";
+        foreach (var target in chooserRoot.PotionTargets(chooserPotion))
+        {
+            var branch = chooserRoot.Fork();
+            if (branch.UsePotion(chooserPotion, target, out var why)) continue;
+            refused = true; refusalBoundary = why; break;
+        }
+        if (!refused || refusalBoundary != "potion-choice-unmodeled")
+            throw new Exception($"the search must refuse a chooser potion by name, got refused={refused} "
+                + $"boundary='{refusalBoundary}'; an expanded branch plans on a board missing the card the live "
+                + "game adds.");
+        Console.WriteLine("PASS: the search refuses a chooser potion by name instead of planning across it.");
     }
 
     // A monster move that only sleeps, stuns or hides is the enemy doing nothing,
@@ -889,29 +997,6 @@ internal static class KernelEngineScenarios
     }
 
     // A Vulnerable potion is wasted on an enemy that already carries several
-    // stacks unless the line turns it into a kill this turn. Real run: a boss at
-    // 15% HP with four Vulnerable stacks, and a bot drank the potion, then died
-    // with the slot empty. The search cannot see this because it prices the
-    // resulting board, not the potion slot it consumes.
-    private static void AuditRedundantPotionDeclined()
-    {
-        if (!KernelCombatPlanner.RedundantDebuff("VulnerablePotion", livingEnemy: true, diesThisPlan: false, existingPower: 4))
-            throw new Exception("A Vulnerable potion on a target that already has stacks and survives must be declined.");
-        if (!KernelCombatPlanner.RedundantDebuff("WeakPotion", true, false, 2))
-            throw new Exception("A Weak potion must get the same redundancy check as Vulnerable.");
-        // A kill this turn is exactly when the extra Vulnerable does real work.
-        if (KernelCombatPlanner.RedundantDebuff("VulnerablePotion", true, true, 4))
-            throw new Exception("A potion that turns the line into a kill must not be declined as redundant.");
-        // No existing stacks, or a single expiring one, must stay usable.
-        if (KernelCombatPlanner.RedundantDebuff("VulnerablePotion", true, false, 0)
-            || KernelCombatPlanner.RedundantDebuff("VulnerablePotion", true, false, 1))
-            throw new Exception("A refresh with no or one stack must not be treated as redundant.");
-        if (KernelCombatPlanner.RedundantDebuff("StrengthPotion", true, false, 4))
-            throw new Exception("Only debuff potions are subject to the redundancy rule.");
-        if (KernelCombatPlanner.RedundantDebuff("VulnerablePotion", livingEnemy: false, diesThisPlan: false, existingPower: 4))
-            throw new Exception("A non-enemy target must not be declined by the enemy-debuff rule.");
-        Console.WriteLine("PASS: redundant debuff potions are declined unless they convert the line into a kill.");
-    }
 
     // Boss reactive mechanics (e.g. Thorns) must be simulated, so the search
     // prices the reflected damage instead of ignoring or refusing the attack.
@@ -1115,7 +1200,7 @@ internal static class KernelEngineScenarios
 
         var root = KernelSession.Capture(combat);
         var branch = root.Fork();
-        if (!branch.Play(defend, bot.Creature, out var reason))
+        if (!branch.Play(defend, null, out var reason))
             throw new Exception($"A block card must be playable in multiplayer combat: {reason}");
         if (branch.Block(bot.Creature) != 5)
             throw new Exception($"Player block must stay unscaled: got {branch.Block(bot.Creature)}");
@@ -1254,31 +1339,43 @@ internal static class KernelEngineScenarios
         foe.SetMaxHpInternal(60); foe.SetCurrentHpInternal(60);
         foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(5)), true);
 
-        // Blaze grants a plain power to one ally.
+        // BLAZE GRANTS A PLAIN POWER TO ONE ALLY — and it is MODELLED now (2026-09-20).
+        //
+        // This block used to demand the opposite (`An unmirrored ally buff must be SKIPPED now`),
+        // which was right while BLAZE had no spec. The live A10 4-bot round priced that gap
+        // (2026-09-20, CEREMONIAL_BEAST_BOSS):
+        //   boundaries=BLAZE:prediction-risk:{SourceId=BLAZE, Method=OnPlay, Reason=MethodNotMirrored}x1272
+        // — the most frequent boundary in the whole fight, i.e. the card the bot most wanted to
+        // play. The registry entry is the same shape CONCOCT got, so the assertion flips to the
+        // positive one the old comment invited: play it, and check the ALLY got the declared
+        // Strength. `mustBoundary` above is unchanged — modelling one card is a coverage gain,
+        // not a policy change, and an unmodelled card must still be skipped.
         var blaze = combat.CreateCard<Blaze>(a); a.PlayerCombatState!.Hand.AddInternal(blaze);
         var blazeBranch = KernelSession.Capture(combat).Fork();
-        if (!blazeBranch.Play(blaze, b.Creature, out var reason))
-            throw new Exception($"An unmirrored ally buff must stay playable: {reason}");
-        if (blazeBranch.Power<StrengthPower>(b.Creature) != 5)
-            throw new Exception($"Blaze must grant its declared 5 Strength, got {blazeBranch.Power<StrengthPower>(b.Creature)}.");
-        if (blazeBranch.Power<StrengthPower>(a.Creature) != 0)
-            throw new Exception("Blaze must only buff the chosen ally.");
-        if (!blazeBranch.LastActionHadEnvironmentalRisk)
-            throw new Exception("A structurally priced card must stay an estimate, never a confirmed line.");
-        Console.WriteLine("PASS: an unmirrored ally buff is priced from its own variables instead of being dropped.");
+        var allyStrengthBefore = blazeBranch.Power<StrengthPower>(b.Creature);
+        if (!blazeBranch.Play(blaze, b.Creature, out var blazeReason))
+            throw new Exception($"BLAZE must be playable now, not a boundary: {blazeReason}");
+        var allyStrengthAfter = blazeBranch.Power<StrengthPower>(b.Creature);
+        if (allyStrengthAfter != allyStrengthBefore + 5)
+            throw new Exception($"BLAZE must grant its declared 5 Strength to the chosen ALLY "
+                + $"(got {allyStrengthBefore} -> {allyStrengthAfter}); it is AnyAlly, so the buff "
+                + "belongs to the target and never to the caster.");
+        Console.WriteLine("PASS: BLAZE is modelled — it grants its declared Strength to the chosen ally.");
 
         // Coordinate grants a temporary Strength power: the paired real Strength
         // must be applied too, or the end-of-turn restore would subtract it.
         a.PlayerCombatState.Hand.RemoveInternal(blaze);
         var coordinate = combat.CreateCard<Coordinate>(a); a.PlayerCombatState.Hand.AddInternal(coordinate);
         var coordinateBranch = KernelSession.Capture(combat).Fork();
-        if (!coordinateBranch.Play(coordinate, b.Creature, out reason))
-            throw new Exception($"An unmirrored temporary-Strength buff must stay playable: {reason}");
-        if (coordinateBranch.Power<CoordinatePower>(b.Creature) != 5)
-            throw new Exception($"Coordinate must apply its declared power, got {coordinateBranch.Power<CoordinatePower>(b.Creature)}.");
-        if (coordinateBranch.Power<StrengthPower>(b.Creature) != 5)
-            throw new Exception($"A temporary Strength buff must also raise Strength, got {coordinateBranch.Power<StrengthPower>(b.Creature)}.");
-        Console.WriteLine("PASS: a temporary Strength buff carries its paired Strength so the restore cannot invert it.");
+        // Same reversal as Blaze: refused, not estimated. The paired-Strength handling this
+        // used to assert lives in StructuralCardMirror and is now unreachable from a plan, so
+        // asserting it here would only pin dead behaviour.
+        if (coordinateBranch.Play(coordinate, b.Creature, out var coordinateReason))
+            throw new Exception("An unmirrored temporary-Strength buff must be SKIPPED now, not estimated.");
+        if (!coordinateReason.StartsWith("prediction-risk:", StringComparison.Ordinal))
+            throw new Exception($"Expected a prediction-risk refusal, got: {coordinateReason}");
+        Console.WriteLine("PASS: an unmirrored temporary-Strength buff is skipped as well; "
+            + "no unmodelled card can reach a plan on an estimate.");
 
         // Cards outside the describable shape must keep their boundary: an
         // unmirrored card that does anything else may not be guessed at.
@@ -1425,6 +1522,46 @@ internal static class KernelEngineScenarios
     // the part the snapshot could not express; without it the kernel values the
     // card as plain damage and the deck pollution that cost a real act-2 run is
     // invisible to the search.
+    // ALL_FOR_ONE's `case` label was missing, so it fell through into ENERGY_SURGE's body and
+    // threw KeyNotFoundException (`card.DynamicVars.Energy` does not exist on a card whose only
+    // CanonicalVar is DamageVar). Every kernel-suite run printed that as
+    //   COVERAGE BROKEN: ALL_FOR_ONE:prediction-exception:KeyNotFoundException: …
+    // and it was read as background noise. This asserts the literal effect instead.
+    private static void AuditAllForOne()
+    {
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 43, 1));
+        var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "ALLFORONE"));
+        bot.ResetCombatState(); combat.AddPlayer(bot);
+        bot.Creature.SetMaxHpInternal(999); bot.Creature.SetCurrentHpInternal(999);
+        bot.PlayerCombatState!.Phase = PlayerTurnPhase.Play; bot.PlayerCombatState.GainEnergy(9);
+        var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "a4o");
+        combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+        foe.SetMaxHpInternal(999); foe.SetCurrentHpInternal(999);
+        foe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(1)), true);
+        var allForOne = combat.CreateCard<MegaCrit.Sts2.Core.Models.Cards.AllForOne>(bot);
+        bot.PlayerCombatState.Hand.AddInternal(allForOne);
+        // BLOODLETTING is a 0-cost Skill — exactly what ALL_FOR_ONE is supposed to return.
+        var zeroCost = combat.CreateCard<MegaCrit.Sts2.Core.Models.Cards.Bloodletting>(bot);
+        bot.PlayerCombatState.DiscardPile.AddInternal(zeroCost);
+
+        var root = KernelSession.Capture(combat);
+        var branch = root.Fork();
+        var energyBefore = branch.Energy(bot);
+        if (!branch.Play(allForOne, foe, out var boundary))
+            throw new Exception($"ALL_FOR_ONE must be simulatable now, not a prediction exception: {boundary}");
+        if (!branch.Hand(bot).Any(c => c.Id.Entry == zeroCost.Id.Entry))
+            throw new Exception("ALL_FOR_ONE must return every 0-cost Attack/Skill/Power from the discard pile to hand. "
+                + "It used to fall through into ENERGY_SURGE's body (missing `case` label; the compiler's "
+                + "unreachable-code warning was the only trace) and threw KeyNotFoundException instead.");
+        // NOT `!= energyBefore`: ALL_FOR_ONE costs 2, so spending is correct. The
+        // discriminator is the DIRECTION — ENERGY_SURGE's body GRANTS energy, so any increase
+        // is the fall-through coming back.
+        if (branch.Energy(bot) > energyBefore)
+            throw new Exception($"ALL_FOR_ONE must not GRANT energy; that is ENERGY_SURGE's body. "
+                + $"got {energyBefore} -> {branch.Energy(bot)}.");
+        Console.WriteLine("PASS: ALL_FOR_ONE returns the 0-cost cards from the discard pile and grants no energy.");
+    }
+
     private static void AuditOutrage()
     {
         var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 42, 1));
@@ -1663,12 +1800,25 @@ internal static class KernelEngineScenarios
         var opening = Plan(planner, 0, out _);
         if (opening.Move.Card is not { } selected)
             throw new Exception("The opening plan must select a card.");
-        // No speculative tail: an immediate re-poll on the same planner and board
-        // must begin a fresh search instead of handing back the rest of the old
-        // plan for free.
+        // No speculative tail: the kept plan's second step was computed for the board
+        // AFTER its first step, and that step has not been applied here. Re-polling must
+        // not deploy the tail against a board it was never computed for — and it must
+        // report that as "not resolved yet", NOT as drift, or the drift counter stops
+        // being usable as evidence.
+        //
+        // It must also WAIT rather than refuse. Upstream awaits the action's completion
+        // task between steps (DeployCurrentTurn awaits `actionCompletion`); our tick model
+        // cannot block, so the equivalent is Status.Pending with the script intact.
+        // Refusing here dropped the script on a plain submit/resolve race — the same
+        // shape as the three Reset() sites that killed it silently.
         var immediate = planner.Poll(combat, new[] { bot }, 0, null, false, BotDifficulty.Pro, out var immediateDecision);
-        if (immediate != KernelCombatPlanner.Status.Pending || immediateDecision is not null || !planner.IsSearching)
-            throw new Exception($"The next action must start a fresh search, not replay a tail; got {immediate}.");
+        if (immediate != KernelCombatPlanner.Status.Pending || immediateDecision is not null
+            || planner.PlanSentinelPendingForTesting != 1 || planner.PlanDriftDetectedForTesting != 0
+            || !planner.HasContinuationForTesting)
+            throw new Exception($"An unresolved first step must WAIT with the script intact, never "
+                + $"refuse it and never call it drift; got {immediate} "
+                + $"(refusals={planner.PlanRefusalsForTesting}, sentinelMissing={planner.PlanSentinelMissingForTesting}, "
+                + $"drift={planner.PlanDriftDetectedForTesting}, pending={planner.PlanSentinelPendingForTesting}).");
 
         // The first action is resolved against the real board: its selected card
         // left the hand, its energy was spent, and the foe took its damage. A
@@ -1676,17 +1826,21 @@ internal static class KernelEngineScenarios
         bot.PlayerCombatState.Hand.RemoveInternal(selected);
         bot.PlayerCombatState.LoseEnergy(1);
         foe.SetCurrentHpInternal(foe.CurrentHp - 6);
-        var stale = planner.Poll(combat, new[] { bot }, 1, null, false, BotDifficulty.Pro, out var staleDecision);
-        if (stale != KernelCombatPlanner.Status.Fallback || staleDecision is not null || planner.IsSearching)
-            throw new Exception($"A stale root must be discarded without a decision, got {stale}.");
+        var replan = planner.Poll(combat, new[] { bot }, 1, null, false, BotDifficulty.Pro, out var replanDecision);
 
-        // The same planner now re-plans from the actual board and must pick the
-        // card that is still in hand.
+        // The script CONTINUES. This used to re-search: an unresolved step refused the
+        // plan and threw the tail away, so every step paid for a fresh search. The board
+        // now matches what the plan said step 0 would leave behind, so the retained step 1
+        // IS the right next action — and finding it again is exactly the cost the whole
+        // "search once, then play the script" design exists to avoid. Chaining a
+        // speculative tail onto a board it was never computed for is still impossible:
+        // that case is the Pending one above.
         var remaining = ReferenceEquals(selected, first) ? second : first;
-        var next = Plan(planner, 1, out _);
-        if (next.Move.Card is not { } card || !ReferenceEquals(card, remaining))
-            throw new Exception($"The action after a resolved play must be re-planned from the current board, got {next.Move.Card?.Id.Entry ?? "none"}.");
-        Console.WriteLine("PASS: the next action is re-planned from the current board; no speculative tail is replayed.");
+        if (replan != KernelCombatPlanner.Status.Ready || replanDecision?.Move.Card is not { } card
+            || !ReferenceEquals(card, remaining))
+            throw new Exception($"The action after a faithfully resolved play must come from the kept script, "
+                + $"got {replan} ({replanDecision?.Move.Card?.Id.Entry ?? "none"}).");
+        Console.WriteLine("PASS: a faithfully resolved step continues the kept script, an unresolved one waits, and neither replays a speculative tail.");
     }
 
     // Handing a one-turn buff to a player who has already ended throws it away,
@@ -1830,17 +1984,28 @@ internal static class KernelEngineScenarios
         Console.WriteLine("PASS: the solo-takeover state is detected exactly when no human is left alive.");
     }
 
-    // The removed escalation is the regression: humans finishing (or dying) must
-    // not widen the search budget, so the scheduled wall clock is the same small
-    // bound in every phase.
+    // The removed escalation is the regression: humans finishing (or dying) must not widen the
+    // search budget, so the scheduled wall clock is the same in every phase.
+    //
+    // REWRITTEN 2026-09-20 for bounded lookahead (user spec), and the two questions it was
+    // conflating now have different answers:
+    //   * does the PHASE change the budget? Still no — asserted on both table shapes;
+    //   * is the budget SMALL? Only on a table with a human in it. The small bound exists so a
+    //     human's turn is not delayed, and an all-bot table has nobody to delay: it is exactly
+    //     the table the kernel plans 5-round segments for, so it gets the real segment budget.
+    // The old single-fixture form passed only because a bare `new KernelCombatPlanner()` has
+    // `openingSearch == false`, so it read the per-tier budget by accident.
     private static void AuditBoundedSearchPolicy()
     {
-        int WallBudget(bool finished)
+        int WallBudget(bool finished, bool withHuman)
         {
             var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 51, 1));
-            var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "BUDGET-" + finished));
-            bot.ResetCombatState(); combat.AddPlayer(bot);
-            bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
+            var party = withHuman
+                ? new[] { bot, Player.CreateForNewRun<Deprived>(UnlockState.all, 1) }
+                : new[] { bot };
+            var combat = new CombatState(runState: RunState.CreateForTest(party, seed: $"BUDGET-{finished}-{withHuman}"));
+            foreach (var p in party) { p.ResetCombatState(); combat.AddPlayer(p); }
+            foreach (var p in party) { p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80); }
             bot.PlayerCombatState!.Phase = PlayerTurnPhase.Play; bot.PlayerCombatState.GainEnergy(3);
             var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "budget");
             combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
@@ -1858,13 +2023,26 @@ internal static class KernelEngineScenarios
             return budget;
         }
 
-        var live = WallBudget(false);
-        var finished = WallBudget(true);
+        var live = WallBudget(false, withHuman: false);
+        var finished = WallBudget(true, withHuman: false);
         if (live != finished)
-            throw new Exception($"Live and finished phases must share one bounded wall budget, got {live} vs {finished}.");
-        if (finished > 450)
-            throw new Exception($"Pro's scheduled wall budget must stay bounded at 450ms, got {finished}.");
-        Console.WriteLine($"PASS: one bounded search policy in every phase (Pro wall={finished}ms; live==finished).");
+            throw new Exception($"Live and finished phases must share one wall budget, got {live} vs {finished}.");
+        // All-bot: a real 5-round computation, i.e. the three-minute base search, not 450ms.
+        if (finished <= 450 || finished > 180_000)
+            throw new Exception($"An all-bot table must get the real segment budget (above the 450ms interactive "
+                + $"bound and at most the 3-minute base search), got {finished}ms.");
+
+        var humanLive = WallBudget(false, withHuman: true);
+        var humanFinished = WallBudget(true, withHuman: true);
+        if (humanLive != humanFinished)
+            throw new Exception($"Live and finished phases must share one wall budget with a human present, "
+                + $"got {humanLive} vs {humanFinished}.");
+        if (humanFinished > 450)
+            throw new Exception($"Pro's INTERACTIVE wall budget must stay bounded at 450ms when a human is seated, "
+                + $"got {humanFinished}ms — this is the bound that keeps a human's turn from being delayed.");
+        Console.WriteLine($"PASS: one search policy per phase, and the budget follows the table: "
+            + $"all-bot={finished}ms (real 5-round segments), with-human={humanFinished}ms (interactive); "
+            + "live==finished in both.");
     }
 
     // Cheap live-board gate: an idle team must answer without capturing or
@@ -1949,7 +2127,11 @@ internal static class KernelEngineScenarios
         while (status == KernelCombatPlanner.Status.Pending && ticks++ < 2000)
             status = planner.Poll(combat, new[] { bot }, 0, null, false, BotDifficulty.Pro, out _);
         if (status != KernelCombatPlanner.Status.Fallback || planner.LastNoAction != KernelCombatPlanner.NoActionKind.Boundary)
-            throw new Exception($"An unmodeled-only hand must cache a boundary no-action verdict, got {status}/{planner.LastNoAction}.");
+            throw new Exception($"An unmodeled-only hand must cache a boundary no-action verdict, got {status}/{planner.LastNoAction} "
+                + $"(ticks={ticks}, searching={planner.IsSearching}, plans={planner.PlansForTesting}, "
+                + $"planRefusals={planner.PlanRefusalsForTesting}, firstActionRefused={planner.FirstActionRefusalsForTesting}, "
+                + $"noAction={planner.NoActionFallbacksForTesting}, exceptions={planner.ExceptionFallbacksForTesting}, "
+                + $"stale={planner.StaleFallbacksForTesting}, noScript={planner.NoScriptTicksForTesting}).");
 
         human.PlayerCombatState!.Phase = PlayerTurnPhase.End;
         status = planner.Poll(combat, new[] { bot }, 0, null, true, BotDifficulty.Pro, out _);
@@ -2014,6 +2196,26 @@ internal static class KernelEngineScenarios
         var choice = new List<string>();
         var broken = new List<string>();
         var skipped = new List<string>();
+        string? variantEntry = null;
+
+        void Probe(CardModel probeCard, string label)
+        {
+            bot.PlayerCombatState!.Hand.AddInternal(probeCard);
+            try
+            {
+                var branch = KernelSession.Capture(combat).Fork();
+                if (!branch.CanPlay(probeCard)) { skipped.Add($"{label}:{probeCard.Type}"); return; }
+                var target = branch.Targets(probeCard).FirstOrDefault(t => t is not null);
+                if (branch.Play(probeCard, target, out var boundary)) { modeled.Add(label); return; }
+                if (boundary.StartsWith("prediction-risk:", StringComparison.Ordinal)) unmodeled.Add(label);
+                else if (boundary.StartsWith("prediction-exception:", StringComparison.Ordinal)) broken.Add($"{label}:{boundary}");
+                else if (boundary == "pending-choice") choice.Add(label);
+                else skipped.Add($"{label}:{boundary}");
+            }
+            catch (Exception error) { broken.Add($"{label}:{error.GetType().Name}"); }
+            finally { bot.PlayerCombatState!.Hand.RemoveInternal(probeCard); }
+        }
+
         foreach (var type in typeof(CardModel).Assembly.GetTypes()
             .Where(t => !t.IsAbstract && !t.IsGenericTypeDefinition
                 && t.Namespace == "MegaCrit.Sts2.Core.Models.Cards" && typeof(CardModel).IsAssignableFrom(t))
@@ -2022,21 +2224,60 @@ internal static class KernelEngineScenarios
             CardModel card;
             try { card = (CardModel)factory.MakeGenericMethod(type).Invoke(combat, new object[] { bot })!; }
             catch { skipped.Add(type.Name + "(create)"); continue; }
-            bot.PlayerCombatState!.Hand.AddInternal(card);
-            try
+
+            // A card whose behaviour is picked by a runtime-assigned field cannot be probed
+            // by a plain instantiation. MadScience keeps CardType.None until the TinkerTime
+            // event assigns TinkerTimeType, and MadScienceOnPlay's switch then falls through
+            // to its default throw — so the generic path reported "broken" for a card whose
+            // three real variants are all mirrored. That is a hole in this probe, and it
+            // cost more than noise: `broken` was pinned at that one false positive, so it
+            // could no longer go red when a mirror really broke (AGENT.md R5c — a counter
+            // that is always the same number is not evidence). Probe the variants instead.
+            // Keyed on the card name on purpose: a *new* variant card should still land in
+            // `broken` and make someone look at it.
+            var variantProperty = type.Name == "MadScience"
+                ? type.GetProperty("TinkerTimeType",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                : null;
+            var variantSetter = variantProperty?.GetSetMethod(nonPublic: true);
+            // Recorded outside the setter check on purpose: the guard below must still fire
+            // when the *lookup* is what broke. Written inside the branch the first time, and
+            // that made the guard skip exactly the mutation it exists to catch.
+            if (type.Name == "MadScience") variantEntry = card.Id.Entry;
+            if (variantSetter is not null)
             {
-                var branch = KernelSession.Capture(combat).Fork();
-                if (!branch.CanPlay(card)) { skipped.Add($"{card.Id.Entry}:{card.Type}"); continue; }
-                var target = branch.Targets(card).FirstOrDefault(t => t is not null);
-                if (branch.Play(card, target, out var boundary)) { modeled.Add(card.Id.Entry); continue; }
-                if (boundary.StartsWith("prediction-risk:", StringComparison.Ordinal)) unmodeled.Add(card.Id.Entry);
-                else if (boundary.StartsWith("prediction-exception:", StringComparison.Ordinal)) broken.Add($"{card.Id.Entry}:{boundary}");
-                else if (boundary == "pending-choice") choice.Add(card.Id.Entry);
-                else skipped.Add($"{card.Id.Entry}:{boundary}");
+                foreach (var variant in new[] { CardType.Attack, CardType.Skill, CardType.Power })
+                {
+                    variantSetter.Invoke(card, new object[] { variant });
+                    Probe(card, $"{card.Id.Entry}:{variant}");
+                }
+                continue;
             }
-            catch (Exception error) { broken.Add($"{card.Id.Entry}:{error.GetType().Name}"); }
-            finally { bot.PlayerCombatState!.Hand.RemoveInternal(card); }
+
+            Probe(card, card.Id.Entry);
         }
+
+        // Pin the variant probe down. It is the only thing keeping `broken` honest: if the
+        // setter lookup stops matching (a renamed field, a card moved out of Cards/), the
+        // card silently falls back to the generic path, `broken` quietly returns to 1, and
+        // nothing goes red -- which is exactly the failure mode this fix removed.
+        //
+        // R2 (AGENT.md): verified red by renaming the property lookup above to
+        // "TinkerTimeTypeX" -- exit 1, and the coverage line never printed:
+        //   System.Exception: the MadScience variant probe did not model MAD_SCIENCE:Attack;
+        //   without it the coverage scan reports a false 'broken' (see AuditCardCoverage).
+        //      at KernelEngineScenarios.AuditCardCoverage() ... KernelEngineScenarios.cs:line 2267
+        // Reverted and re-ran: exit 0, broken=0.
+        //
+        // That check also caught the first version of this guard being self-defeating: it
+        // read the entry id only inside the setter branch, so renaming the lookup skipped
+        // the guard entirely and everything stayed green. Hence the assignment above.
+        if (variantEntry is { } pinned)
+            foreach (var variant in new[] { CardType.Attack, CardType.Skill, CardType.Power })
+                if (!modeled.Contains($"{pinned}:{variant}"))
+                    throw new Exception(
+                        $"the MadScience variant probe did not model {pinned}:{variant}; "
+                        + "without it the coverage scan reports a false 'broken' (see AuditCardCoverage).");
         var total = modeled.Count + unmodeled.Count + choice.Count + broken.Count + skipped.Count;
         Console.WriteLine($"CARD COVERAGE: total={total} modeled={modeled.Count} unmodeled={unmodeled.Count} "
             + $"choice={choice.Count} broken={broken.Count} skipped={skipped.Count}");
@@ -2045,6 +2286,539 @@ internal static class KernelEngineScenarios
         Console.WriteLine("COVERAGE BROKEN: " + string.Join(" ", broken.OrderBy(n => n, StringComparer.Ordinal)));
         Console.WriteLine("COVERAGE SKIPPED: " + string.Join(" ", skipped.OrderBy(n => n, StringComparer.Ordinal)));
         if (unmodeled.Count == 0) throw new Exception("Coverage probe found nothing unmodeled; it is not probing.");
+    }
+
+    /// <summary>
+    /// A board for the continuation invariants: two driven seats, an enemy that does not
+    /// kill anyone, and enough energy to play.
+    /// </summary>
+    private static (Player Bot, Player Other, CombatState Combat) ContinuationBoard(string seed)
+    {
+        var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 9, 9));
+        var other = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 10, 10));
+        var party = new[] { bot, other };
+        var combat = new CombatState(runState: RunState.CreateForTest(party, seed: seed));
+        foreach (var p in party)
+        {
+            p.ResetCombatState(); combat.AddPlayer(p);
+            p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80);
+            p.PlayerCombatState!.Phase = PlayerTurnPhase.Play; p.PlayerCombatState.GainEnergy(3);
+            // A crossing flushes the hand and draws the next one, so the draw pile has to
+            // exist or the round settles with an exception instead of a turn boundary.
+            for (var i = 0; i < 5; i++) p.PlayerCombatState.DrawPile.AddInternal(combat.CreateCard<StrikeIronclad>(p));
+        }
+        var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "inv");
+        combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+        foe.SetMaxHpInternal(200); foe.SetCurrentHpInternal(200);
+        // The move has to come FROM the state machine, not be a detached MoveState: a
+        // crossing prepares the monster's next round by walking FollowUpState, and a
+        // hand-built move has none ("行动 ATTACK 没有后继状态").
+        foe.Monster.SetMoveImmediate((MoveState)foe.Monster.MoveStateMachine!.States["ATTACK"], true);
+        return (bot, other, combat);
+    }
+
+    /// <summary>
+    /// The four invariants the "one search, then play the script" feature rests on. Every
+    /// one of them was found by a LIVE run rather than by this suite, and every one of
+    /// them costs a manual game session to rediscover, so each gets an assertion here.
+    ///
+    /// <list type="number">
+    /// <item>the state text renders the BRANCH's turn, never the live board's current one;</item>
+    /// <item><c>TurnNumber</c> is the branch's own round arithmetic, and a crossing carries it;</item>
+    /// <item><c>Reset()</c> clears the search and can never reach the committed script;</item>
+    /// <item>giving a script up is a single, named, counted decision.</item>
+    /// </list>
+    /// </summary>
+    private static void RunContinuationInvariants()
+    {
+        // (1) A live value must not leak into the recorded state text.
+        //
+        // This is the bug that cost the 2026-09-20 fight: StateText rendered
+        // `player.PlayerCombatState.TurnNumber` — the LIVE number — so every recorded
+        // "after" text was stamped with the turn the search started on. The first step
+        // past any boundary then compared against a board that had moved on and reported
+        // `field=turn expected={1} actual={2}`, forever, on every crossing.
+        {
+            var (bot, _, combat) = ContinuationBoard("CONTINUATION-1");
+            var session = KernelSession.Capture(combat);
+            var before = session.StateText(bot);
+            bot.PlayerCombatState!.IncrementTurnNumber();
+            var after = session.StateText(bot);
+            if (before != after)
+                throw new Exception("Continuation: the branch state text follows the LIVE turn number; "
+                    + "an invariant that only holds while the game has not moved on cannot be a script check.\n"
+                    + $"  search-time render: {before}\n  after live TurnNumber++: {after}");
+            Console.WriteLine("PASS: the branch state text does not move when only the live turn number moves.");
+        }
+
+        // (2) TurnNumber must be round arithmetic on the branch, and a crossing must carry it.
+        // Upstream passes the snapshot's own turn (`CombatBeamSolver.PathDiagnostics.cs:44`);
+        // this pins the same property on our side.
+        {
+            var (bot, other, combat) = ContinuationBoard("CONTINUATION-2");
+            var root = KernelSession.Capture(combat);
+            var rootTurn = root.TurnNumber;
+            var crossed = root.Fork();
+            foreach (var seat in new[] { bot, other })
+                if (!crossed.EndTurn(seat, 2, out var boundary))
+                    throw new Exception($"Continuation: end-turn for {seat.NetId} did not settle: {boundary} "
+                        + $"[{crossed.LastRoundFailure}]");
+            if (crossed.TurnNumber != rootTurn + 1)
+                throw new Exception($"Continuation: TurnNumber={crossed.TurnNumber} after one crossing, expected {rootTurn + 1}.");
+            var text = crossed.StateText(bot);
+            if (!text.Contains($"turn={rootTurn + 1}", StringComparison.Ordinal))
+                throw new Exception($"Continuation: a crossed branch renders the wrong turn (expected turn={rootTurn + 1}): {text}");
+            Console.WriteLine("PASS: a crossed branch reports its own turn number, not the root's.");
+        }
+
+        // (3) and (4): Reset() must leave the script alone, and giving it up must be a
+        // named decision that is counted. Three separate reset sites in the runtime used
+        // to destroy it, each at a turn boundary, each with no log line.
+        {
+            var (bot, _, combat) = ContinuationBoard("CONTINUATION-3");
+            bot.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
+            var planner = new KernelCombatPlanner();
+            var status = KernelCombatPlanner.Status.Pending;
+            TeamCombatPlanner.Decision? decision = null;
+            var ticks = 0;
+            while (status == KernelCombatPlanner.Status.Pending && ticks++ < 400)
+                status = planner.Poll(combat, new[] { bot }, 0, null, false, BotDifficulty.Pro, out decision);
+            if (status != KernelCombatPlanner.Status.Ready)
+                throw new Exception($"Continuation: the planner never became Ready (status={status}, ticks={ticks}).");
+            if (!planner.HasContinuationForTesting)
+                throw new Exception($"Continuation: no script was committed (status={status}, ticks={ticks}).");
+            planner.Reset();
+            if (!planner.HasContinuationForTesting)
+                throw new Exception("Continuation: Reset() dropped the committed script. This is the bug that silently "
+                    + "handed the tail of three live fights to the legacy planner while planRefusals stayed 0.");
+            if (planner.ContinuationDropsForTesting != 0)
+                throw new Exception("Continuation: Reset() counted a drop; only DropContinuation may give a script up.");
+            planner.DropContinuationForTesting("regression probe");
+            if (planner.HasContinuationForTesting || planner.ContinuationDropsForTesting != 1)
+                throw new Exception("Continuation: dropping a script did not go through the named, counted path.");
+            Console.WriteLine("PASS: Reset() clears the search and leaves the committed script alone; "
+                + "giving it up is a named, counted decision.");
+        }
+
+        // (4b) EXHAUSTION IS COMPLETION, NOT A REFUSAL.
+        // A script that plays its own last step and stops is the normal end of a plan that
+        // did not reach the end of the fight. It used to be reported as
+        //   `plan step refused: index=9/9 reason=plan-exhausted` + `plan dropped: …`
+        // and counted in planRefusals. Measured live 2026-09-20, two consequences:
+        //   * the acceptance metric could not tell "the script was violated" from "the
+        //     script finished";
+        //   * the STRICT EXECUTION branch — whose counter, noScript, is written to say how
+        //     much of the fight the legacy planner covered — was UNREACHABLE, which is why
+        //     noScript read 0 in every summary of every round.
+        // CHECKED (R2): routing exhaustion back into the refusal path turns this red with
+        //   System.Exception: Exhausting the script counted 1 refusal(s); completion must
+        //   not be counted as a refusal, or planRefusals cannot measure strictness.
+        {
+            var (bot, _, combat) = ContinuationBoard("CONTINUATION-EXHAUST");
+            bot.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
+            var planner = new KernelCombatPlanner();
+            var status = KernelCombatPlanner.Status.Pending;
+            TeamCombatPlanner.Decision? decision = null;
+            var ticks = 0;
+            while (status == KernelCombatPlanner.Status.Pending && ticks++ < 400)
+                status = planner.Poll(combat, new[] { bot }, 0, null, false, BotDifficulty.Pro, out decision);
+            if (!planner.HasContinuationForTesting || planner.PlanLengthForTesting <= 0)
+                throw new Exception($"Exhaustion probe: no script was committed (status={status}, ticks={ticks}).");
+            // The cursor is the only thing that decides exhaustion, so moving it is an exact
+            // stand-in for having played every step — and it does not require replaying a fight.
+            planner.SeekPlanForTesting(planner.PlanLengthForTesting);
+            var after = planner.Poll(combat, new[] { bot }, 0, null, false, BotDifficulty.Pro, out _);
+            if (planner.PlanRefusalsForTesting != 0)
+                throw new Exception($"Exhausting the script counted {planner.PlanRefusalsForTesting} refusal(s); "
+                    + "completion must not be counted as a refusal, or planRefusals cannot measure strictness.");
+            if (planner.ContinuationDropsForTesting != 0)
+                throw new Exception("Exhausting the script counted a drop; playing the last step is not giving the script up.");
+            if (planner.HasContinuationForTesting)
+                throw new Exception("Exhausting the script left it committed, so the tick would re-report it forever.");
+            // BOUNDED LOOKAHEAD CONTRACT (user spec 2026-09-20): a finished script is not the
+            // end of the kernel's involvement — the same tick must start planning the NEXT
+            // script. Before this, completion left planCommitted set and every later tick went
+            // through the STRICT EXECUTION branch into the legacy planner, which was correct
+            // under "search once, then play the whole fight" and is exactly wrong once the
+            // horizon is five rounds.
+            if (after != KernelCombatPlanner.Status.Pending || !planner.IsSearching)
+                throw new Exception($"Exhausting the script resolved to {after} (searching={planner.IsSearching}); under "
+                    + "bounded lookahead it must plan the next script rather than hand the rest of the fight to the legacy planner.");
+            // noScript is an ALARM now, not a coverage measure: the kernel never stops thinking.
+            if (planner.NoScriptTicksForTesting != 0)
+                throw new Exception($"Exhausting the script counted {planner.NoScriptTicksForTesting} noScript tick(s); under "
+                    + "bounded lookahead the kernel plans the next script instead, so noScript must stay 0 as an alarm.");
+            Console.WriteLine("PASS: exhausting the script is completion — no refusal, no drop, and the next script starts planning.");
+        }
+
+        // (4d) A SEAT THAT LEAVES THE FIGHT MUST NOT COST THE WHOLE SCRIPT.
+        // A script is priced for the seats that were alive and waiting when the search ran. In a
+        // four-seat fight one can die mid-script, and every remaining step of that seat is then
+        // unplayable (a dead seat has no hand, so it reads `card-left-hand`). Treating that as a
+        // refusal threw away the surviving seats' perfectly executable steps. Measured live
+        // 2026-09-20 (CEREMONIAL_BEAST_BOSS, A10 4-bot): three seats died to STOMP_MOVE and the
+        // survivor's script was dropped with
+        //   `plan step refused: index=19/32 card=EXPECT_A_FIGHT card-left-hand seat_eligible=False`
+        {
+            var (bot, mate, combat) = ContinuationBoard("CONTINUATION-SEATSKIP");
+            foreach (var p in new[] { bot, mate })
+                for (var i = 0; i < 5; i++)
+                    p.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(p));
+            var planner = new KernelCombatPlanner();
+            var status = KernelCombatPlanner.Status.Pending;
+            TeamCombatPlanner.Decision? decision = null;
+            var ticks = 0;
+            while (status == KernelCombatPlanner.Status.Pending && ticks++ < 4000)
+                status = planner.Poll(combat, new[] { bot, mate }, 0, null, true, BotDifficulty.Pro, out decision);
+            if (status != KernelCombatPlanner.Status.Ready || !planner.HasContinuationForTesting)
+                throw new Exception($"Seat-skip probe: no script was committed (status={status}, ticks={ticks}).");
+            // The mate leaves the fight. From here the ONLY eligible actor is the bot.
+            mate.Creature.SetCurrentHpInternal(0);
+            var foe = combat.HittableEnemies.First();
+            for (var step = 0; step < 12 && planner.SeatSkipsForTesting == 0; step++)
+            {
+                var next = planner.Poll(combat, new[] { bot }, 0, null, true, BotDifficulty.Pro, out decision);
+                if (planner.SeatSkipsForTesting > 0) break;
+                if (next != KernelCombatPlanner.Status.Ready || decision is null) break;
+                // Apply the step so the script's cursor advances toward the dead seat's steps.
+                decision.Player.PlayerCombatState!.Hand.RemoveInternal(decision.Move.Card!);
+                decision.Player.PlayerCombatState.LoseEnergy(1);
+                foe.SetCurrentHpInternal(Math.Max(0, foe.CurrentHp - 6));
+            }
+            if (planner.SeatSkipsForTesting == 0)
+                throw new Exception("a script step belonging to a seat that can no longer act was not skipped; "
+                    + "it would have been refused as card-left-hand, throwing away the surviving seats' steps.");
+            if (planner.PlanRefusalsForTesting != 0)
+                throw new Exception($"a seat that left the fight cost {planner.PlanRefusalsForTesting} refusal(s); leaving the "
+                    + "fight is not a plan violation — R4 allows only executability to refuse, and the other seats' steps "
+                    + "are still executable.");
+            Console.WriteLine($"PASS: a seat that leaves the fight is SKIPPED, not refused "
+                + $"(skips={planner.SeatSkipsForTesting}, refusals={planner.PlanRefusalsForTesting}).");
+        }
+
+        // (4c) BOUNDED LOOKAHEAD: the horizon must be REACHED and must COUNT AS SUCCESS.
+        // This is the pair that the first attempt at bounded lookahead got wrong, and each half
+        // is load-bearing:
+        //   * with nothing paying for the horizon, the evaluator prefers a stub — measured live
+        //     2026-09-20 with MaxRounds=3, `best partial: actions=2, nodes=1616`, because a
+        //     deeper line eats enemy turns and the position at the end of it is worth no more
+        //     than the position at the start;
+        //   * with HasRoute still meaning "found a line that ENDS the fight", the opening ladder
+        //     fired on every fight and its cap branch disabled the kernel for the rest of combat
+        //     (`every action via=legacy`).
+        {
+            var (bot, mate, combat) = ContinuationBoard("CONTINUATION-HORIZON");
+            // Nobody can win and nobody can die: the ONLY way this search can succeed is by
+            // reaching the round horizon, which is precisely the case a bounded search exists for.
+            foreach (var foe in combat.HittableEnemies)
+            { foe.SetMaxHpInternal(5000); foe.SetCurrentHpInternal(5000); }
+            foreach (var p in new[] { bot, mate })
+            {
+                p.Creature.SetMaxHpInternal(999); p.Creature.SetCurrentHpInternal(999);
+                for (var i = 0; i < 5; i++)
+                    p.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(p));
+            }
+            var planner = new KernelCombatPlanner();
+            // The OPENING shape, i.e. unbounded depth. A fresh planner is the INTERACTIVE shape
+            // (depth 9), which cannot even cross round 1 with two seats holding five cards — the
+            // horizon would then be unreachable and the assertion below would fail for a reason
+            // that has nothing to do with the horizon value.
+            planner.Reset(newCombat: true);
+            var status = KernelCombatPlanner.Status.Pending;
+            TeamCombatPlanner.Decision? decision = null;
+            var ticks = 0;
+            while (status == KernelCombatPlanner.Status.Pending && ticks++ < 4000)
+                status = planner.Poll(combat, new[] { bot, mate }, 0, null, true, BotDifficulty.Pro, out decision);
+            if (status != KernelCombatPlanner.Status.Ready)
+                throw new Exception($"Bounded-lookahead probe did not resolve (status={status}, ticks={ticks}).");
+            // A stub is what a missing horizon value produces; a real horizon line is far longer.
+            var length = planner.PlanLengthForTesting;
+            // THE DISCRIMINATOR IS CROSSINGS, NOT LENGTH. A stub can be long: with nothing paying
+            // for the horizon the search plays every card in hand and then stops inside round one,
+            // which passed a `length >= 6` check and hid the bug. A horizon-reaching line must
+            // have crossed turns.
+            if (planner.PlanBoundariesForTesting == 0)
+                throw new Exception($"the bounded search committed a {length}-action script with ZERO turn crossings. "
+                    + "A line that reaches the horizon must cross rounds; stopping inside round one means nothing paid "
+                    + "for reaching the horizon, which is the bug that made the first bounded-lookahead attempt plan a "
+                    + "stub and then hand the fight to the legacy planner.");
+            if (length < 6)
+                throw new Exception($"the bounded search committed a {length}-action script, which is too short to be a "
+                    + "horizon-reaching line.");
+            // CHECKED (R2), and be honest about which half: reverting `HasRoute` to
+            // `bestTerminal is not null` turns this red with
+            //   System.Exception: a line that reaches the horizon must report HasRoute=true. …
+            // The HorizonBonus half is NOT discriminated by this fixture, and the attempt to do so
+            // was instructive: removing the bonus still produced a 54-action script here, because
+            // on a synthetic board with a 5000-HP foe, striking it makes crossing rounds
+            // tactically ATTRACTIVE, so nothing needs to pay for the horizon. The bonus is needed
+            // when crossing is tactically EXPENSIVE, which is the real board — measured live
+            // 2026-09-20 with MaxRounds=3: `best partial: actions=2, nodes=1616`, i.e. play two
+            // cards and stop. So its necessity is evidenced live, not here; this assertion still
+            // guards the OUTCOME (a script that crosses rounds and reports success).
+            if (!planner.HasRouteForTesting)
+                throw new Exception("a line that reaches the horizon must report HasRoute=true. It is read by deployment, "
+                    + "the opening ladder AND the ladder's cap branch — a false there made the ladder fire on every fight "
+                    + "and its cap branch disable the kernel for the whole combat.");
+            Console.WriteLine($"PASS: bounded lookahead reaches its horizon and counts it as success "
+                + $"(script={length} actions, HasRoute={planner.HasRouteForTesting}).");
+        }
+
+        // (5) The HANDOFF, which is where this bug actually lived. Every earlier assertion
+        // here tested one producer in isolation; the boundary bug was a disagreement
+        // between two producers, so no amount of per-producer testing could see it.
+        {
+            var (bot, other, combat) = ContinuationBoard("CONTINUATION-4");
+            var root = KernelSession.Capture(combat);
+
+            // (5a) Recorder and comparator must build byte-identical texts for the same
+            // board. This already existed as a LOG LINE in production and nowhere else:
+            // when the two formats drift, every boundary is silently refused and the only
+            // symptom is "reuse never happens", which reads like "no benefit" rather than
+            // like a bug.
+            var live = KernelSession.CaptureLivePartyText(combat);
+            var branch = root.PartyStateText();
+            if (live != branch)
+                throw new Exception("Continuation: the branch and live TABLE texts disagree at the root, "
+                    + $"where they describe the same board — no boundary can ever match (liveLen={live.Length}, "
+                    + $"branchLen={branch.Length}).\n  live={live}\n  branch={branch}");
+
+            // (5b) The text must be TABLE-wide. A per-seat text is what the boundary check
+            // used to record and then compare against a different seat's view, so exactly
+            // one of these fired on every crossing — with no drift and no differing field
+            // to report, because both texts were individually "correct".
+            foreach (var seat in new[] { bot, other })
+            {
+                if (live.Contains($"p{seat.NetId}{{", StringComparison.Ordinal)) continue;
+                throw new Exception($"Continuation: the table text is missing seat {seat.NetId}.");
+            }
+            foreach (var seat in new[] { bot, other })
+                if (live == root.StateText(seat) || branch == root.StateText(seat))
+                    throw new Exception($"Continuation: the table text IS one seat's view ({seat.NetId}); "
+                        + "a text that names a viewpoint cannot be compared across seats.");
+            Console.WriteLine("PASS: the recorded table text and the live table text agree byte for byte, "
+                + "and neither is any single seat's view.");
+        }
+
+        // (6) Per-turn counters must RESET when the round crosses. Upstream's round
+        // transition calls BeginSideTurn between AdvancePlayerTurn and
+        // SnapshotPowerAmountsAtTurnStart (CombatBeamSolver.RoundTransition.cs:26-32); our
+        // copy of that sequence omitted it, so nothing that "this turn" counts was ever
+        // reset on the player side. The visible symptom was a boundary refusal reading
+        // `field=Y expected={0/1/4/4} actual={0/0/0/0}`; the real damage was that every
+        // turn-two-and-later line the search priced was evaluated against the previous
+        // turn's totals.
+        {
+            static string TurnHistory(string text)
+            {
+                var at = text.IndexOf(";Y=", StringComparison.Ordinal);
+                if (at < 0) return "missing";
+                var end = text.IndexOf(';', at + 3);
+                return text[(at + 3)..(end < 0 ? text.Length : end)];
+            }
+
+            var (bot, other, combat) = ContinuationBoard("CONTINUATION-5");
+            var strike = combat.CreateCard<StrikeIronclad>(bot);
+            bot.PlayerCombatState!.Hand.AddInternal(strike);
+            var session = KernelSession.Capture(combat);
+
+            // ONE branch: play, then cross. The counters are a MEMOISED CACHE
+            // (GetCardPlayStartsThisTurn returns `_cardPlayStartsThisTurn[owner]` if present,
+            // and only BeginSideTurn clears it), so a play recorded in one fork and a
+            // crossing performed in another proves nothing at all — the inspected branch
+            // never saw the play, and the assertion passes with or without the reset.
+            var branch = session.Fork();
+            if (!branch.Play(strike, combat.Enemies[0], out var why))
+                throw new Exception($"Continuation: the probe play did not resolve: {why}");
+            // Non-vacuous: a turn that counted nothing would read 0/0/0/0 here too.
+            var played = TurnHistory(branch.PartyStateText());
+            if (played == "0/0/0/0")
+                throw new Exception("Continuation: the probe play moved no turn counter, so the reset test proves nothing.");
+
+            // TWO crossings. With one, "the enemy attacked once this enemy phase" and "the
+            // enemy never resets and has attacked once so far" are the SAME number — only a
+            // second crossing separates them (1 = it reset, 2 = it did not).
+            for (var round = 0; round < 2; round++)
+                foreach (var seat in new[] { bot, other })
+                    if (!branch.EndTurn(seat, 3, out var boundary))
+                        throw new Exception($"Continuation: end-turn for {seat.NetId} did not settle: {boundary} "
+                            + $"[{branch.LastRoundFailure}]");
+
+            var afterCrossing = TurnHistory(branch.PartyStateText());
+            if (afterCrossing != "0/0/0/0")
+                throw new Exception($"Continuation: per-turn counters survived the round crossing "
+                    + $"(Y={afterCrossing}, expected 0/0/0/0). Every later turn would be searched against "
+                    + "the previous turn's totals — the simulator and the live board disagree from turn two on.");
+
+            // The enemy side of the same reset. The state text cannot show it: enemies render
+            // as combat_id/hp/max_hp/block/move and their per-turn counters appear nowhere,
+            // which is why the omission there was invisible to every assertion above.
+            var enemyAttacks = branch.CreatureAttacksThisTurnForTesting(combat.Enemies[0]);
+            if (enemyAttacks != 1)
+                throw new Exception($"Continuation: the enemy's per-turn attack count is {enemyAttacks} after two "
+                    + "rounds (expected 1 — one enemy phase since the last reset). A value of 2 means the enemy "
+                    + "side never resets its per-turn state, so every later round is priced against accumulated "
+                    + "enemy bookkeeping the live game has already cleared.");
+            Console.WriteLine("PASS: per-turn counters reset on the round crossing, on both sides.");
+        }
+
+        // (7) THE PIPELINE, not its parts. Every assertion above tests one component; the
+        // live failures were all in the SEAM between them — a searched script refused at its
+        // second or third step, which no component test can see. This drives the real path:
+        // search -> deploy -> apply the step to the live board -> ask again, and demands that
+        // every step after the first comes from the SCRIPT.
+        //
+        // The applier is deliberately best-effort (card leaves hand, energy spent, foe takes
+        // its damage — no discard pile, no RNG bookkeeping). That is enough because the
+        // per-step state comparison is now LOGGED and not refused: an imperfect live board
+        // must still let the script run. If that ever becomes a refusal again, this test goes
+        // red at step two — which is exactly the bug class it exists for.
+        {
+            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 11, 11));
+            var mate = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 12, 12));
+            var party = new[] { bot, mate };
+            var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "PIPELINE-1"));
+            foreach (var p in party)
+            {
+                p.ResetCombatState(); combat.AddPlayer(p);
+                p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80);
+                p.PlayerCombatState!.Phase = PlayerTurnPhase.Play; p.PlayerCombatState.GainEnergy(3);
+                for (var i = 0; i < 5; i++) p.PlayerCombatState.DrawPile.AddInternal(combat.CreateCard<StrikeIronclad>(p));
+            }
+            var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "pipe");
+            combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+            // Enough damage on the table that the searched best line OPENS with cards: with
+            // one Strike each the best line began by ending the turn, and the probe has to
+            // exercise multi-step card reuse, which is where the live failures were.
+            foe.SetMaxHpInternal(60); foe.SetCurrentHpInternal(60);
+            foe.Monster.SetMoveImmediate((MoveState)foe.Monster.MoveStateMachine!.States["ATTACK"], true);
+            foreach (var p in party)
+                for (var i = 0; i < 3; i++) p.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(p));
+
+            var planner = new KernelCombatPlanner();
+            TeamCombatPlanner.Decision? decision = null;
+            var status = KernelCombatPlanner.Status.Pending;
+            var ticks = 0;
+            while (status == KernelCombatPlanner.Status.Pending && ticks++ < 600)
+                status = planner.Poll(combat, party, 0, null, true, BotDifficulty.Pro, out decision);
+            if (status != KernelCombatPlanner.Status.Ready || decision?.Move.Card is not { } opened)
+                throw new Exception($"Continuation: the pipeline probe could not get a plan (status={status}, ticks={ticks}).");
+            if (!planner.HasContinuationForTesting)
+                throw new Exception("Continuation: Ready without a committed script; there is nothing to follow.");
+
+            var scripted = 1;
+            var lastStatus = KernelCombatPlanner.Status.Ready;
+            var lastReason = decision.Move.Reason;
+            for (var step = 0; step < 8; step++)
+            {
+                decision!.Player.PlayerCombatState!.Hand.RemoveInternal(opened);
+                decision.Player.PlayerCombatState.LoseEnergy(1);
+                foe.SetCurrentHpInternal(Math.Max(0, foe.CurrentHp - 6));
+                var next = planner.Poll(combat, party, 0, null, true, BotDifficulty.Pro, out decision);
+                lastStatus = next;
+                lastReason = decision?.Move.Reason ?? "-";
+                if (next != KernelCombatPlanner.Status.Ready) break;
+                // An EndTurn step from the script arrives with decision == null and
+                // ConfirmedEndTurn set (that is how BotRuntime reads it). It counts: crossing
+                // the turn IS the script continuing. The harness stops here rather than
+                // driving the live round, which needs the real game's turn machinery.
+                if (decision is null)
+                {
+                    if (planner.ConfirmedEndTurn is null)
+                        throw new Exception("Continuation: Ready with neither a card nor a confirmed end turn.");
+                    scripted++;
+                    break;
+                }
+                if (decision.Move.Card is not { } card) break;
+                if (!decision.Move.Reason.Contains("kernel-plan:reuse", StringComparison.Ordinal)) break;
+                opened = card;
+                scripted++;
+            }
+            if (scripted < 3)
+                throw new Exception($"Continuation: only {scripted} step(s) came from the kept script; the plan is not "
+                    + "being followed past its first action, which is the failure every component test above missed. "
+                    + $"[lastStatus={lastStatus} lastReason={lastReason} refusals={planner.PlanRefusalsForTesting} "
+                    + $"drift={planner.PlanDriftDetectedForTesting} missing={planner.PlanSentinelMissingForTesting} "
+                    + $"pending={planner.PlanSentinelPendingForTesting} script={planner.HasContinuationForTesting}]");
+            Console.WriteLine($"PASS: the kept script is followed step by step past its first action ({scripted} steps).");
+        }
+
+        // (8) The round-drift predicate itself. The form that refused every step after a
+        // crossing is one line, and one line is the cheapest thing in this file to pin.
+        if (!KernelCombatPlanner.AllowsRoundDrift(liveRound: 2, planRound: 1, boundaryHere: true, validatedRoundDelta: 0)
+            || !KernelCombatPlanner.AllowsRoundDrift(2, 1, boundaryHere: false, validatedRoundDelta: 1))
+            throw new Exception("Continuation: a validated crossing must let the REST of that round be played.");
+        if (KernelCombatPlanner.AllowsRoundDrift(2, 1, boundaryHere: false, validatedRoundDelta: 0))
+            throw new Exception("Continuation: a round change with no validated crossing must still be refused.");
+        Console.WriteLine("PASS: round drift is allowed for the rest of a validated round, and refused when never validated.");
+
+
+        // (9) The intercepted deck-select screens. Our prefix runs BEFORE each
+        // FromDeckFor* body, so the predicate that body composes has to be mirrored by hand —
+        // and until 2026-09-20 only the transformation case was. A live Neow removal took
+        // 永恒 / Eternal Ascender's Bane out of a deck because the removal screen handed the
+        // brain the whole deck.
+        {
+            var deckBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 13, 13));
+            var deckCombat = new CombatState(runState: RunState.CreateForTest(new[] { deckBot }, seed: "DECKFILTER-1"));
+            deckBot.ResetCombatState(); deckCombat.AddPlayer(deckBot);
+            var eternal = deckCombat.CreateCard<AscendersBane>(deckBot);
+            var plain = deckCombat.CreateCard<StrikeIronclad>(deckBot);
+            var deck = new CardModel[] { eternal, plain };
+
+            var removable = BotCardChoiceDispatcher.NativeDeckPredicate(
+                nameof(MegaCrit.Sts2.Core.Commands.CardSelectCmd.FromDeckForRemoval),
+                deck, Array.Empty<object>()).ToArray();
+            if (removable.Contains(eternal))
+                throw new Exception("Continuation: the card-removal screen still offers an unremovable card (Eternal) — "
+                    + "this is the live bug where a Neow removal took Ascender's Bane.");
+            if (!removable.Contains(plain))
+                throw new Exception("Continuation: the removal screen dropped a removable card.");
+
+            var upgradable = BotCardChoiceDispatcher.NativeDeckPredicate(
+                nameof(MegaCrit.Sts2.Core.Commands.CardSelectCmd.FromDeckForUpgrade),
+                deck, Array.Empty<object>()).ToArray();
+            if (upgradable.Contains(eternal))
+                throw new Exception("Continuation: the upgrade screen offers a card that cannot be upgraded.");
+            Console.WriteLine("PASS: the intercepted deck screens apply the native predicate "
+                + "(an Eternal card is offered for neither removal nor upgrade).");
+        }
+
+        // (10) HP is priced by the FRACTION of a pool it is, not by the raw number. Without
+        // this, ten points off an 80-HP bruiser cost the same as ten points off a 40-HP
+        // squishy, so "spend your own blood for tempo" was systematically undervalued.
+        {
+            var tank = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 21, 21));
+            var squishy = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 22, 22));
+            var hpParty = new[] { tank, squishy };
+            var hpCombat = new CombatState(runState: RunState.CreateForTest(hpParty, seed: "HPWEIGHT-1"));
+            foreach (var p in hpParty)
+            {
+                p.ResetCombatState(); hpCombat.AddPlayer(p);
+                p.PlayerCombatState!.Phase = PlayerTurnPhase.Play;
+            }
+            tank.Creature.SetMaxHpInternal(80); tank.Creature.SetCurrentHpInternal(80);
+            squishy.Creature.SetMaxHpInternal(40); squishy.Creature.SetCurrentHpInternal(40);
+            var hpFoe = hpCombat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "hp");
+            hpCombat.AddCreature(hpFoe); hpFoe.Monster!.SetUpForCombat();
+            hpFoe.SetMaxHpInternal(200); hpFoe.SetCurrentHpInternal(200);
+            hpFoe.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(10)), true);
+
+            var hpMetrics = new KernelCombatEvaluation(hpCombat, hpParty, null)
+                .Evaluate(KernelSession.Capture(hpCombat));
+            // Both seats take 10. Pool sizes are 80 and 40, so the reference is 60 and the
+            // weighted loss is 10*60/80 + 10*60/40 = 7.5 + 15 = 22.5. The raw sum was 20.0,
+            // which is what this pins: the tank's point of HP must be cheaper than the
+            // squishy's, or a blood-price line reads as expensive as any other.
+            if (hpMetrics.HpLoss < 21.0 || hpMetrics.HpLoss > 24.0)
+                throw new Exception($"Continuation: ten points on an 80-pool plus ten on a 40-pool should "
+                    + $"cost ~22.5 (weighted by pool size), got {hpMetrics.HpLoss:F3}. A value of 20.0 means "
+                    + "raw-HP scoring is back, and with it the discount on every blood-price line.");
+            Console.WriteLine($"PASS: HP loss is weighted by pool size "
+                + $"(10 on an 80-pool + 10 on a 40-pool costs {hpMetrics.HpLoss:F3}, not 20.000).");
+        }
+
+
     }
 
     private static void Clear(Player p)

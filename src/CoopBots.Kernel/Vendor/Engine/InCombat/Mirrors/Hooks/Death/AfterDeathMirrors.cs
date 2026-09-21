@@ -3,7 +3,9 @@ using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Models.Monsters;
+using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Models.Relics;
+using MegaCrit.Sts2.Core.ValueProps;
 using CoopBots.Kernel.Vendor.Engine.Common;
 using CoopBots.Kernel.Vendor.Engine.Common.Mirrors;
 
@@ -47,8 +49,44 @@ internal static class AfterDeathMirrors
 
         registry.Register<GremlinHorn>(HandleGremlinHorn);
         registry.Register<Melancholy>(HandleMelancholy);
+        registry.Register<StockPower>(HandleStock);
+        registry.Register<CrabRagePower>(HandleCrabRage);
+        registry.Register<DampenPower>(HandleDampen);
 
         return registry;
+    }
+
+    private static void HandleDampen(DampenPower power, AfterDeathMirrorContext context)
+    {
+        if (!context.WasRemovalPrevented)
+        {
+            if (context.CombatState is not SimulatedCombatState combat)
+                throw new InvalidOperationException("Dampen death requires captured caster and card state.");
+            combat.RemoveDampenCaster(context.Creature);
+        }
+    }
+
+    private static void HandleCrabRage(CrabRagePower power, AfterDeathMirrorContext context)
+    {
+        if (context.Creature != power.Owner && context.Creature.Side == power.Owner.Side)
+        {
+            if (context.CombatState is not ICombatPredictionEffectSink effects)
+                throw new InvalidOperationException("Crab rage requires writable branch state.");
+            effects.ApplyPowerFromSource(typeof(StrengthPower), power.Owner,
+                power.DynamicVars.Strength.IntValue, power.Owner, null);
+            context.Simulator.GainBlock(power.Owner, power.DynamicVars.Block.BaseValue, ValueProp.Unpowered);
+            effects.SetPowerAmount(power, 0);
+        }
+    }
+
+    private static void HandleStock(StockPower power, AfterDeathMirrorContext context)
+    {
+        if (!context.WasRemovalPrevented && context.Creature == power.Owner && power.Amount > 0)
+        {
+            if (context.CombatState is not ICombatPredictionEffectSink effects)
+                throw new InvalidOperationException("补货效果缺少可写的预测状态。");
+            effects.SpawnStockReplacement(context.Simulator, power);
+        }
     }
 
     private static void HandleGremlinHorn(GremlinHorn relic, AfterDeathMirrorContext context)

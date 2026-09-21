@@ -306,6 +306,10 @@ internal static class CooperativeScenarios
         ImportedCardRelicScenarios.Run();
 #if KERNEL_TESTS
         KernelEngineScenarios.Run();
+        KernelRolloutScenarios.Run();
+        KernelTerminalScenarios.Run();
+        KernelCommutationScenarios.Run();
+        KernelTwoPhaseBossScenarios.Run();
         ForeseerScenarios.Run();
 #endif
         PlannerPerformanceScenarios.Run();

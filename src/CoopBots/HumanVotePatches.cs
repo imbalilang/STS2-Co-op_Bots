@@ -15,9 +15,12 @@ internal static class HumanMapVotePatch
     private static void Prefix(MapSelectionSynchronizer __instance, Player player, MapLocation source,
         MapVote? destination, RunState ____runState, MapLocation ____acceptingVotesFromSource)
     {
-        if (BotRegistry.IsBot(player.NetId) || source != ____acceptingVotesFromSource
+        // A handed-over seat belongs on the bot side of this line: its votes are
+        // submitted by the mod, so letting them clear the other bots' votes would
+        // erase votes this same code had just placed.
+        if (AutoPilot.Drives(player.NetId) || source != ____acceptingVotesFromSource
             || destination?.mapGenerationCount < __instance.MapGenerationCount) return;
-        foreach (var bot in ____runState.Players.Where(p => BotRegistry.IsBot(p.NetId)))
+        foreach (var bot in ____runState.Players.Where(p => AutoPilot.Drives(p.NetId)))
             if (__instance.GetVote(bot).HasValue) __instance.PlayerVotedForMapCoord(bot, source, null);
     }
 }
@@ -28,9 +31,9 @@ internal static class HumanEventVotePatch
     private static MethodBase TargetMethod() => AccessTools.Method(typeof(EventSynchronizer), "PlayerVotedForSharedOptionIndex");
     private static void Prefix(Player player, uint pageIndex, uint ____pageIndex, List<uint?> ____playerVotes)
     {
-        if (BotRegistry.IsBot(player.NetId) || pageIndex != ____pageIndex) return;
+        if (AutoPilot.Drives(player.NetId) || pageIndex != ____pageIndex) return;
         var players = player.RunState.Players;
         for (var i = 0; i < players.Count && i < ____playerVotes.Count; i++)
-            if (BotRegistry.IsBot(players[i].NetId)) ____playerVotes[i] = null;
+            if (AutoPilot.Drives(players[i].NetId)) ____playerVotes[i] = null;
     }
 }

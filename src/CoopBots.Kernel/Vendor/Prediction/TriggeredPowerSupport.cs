@@ -25,10 +25,7 @@ internal static class TriggeredPowerSupport
                 switch (batch[batchIndex])
                 {
                     case CombatPredictionDamageReceivedEntry damage:
-                        CompensateWakeAndBurrow(simulator, combat, damage);
-                        break;
-                    case CombatPredictionCardPlayFinishedEntry played:
-                        CompensateTender(combat, played);
+                        CompensateBurrow(simulator, combat, damage);
                         break;
                 }
             }
@@ -40,33 +37,12 @@ internal static class TriggeredPowerSupport
         }
     }
 
-    private static void CompensateWakeAndBurrow(
+    private static void CompensateBurrow(
         CombatPredictionSimulator simulator,
         SimulatedCombatState combat,
         CombatPredictionDamageReceivedEntry entry)
     {
         Creature target = entry.Receiver;
-        if (entry.Result.UnblockedDamage != 0)
-        {
-            AsleepPower? asleep = combat.GetPower<AsleepPower>(target);
-            if (asleep is { Amount: > 0 })
-            {
-                combat.SetAmount<PlatingPower>(target, 0);
-                combat.SetPowerAmount(asleep, 0);
-                combat.SetMonsterBool(target, "_isAwake", true);
-                combat.ForceStunnedMove(target, "SLASH_MOVE");
-            }
-
-            SlumberPower? slumber = combat.GetPower<SlumberPower>(target);
-            if (slumber is { Amount: > 0 })
-            {
-                int remaining = slumber.Amount - 1;
-                combat.SetPowerAmount(slumber, remaining);
-                if (remaining <= 0)
-                    combat.ForceStunnedMove(target, "ROLL_OUT_MOVE");
-            }
-        }
-
         if (entry.Result.WasBlockBroken && combat.GetAmount<BurrowedPower>(target) > 0)
         {
             combat.SetAmount<BurrowedPower>(target, 0);
@@ -78,17 +54,4 @@ internal static class TriggeredPowerSupport
         }
     }
 
-    private static void CompensateTender(
-        SimulatedCombatState combat,
-        CombatPredictionCardPlayFinishedEntry entry)
-    {
-        Creature owner = entry.Card.Owner.Creature;
-        TenderPower? tender = combat.GetPower<TenderPower>(owner);
-        if (tender is not { Amount: > 0 })
-            return;
-
-        combat.RecordTenderCardPlayed(owner);
-        combat.Apply<StrengthPower>(owner, -1, tender.Applier);
-        combat.Apply<DexterityPower>(owner, -1, tender.Applier);
-    }
 }

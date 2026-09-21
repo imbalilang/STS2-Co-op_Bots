@@ -18,7 +18,8 @@ internal sealed record CardChoiceSpec(
     IReadOnlyList<PredictedCard> SourceCards,
     double ReplacementValue,
     string ContextId = "",
-    int? MaxBranches = null);
+    int? MaxBranches = null,
+    bool IsImplicitAllSelection = false);
 
 internal static partial class CardChoiceSupport
 {
@@ -82,9 +83,7 @@ internal static partial class CardChoiceSupport
         IEnumerable<PredictedCard> discardBeforeResolution = owner.DiscardPile.Cards
             .Where(item => !ReferenceEquals(item.Original, playedCard.Original));
 
-        CombatPredictionCardGenerationOptionsEntry? generated = simulator.History
-            .OfType<CombatPredictionCardGenerationOptionsEntry>()
-            .LastOrDefault(entry => playedCard.References(entry.Trace?.Source));
+        CombatPredictionCardGenerationOptionsEntry? generated = simulator.History.FindLatestCardGenerationOptions(playedCard);
         if (generated != null)
         {
             int minCount = card is Abundance ? 1 : 0;
@@ -165,6 +164,10 @@ internal static partial class CardChoiceSupport
 
     public static PlanCardChoice BuildAutomaticPolicyChoice(CardChoiceSpec spec)
     {
+        if (spec.IsImplicitAllSelection)
+            return new PlanCardChoice(spec.Effect, spec.SourcePile,
+                ToTokens(spec.Options, spec.Options, spec.SourceCards, static card => card.Id.Entry),
+                ContextId: spec.ContextId);
         int count = Math.Min(spec.MinCount, spec.Options.Count);
         bool fromHand = spec.SourcePile == PileType.Hand;
         List<PredictedCard> selection = (fromHand
@@ -218,6 +221,17 @@ internal static partial class CardChoiceSupport
     {
         if (spec.MaxCount < spec.MinCount)
             return [];
+        if (spec.IsImplicitAllSelection)
+            return [new PlanCardChoice(spec.Effect, spec.SourcePile,
+                // displayNames is optional here — KernelSession.ChoiceCursor passes null, and
+                // every other path in this file tolerates that (see the identical
+                // `displayNames?.Card(card) ?? card.Id.Entry` below). Passing the METHOD GROUP
+                // `displayNames.Card` created a delegate bound to a null instance, so the
+                // implicit-all-selection branch threw
+                // "Delegate to an instance method cannot have null 'this'" the moment it ran —
+                // which is what surfaced as the SURVIVOR:prediction-exception boundary.
+                ToTokens(spec.Options, spec.Options, spec.SourceCards,
+                    card => displayNames?.Card(card) ?? card.Id.Entry), ContextId: spec.ContextId)];
 
         int minTake = Math.Min(spec.MinCount, spec.Options.Count);
         int maxTake = Math.Min(spec.MaxCount, spec.Options.Count);
@@ -250,25 +264,41 @@ internal static partial class CardChoiceSupport
         string[] orderedSemanticKeys = ordered
             .Select(ChoiceCardKey)
             .ToArray();
+        // The nearest equal semantic key answers the recursion's original [start, i)
+        // duplicate test without rescanning that range at every combination depth.
+        Span<int> previousEqualIndex = ordered.Count <= 128
+            ? stackalloc int[ordered.Count] : new int[ordered.Count];
+        for (int index = 0; index < ordered.Count; index++)
+        {
+            previousEqualIndex[index] = -1;
+            for (int prior = index - 1; prior >= 0; prior--)
+            {
+                if (!string.Equals(orderedSemanticKeys[prior], orderedSemanticKeys[index], StringComparison.Ordinal))
+                    continue;
+                previousEqualIndex[index] = prior;
+                break;
+            }
+        }
         List<IReadOnlyList<PredictedCard>> selections = [];
         List<IReadOnlyList<PredictedCard>> cardinalityRepresentatives = [];
+        List<PredictedCard> combination = [];
         for (int take = minTake; take <= maxTake; take++)
         {
-            List<IReadOnlyList<PredictedCard>> sameSize = [];
+            int firstOfSize = selections.Count;
             int combinationLimit = diversifyHandDiscard
                 ? Math.Max(branchLimit, Math.Min(256, checked(branchLimit * 8)))
                 : branchLimit;
             BuildCombinations(
                 ordered,
-                orderedSemanticKeys,
+                previousEqualIndex,
                 take,
                 0,
-                [],
-                sameSize,
+                combination,
+                selections,
+                firstOfSize,
                 combinationLimit);
-            if (sameSize.Count > 0)
-                cardinalityRepresentatives.Add(sameSize[0]);
-            selections.AddRange(sameSize);
+            if (selections.Count > firstOfSize)
+                cardinalityRepresentatives.Add(selections[firstOfSize]);
         }
 
         int effectiveBranchLimit = Math.Max(branchLimit, cardinalityRepresentatives.Count);
@@ -783,7 +813,8 @@ internal static partial class CardChoiceSupport
         IReadOnlyList<PredictedCard> sourceCards = owner.GetCardPile(source)?.Cards ?? [];
         return list.Count == 0
             ? null
-            : new CardChoiceSpec(effect, source, count, count, list, sourceCards, replacementValue);
+            : new CardChoiceSpec(effect, source, count, count, list, sourceCards, replacementValue,
+                IsImplicitAllSelection: list.Count <= count);
     }
 
     private static CardChoiceSpec RangeSpec(
@@ -828,46 +859,65 @@ internal static partial class CardChoiceSupport
             contextId);
     }
 
+    // A completed selection is immutable and belongs to exactly one BuildChoices call.
+    // Lazy scoring preserves paths that never inspect a priority (including Take(0)).
+    // Identity supplements create their own selections and use the original evaluator.
+    private sealed class ScoredCardSelection(PredictedCard[] cards) : IReadOnlyList<PredictedCard>
+    {
+        private bool _hasPriority;
+        private double _priority;
+        public int Count => cards.Length;
+        public PredictedCard this[int index] => cards[index];
+        public IEnumerator<PredictedCard> GetEnumerator()
+            => ((IEnumerable<PredictedCard>)cards).GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+        public double Priority(CardChoiceSpec spec)
+        {
+            if (!_hasPriority)
+            {
+                _priority = EvaluateChoicePriority(spec, this);
+                _hasPriority = true;
+            }
+            return _priority;
+        }
+    }
+
     private static void BuildCombinations(
         IReadOnlyList<PredictedCard> options,
-        IReadOnlyList<string> semanticKeys,
+        ReadOnlySpan<int> previousEqualIndex,
         int count,
         int start,
         List<PredictedCard> current,
         List<IReadOnlyList<PredictedCard>> output,
+        int outputStart,
         int limit)
     {
-        if (output.Count >= limit)
+        if (output.Count - outputStart >= limit)
             return;
         if (current.Count == count)
         {
-            output.Add(current.ToList());
+            // Consumers only inspect a completed selection. Its array remains exclusive,
+            // while the recursion's temporary list is reused for the next cardinality.
+            output.Add(new ScoredCardSelection(current.ToArray()));
             return;
         }
         for (int i = start; i <= options.Count - (count - current.Count); i++)
         {
-            string optionKey = semanticKeys[i];
-            bool alreadyVisitedAtDepth = false;
-            for (int prior = start; prior < i; prior++)
-            {
-                if (!string.Equals(semanticKeys[prior], optionKey, StringComparison.Ordinal))
-                    continue;
-                alreadyVisitedAtDepth = true;
-                break;
-            }
-            if (alreadyVisitedAtDepth)
+            if (previousEqualIndex[i] >= start)
                 continue;
             current.Add(options[i]);
             BuildCombinations(
                 options,
-                semanticKeys,
+                previousEqualIndex,
                 count,
                 i + 1,
                 current,
                 output,
+                outputStart,
                 limit);
             current.RemoveAt(current.Count - 1);
-            if (output.Count >= limit)
+            if (output.Count - outputStart >= limit)
                 return;
         }
     }
@@ -882,10 +932,9 @@ internal static partial class CardChoiceSupport
         foreach (PredictedCard card in selected)
         {
             string stateKey = ChoiceCardKey(card);
-            int sourceOccurrence = source.TakeWhile(item => !ReferenceEquals(item, card))
-                .Count(item => HasStableTokenIdentity(item, card));
-            int optionOccurrence = options.TakeWhile(item => !ReferenceEquals(item, card))
-                .Count(item => HasStableTokenIdentity(item, card));
+            int sourceOccurrence = CountTokenOccurrence(source, card);
+            int optionOccurrence = ReferenceEquals(source, options)
+                ? sourceOccurrence : CountTokenOccurrence(options, card);
             tokens.Add(new PlanCardToken(
                 card.Preview.Id.Entry,
                 card.Preview.CurrentUpgradeLevel,
@@ -895,6 +944,20 @@ internal static partial class CardChoiceSupport
                 displayName(card.Preview)));
         }
         return tokens;
+    }
+
+    private static int CountTokenOccurrence(IReadOnlyList<PredictedCard> cards, PredictedCard selected)
+    {
+        int occurrence = 0;
+        for (int i = 0; i < cards.Count; i++)
+        {
+            PredictedCard card = cards[i];
+            if (ReferenceEquals(card, selected))
+                break;
+            if (HasStableTokenIdentity(card, selected))
+                occurrence++;
+        }
+        return occurrence;
     }
 
     private static PredictedCard Find(IReadOnlyList<PredictedCard> cards, PlanCardToken token)
@@ -912,6 +975,10 @@ internal static partial class CardChoiceSupport
         => RemovalPriority(spec, card);
 
     private static double ChoicePriority(CardChoiceSpec spec, IReadOnlyList<PredictedCard> cards)
+        => cards is ScoredCardSelection selection
+            ? selection.Priority(spec) : EvaluateChoicePriority(spec, cards);
+
+    private static double EvaluateChoicePriority(CardChoiceSpec spec, IReadOnlyList<PredictedCard> cards)
     {
         double value = cards.Sum(card => spec.Effect is PlanChoiceEffect.Transform or PlanChoiceEffect.Exhaust
             ? RemovalPriority(spec, card)
