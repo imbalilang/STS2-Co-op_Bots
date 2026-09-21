@@ -44,6 +44,7 @@ internal static class BotRewardDriver
         {
             if (set.Rewards[index].SuccessfullySelected)
                 continue;
+            var reward = set.Rewards[index];
             try
             {
                 var task = (Task)SelectReward.Invoke(synchronizer, new object[] { set.Player, index })!;
@@ -51,14 +52,59 @@ internal static class BotRewardDriver
             }
             catch (Exception exception)
             {
-                Log.Warn($"CoopBots could not take reward {index} for bot {set.Player.NetId}; it will be skipped. {exception.GetBaseException().Message}");
+                // NAME IT, ALL OF IT. This line used to print only `GetBaseException().Message`,
+                // so the live occurrences could not be traced to a throw site: measured
+                // 2026-09-21/22, `could not take reward 1 or 2 … Index was out of range …` fired
+                // 21 times across four batches (godot-mp-a10-01/02/03, c-run-1) and the message we
+                // did get is NOT the game's own out-of-bounds guard ("Tried to select reward index
+                // … out of bounds"), which means it was thrown from somewhere below it. Without the
+                // type, the frames and which reward it was about, there is nothing to fix.
+                Log.Warn($"CoopBots could not take reward {index} [{Describe(reward)}] for bot "
+                    + $"{set.Player.NetId}; it will be skipped. {Describe(exception)}");
             }
+
+            // A reward that ends without being taken used to be COMPLETELY silent: the driver
+            // throws the task's result away, so a potion the game refused (belt full is the
+            // ordinary case) simply vanished from the log. That is the "the bot never took the
+            // potion" report, and there was no line to read it from.
+            if (!reward.SuccessfullySelected)
+                Log.Info($"CoopBots reward not taken: {Describe(reward)} for bot {set.Player.NetId} "
+                    + $"(set has {set.Rewards.Count}, free potion slot="
+                    + $"{(set.Player.HasOpenPotionSlots ? "yes" : "no")}, taken={reward.SuccessfullySelected}).");
         }
 
         if (!completion.IsCompleted)
             SkipRewards.Invoke(synchronizer, new object[] { set.Player });
         await completion;
         ActiveCardRewards.Remove(set.Player.NetId);
+    }
+
+    /// <summary>What a reward is, in one token, for a log that has to name what was lost.</summary>
+    private static string Describe(Reward reward)
+    {
+        try
+        {
+            var detail = reward switch
+            {
+                PotionReward potion => potion.Potion?.Id.Entry ?? "?",
+                CardReward => $"{reward.GetType().Name}",
+                _ => reward.GetType().Name,
+            };
+            return $"{reward.GetType().Name}:{detail}";
+        }
+        catch (Exception error) { return $"{reward.GetType().Name} (undescribable: {error.GetType().Name})"; }
+    }
+
+    /// <summary>The exception with its type and the first frames — the part that names the throw site.</summary>
+    private static string Describe(Exception exception)
+    {
+        var inner = exception.GetBaseException();
+        var frames = new StackTrace(inner, fNeedFileInfo: false).GetFrames();
+        var where = frames is null
+            ? "no stack"
+            : string.Join(" <- ", frames.Take(3).Select(frame => frame.GetMethod()?.DeclaringType?.Name
+                + "." + frame.GetMethod()?.Name));
+        return $"{inner.GetType().Name}: {inner.Message} @ {where}";
     }
 
     public static PlayerChoiceResult ChoiceForWait(Player player)

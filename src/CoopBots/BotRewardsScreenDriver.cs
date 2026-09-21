@@ -33,6 +33,7 @@ internal static class BotRewardsScreenDriver
     private static NRewardsScreen? _screen;
     private static readonly HashSet<NRewardButton> Attempted = new();
     private static long _nextWarnAt;
+    private static bool _beltFullReported;
 
     internal static bool TryDrive(RunManager manager, RunState state)
     {
@@ -47,13 +48,31 @@ internal static class BotRewardsScreenDriver
             {
                 _screen = screen;
                 Attempted.Clear();
+                _beltFullReported = false;
             }
 
             var hasPotionSlots = state.Players.FirstOrDefault(p => p.NetId == me)?.HasOpenPotionSlots ?? false;
             var button = Descendants<NRewardButton>(screen)
                 .FirstOrDefault(candidate => candidate.IsEnabled && !Attempted.Contains(candidate)
                     && (candidate.Reward is not PotionReward || hasPotionSlots));
-            if (button is null) return false;
+            if (button is null)
+            {
+                // SAY WHY THE REWARD IS STILL THERE. A potion button is deliberately left
+                // alone when the belt has no free slot — correct behaviour, but until now
+                // it was indistinguishable from a reward we failed to take, and the game
+                // itself gives no feedback either. Live report 2026-09-22: "the bot did not
+                // take the potion" in an all-bot game, with nothing in the log to read.
+                if (!hasPotionSlots && !_beltFullReported
+                    && Descendants<NRewardButton>(screen).Any(candidate =>
+                        candidate.IsEnabled && !Attempted.Contains(candidate)
+                        && candidate.Reward is PotionReward))
+                {
+                    _beltFullReported = true;
+                    Log.Info("CoopBots rewards: leaving the potion reward — every potion slot is "
+                        + "full for the handed-over seat.");
+                }
+                return false;
+            }
 
             Attempted.Add(button);
             button.ForceClick();
