@@ -45,6 +45,13 @@ internal static class CardEffectSpecRegistry
         // a logged hand drift (live hand 6 cards vs the plan's 5, the extra being a generated
         // AFTERIMAGE), and the turn-boundary check then correctly refused a 90-action route.
         [typeof(Concoct)] = [Target<ConcoctPower>("ConcoctPower")],
+        // The other one-turn AnyAlly cards were left on the structural fallback, which the
+        // kernel still records as an uncompensated OnPlay boundary. That made them
+        // unplayable in a plan and hid their timing from the tournament: Fade is temporary
+        // Dexterity (before the ally's block cards) and Coordinate is temporary Strength
+        // (before the ally's attacks). Both powers already have lifecycle support.
+        [typeof(Fade)] = [Target<FadePower>(card => card.DynamicVars.Dexterity.IntValue)],
+        [typeof(Coordinate)] = [Target<CoordinatePower>(card => card.DynamicVars.Strength.IntValue)],
         // CoopBots multiplayer port. BLAZE is the same shape as CONCOCT — Skill, AnyAlly, one
         // declared PowerVar — so it gets the same treatment: grant the declared power to the
         // chosen ally. It used to be SKIPPED as an unmirrored ally buff, and the live A10 4-bot
@@ -646,6 +653,10 @@ internal static class CardEffectSpecRegistry
             combat.ApplyTemporaryStrengthLoss<DyingStarPower>(target, amount, applier);
         else if (powerType == typeof(ManglePower))
             combat.ApplyTemporaryStrengthLoss<ManglePower>(target, amount, applier);
+        else if (powerType == typeof(CoordinatePower))
+            combat.ApplyTemporaryStrengthGain<CoordinatePower>(target, amount, applier);
+        else if (powerType == typeof(FadePower))
+            combat.ApplyTemporaryDexterity<FadePower>(target, amount, applier);
         else if (powerType == typeof(SetupStrikePower))
             combat.ApplyTemporaryStrengthGain<SetupStrikePower>(target, amount, applier);
         else if (powerType == typeof(FocusedStrikePower))

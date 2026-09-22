@@ -47,7 +47,10 @@ internal static class BuildTrace
 
     internal static void LogAllDecks(string tag, IEnumerable<Player> players)
     {
-        foreach (var player in players.Where(p => BotRegistry.IsBot(p.NetId)))
+        // Drives, not IsBot: a handed-over human seat is exactly the deck a reviewer
+        // needs when that seat is the one the live run could not see. The 2026-09-22
+        // run's final decks covered only three of four seats for this reason.
+        foreach (var player in players.Where(p => AutoPilot.Drives(p.NetId)))
             LogDeck(tag, player);
     }
 

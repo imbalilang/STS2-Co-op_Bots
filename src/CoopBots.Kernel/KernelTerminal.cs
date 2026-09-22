@@ -61,7 +61,13 @@ public sealed record TerminalRecord(
     string CutoffReason,
     IReadOnlyList<int> PostCombatHp,
     int IrreversibleLoss,
-    double ResourcesConsumed)
+    double ResourcesConsumed,
+    // Cards/gold still held by a thief at the end of the line. This is not HP: a line that
+    // let a Thieving Hopper escape at full health has permanently thinned the deck, and the
+    // 2026-09-22 live report was exactly that — the bot blocked the steal, survived, and lost
+    // a key card. The simulator already counts this in SimulatedCombatState.Theft; the
+    // terminal record just has to carry it so the tournament can compare it.
+    int OutstandingStolenResource = 0)
 {
     public bool Verified => Kind == EvidenceKind.VerifiedTerminal;
 
@@ -96,7 +102,8 @@ public sealed record TerminalRecord(
             CutoffReason: cutoffReason,
             PostCombatHp: hp,
             IrreversibleLoss: terminal ? dead : 0,
-            ResourcesConsumed: 0);
+            ResourcesConsumed: 0,
+            OutstandingStolenResource: session.OutstandingStolenResource);
     }
 }
 
@@ -130,15 +137,25 @@ public sealed record ObjectiveConfig(
 /// below victory. A lexicographic order makes those constants unnecessary: a cutoff is not a
 /// slightly-worse terminal, it is a different category, so no magnitude has to be chosen to
 /// express that.
+///
+/// ORDER OF THE TWO NON-WIN TIERS: a verified defeat is a FACT (the rollout saw the party
+/// die) while a cutoff is an UNKNOWN (budget, step cap, or an unresolved boundary). In a
+/// coverage-complete simulator "known fact" is the conservative rank; in this project it is
+/// not, because `Tools of the Trade` and the two-stage boss boundaries can truncate every
+/// line at the same point. Under that coverage gap, ranking `VerifiedDefeat` above `Cutoff`
+/// actively selects a known losing line over an unmodeled one — measured in the 2026-09-22
+/// final boss, which finished 32 WIPE / 23 pending-choice decisions. An unknown line is not
+/// a defeat (R4/R5b), so it must not lose to one; it still loses to a real victory.
 /// </summary>
 public static class TerminalComparer
 {
     /// <summary>Positive when <paramref name="a"/> is better than <paramref name="b"/>.</summary>
     public static int Compare(TerminalRecord a, TerminalRecord b, ObjectiveConfig? config = null)
     {
-        // 1. A real victory beats everything that is not one. A CUTOFF IS NOT A DEFEAT: it
-        //    loses to a victory and to a verified wipe (which is at least a fact), but it is
-        //    never itself scored as a loss — the plan's "截断不算团灭".
+        // 1. A real victory beats everything that is not one. Between the two non-win
+        //    categories, an unmodeled/cut-off line outranks a verified wipe: the cutoff is
+        //    unknown, not a loss, and preferring the wipe turns a simulator hole into a
+        //    deliberate losing move.
         var victory = Rank(a).CompareTo(Rank(b));
         if (victory != 0) return victory;
 
@@ -146,13 +163,19 @@ public static class TerminalComparer
         var loss = b.IrreversibleLoss.CompareTo(a.IrreversibleLoss);
         if (loss != 0) return loss;
 
-        // 3. Then the resources the plan costs the party.
+        // 3. Fewer unrecovered stolen cards/gold is better. A thief that escapes is a
+        //    permanent deck/gold loss, not a hit point; the live report was a bot that
+        //    out-blocked the theft and lost a key card while ending at high HP.
+        var theft = b.OutstandingStolenResource.CompareTo(a.OutstandingStolenResource);
+        if (theft != 0) return theft;
+
+        // 4. Then the resources the plan costs the party.
         var utility = ResourceUtility(a, config).CompareTo(ResourceUtility(b, config));
         if (utility != 0) return utility;
         return 0;
     }
 
-    private enum Tier { Cutoff = 0, VerifiedDefeat = 1, VerifiedVictory = 2 }
+    private enum Tier { VerifiedDefeat = 0, Cutoff = 1, VerifiedVictory = 2 }
 
     private static Tier Rank(TerminalRecord r) =>
         !r.Verified ? Tier.Cutoff

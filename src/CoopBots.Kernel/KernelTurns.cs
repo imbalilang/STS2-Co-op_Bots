@@ -2,6 +2,7 @@
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
 using MegaCrit.Sts2.Core.MonsterMoves.Intents;
 using MegaCrit.Sts2.Core.ValueProps;
@@ -14,6 +15,27 @@ public sealed partial class KernelSession
     private bool capturedExtraTurn;
     private string? roundBoundary;
     /// <summary>
+    /// When true, a turn-start choice this session meets is answered by the same
+    /// automatic-policy shape the rollout's card choices already use, instead of
+    /// failing closed. Rollouts need this: `Tools of the Trade` (and its family)
+    /// triggers a discard at the start of the next player turn, and a fail-closed
+    /// boundary there truncates every line at the same place — measured in the
+    /// 2026-09-22 live run, 23 of 56 final-boss decisions stopped exactly there.
+    ///
+    /// The planning search keeps this false: a committed plan must record the
+    /// actual choice, and a default guess is not a plan.
+    /// </summary>
+    internal bool AutoResolveTurnStartChoices { get; set; }
+    /// <summary>
+    /// When true, an enemy-turn choice this session meets is answered by a deterministic
+    /// default instead of failing the round. The roll-out tournament has no plan vector
+    /// for Knowledge Demon's per-player curse choice, so before this every final-boss
+    /// roll-out stopped at `round-pending-choice:knowledge-demon/...` or threw when the
+    /// per-target counter ran past its table. A default curse is a prediction, not a
+    /// committed plan; the planning search keeps this false and branches normally.
+    /// </summary>
+    internal bool AutoResolveEnemyChoices { get; set; }
+    /// <summary>
     /// WHICH failure inside the current step produced the boundary. `round-pending-choice`
     /// alone said a turn boundary failed closed and nothing about where; measured live
     /// 2026-09-21 the site label narrowed a lost run's truncations to `@enemy-phase`, and
@@ -23,6 +45,7 @@ public sealed partial class KernelSession
     private string? boundarySite;
     public bool EnemyPhaseCompleted { get; private set; }
     public string? LastRoundFailure { get; private set; }
+    private string? lastLoggedRoundFailure;
     public bool IsReady(Player player) => ready.Contains(player.NetId);
     public bool CanAct(Player player) => !EnemyPhaseCompleted && !HasWon && !IsReady(player) && Hp(player.Creature) > 0;
 
@@ -97,7 +120,23 @@ public sealed partial class KernelSession
             LastActionHadEnvironmentalRisk |= PredictionCoverage.Collect(simulator).Any(g => !g.Compensated);
             failedBoundary = null;
         }
-        catch (Exception error) { LastRoundFailure = error.ToString(); boundary = failedBoundary = "round-exception:" + error.GetType().Name; return false; }
+        catch (Exception error)
+        {
+            LastRoundFailure = error.ToString();
+            boundary = failedBoundary = "round-exception:" + error.GetType().Name;
+            // NAME THE CAUSE, ONCE PER DISTINCT FAILURE. The boundary alone said only
+            // `round-exception:InvalidOperationException`; measured 2026-09-22 that left
+            // 69 final-boss decisions with no way to tell a Knowledge Demon counter
+            // overrun from a hook null-reference. `lastLoggedRoundFailure` keeps a
+            // frame-loop from reprinting the same stack every tick.
+            if (!string.Equals(lastLoggedRoundFailure, LastRoundFailure, StringComparison.Ordinal))
+            {
+                lastLoggedRoundFailure = LastRoundFailure;
+                Log.Warn($"CoopBots kernel: round settlement exception: "
+                    + $"{error.GetType().Name}: {error.Message}\n{error.StackTrace}");
+            }
+            return false;
+        }
         finally { Combat.EndActionChoices(); }
         // The enemy phase is a settled boundary. If rounds remain in the search
         // budget, start the next player turn outside the end-turn choice scope
@@ -126,7 +165,8 @@ public sealed partial class KernelSession
     // auto-pre-play. Any step that needs a choice we cannot answer fails closed.
     private bool StartNextPlayerTurn(Player[] players)
     {
-        var choices = TurnStartChoiceCursor.ForAutomaticPolicy(_ => null);
+        var choices = TurnStartChoiceCursor.ForAutomaticPolicy(request =>
+            AutoResolveTurnStartChoices ? AutomaticTurnStartChoice(request) : null);
         Combat.BeginActionChoices(choices);
         try
         {
@@ -194,6 +234,25 @@ public sealed partial class KernelSession
             return !Combat.HasPendingChoice;
         }
         finally { Combat.EndActionChoices(); }
+    }
+
+    /// <summary>
+    /// Deterministic default answer for a turn-start choice during a rollout.
+    ///
+    /// The request always carries the spec its producer built (`ResolvePileDiscard`,
+    /// `Resolve`, `ResolveGeneratedToHand` all set it). A request without a spec is left
+    /// unanswered, so this can only turn a modeled choice into a modeled default — it
+    /// cannot invent an answer for a mechanism the engine did not describe.
+    /// </summary>
+    private PlanCardChoice? AutomaticTurnStartChoice(TurnStartChoiceRequest request)
+    {
+        if (request.Spec is not { } spec) return null;
+        return CardChoiceSupport.BuildAutomaticPolicyChoice(spec) with
+        {
+            SourceId = request.SourceId,
+            ContextId = request.ContextId,
+            Timing = request.Timing,
+        };
     }
 
     /// <summary>
@@ -363,7 +422,8 @@ public sealed partial class KernelSession
                         }
                         LastActionHadEnvironmentalRisk = true;
                     }
-                    if (!MonsterMoveSemantics.ApplyPartyMove(simulator, Combat, move, targets, processedDeaths)) return EnemyPhaseFail("party-move");
+                    if (!MonsterMoveSemantics.ApplyPartyMove(simulator, Combat, move, targets, processedDeaths,
+                            AutoResolveEnemyChoices)) return EnemyPhaseFail("party-move");
                 }
                 if (enemy.CombatId is uint id && Hp(enemy) > 0) processedDeaths.Remove(id);
             }

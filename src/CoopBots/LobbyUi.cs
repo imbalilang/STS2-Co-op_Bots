@@ -113,7 +113,21 @@ public static class LobbyUi
             difficultySelect.AddItem(zh ? tier.Chinese() : tier.English());
         difficultySelect.Select((int)BotDifficulty.Pro);
         root.AddChild(Row(zh ? "角色" : "Character", characterSelect));
-        root.AddChild(Row(zh ? "难度" : "Difficulty", difficultySelect));
+        var difficultyRow = Row(zh ? "难度" : "Difficulty", difficultySelect);
+        root.AddChild(difficultyRow);
+
+        // THE PERFORMANCE TIER, and why it shares a row with the difficulty rather than sitting
+        // next to it: on a table where every seat is bot-driven the tournament decides every
+        // action, so these numbers ARE the decision cost — while the difficulty's pacing (Flash
+        // 0.5 s / Pro 1.5 s per card) has nothing left to pace. Showing both would invite the
+        // reader to tune the one that does nothing. See Refresh for the condition.
+        var perfSelect = new OptionButton { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        foreach (KernelCombatPlanner.TournamentPerf tier in Enum.GetValues<KernelCombatPlanner.TournamentPerf>())
+            perfSelect.AddItem(PerfLabel(zh, tier));
+        perfSelect.Select((int)KernelCombatPlanner.Perf);
+        var perfRow = Row(zh ? "性能" : "Performance", perfSelect);
+        perfRow.Visible = false;
+        root.AddChild(perfRow);
 
         // What the selected tier actually changes, so the choice is not a mystery.
         // Deliberately not autowrapped: a wrapped label reports a near-zero minimum
@@ -225,10 +239,24 @@ public static class LobbyUi
                 ? string.Empty
                 : zh ? "只有房主可以添加或移除机器人" : "Only the host can add or remove bots");
             status.AddThemeColorOverride("font_color", error ? BotUiTheme.Error : BotUiTheme.Muted);
-            hint.Text = Selected() is { } tier ? (zh ? tier.Describe() : tier.DescribeEnglish()) : string.Empty;
-
             var me = lobby.NetService.NetId;
             var mine = AutoPilot.IsAutopiloted(me);
+
+            // THE PERFORMANCE TIER EXISTS FOR ANY TABLE THAT RUNS THE TOURNAMENT.
+            //
+            // Since 2026-09-23 `TournamentDrives` is true whenever at least one seat is driven,
+            // including a mixed table, so the bot seats' perf tier changes real decisions there.
+            // The all-bot table (every other seat a bot AND my own seat handed over) hides the
+            // per-bot difficulty row and shows perf; a mixed table keeps the difficulty row and
+            // now also shows perf, because both controls affect the fight.
+            var allBotTable = mine && bots.Count == seats - 1;
+            var tournamentTable = bots.Count > 0;
+            difficultyRow.Visible = !allBotTable;
+            perfRow.Visible = tournamentTable;
+            perfSelect.Disabled = !host;
+            hint.Text = allBotTable
+                ? PerfDescribe(zh, KernelCombatPlanner.Perf)
+                : Selected() is { } tier ? (zh ? tier.Describe() : tier.DescribeEnglish()) : string.Empty;
             handover.Disabled = !AutoPilot.CanToggle(me, host);
             handover.Text = mine
                 ? zh ? "收回我的席位" : "Take my seat back"
@@ -262,6 +290,15 @@ public static class LobbyUi
                 : zh ? "已收回你的席位" : "Your seat is yours again");
         };
         difficultySelect.ItemSelected += _ => Refresh();
+        perfSelect.ItemSelected += index =>
+        {
+            // A local, per-machine choice. The tournament runs on the host, so this is not
+            // synchronised — the host's tier is the one the table gets, and every seat is a bot
+            // here anyway, so there is nobody to disagree with.
+            var tiers = Enum.GetValues<KernelCombatPlanner.TournamentPerf>();
+            KernelCombatPlanner.Perf = tiers[Math.Clamp((int)index, 0, tiers.Length - 1)];
+            Refresh();
+        };
         LobbyBotService.SubscribeToPlayerChanges(lobby, () => refresh?.Invoke());
         bound = lobby;
         refresh = () => Refresh();
@@ -285,6 +322,38 @@ public static class LobbyUi
             if (target is not null && GodotObject.IsInstanceValid(target)) target.ResetSize();
         }).CallDeferred();
     }
+
+    /// <summary>
+    /// The four tiers, named for the player rather than for the constant.
+    ///
+    /// The numbers behind them are one machine's measurements, which is exactly why this is a
+    /// choice rather than a constant: a player on a weaker box takes 低 and pays for it in
+    /// thinking time instead of in dropped frames.
+    /// </summary>
+    private static string PerfLabel(bool zh, KernelCombatPlanner.TournamentPerf tier) => tier switch
+    {
+        KernelCombatPlanner.TournamentPerf.Low => zh ? "低 · 不抢核" : "Low · no extra threads",
+        KernelCombatPlanner.TournamentPerf.Mid => zh ? "中" : "Medium",
+        KernelCombatPlanner.TournamentPerf.Ultra => zh ? "超高 · 全候选" : "Ultra · every candidate",
+        _ => zh ? "高 · 推荐" : "High · recommended",
+    };
+
+    /// <summary>What the tier actually does, so the choice is not a mystery.</summary>
+    private static string PerfDescribe(bool zh, KernelCombatPlanner.TournamentPerf tier) => tier switch
+    {
+        KernelCombatPlanner.TournamentPerf.Low => zh
+            ? "12 个剧本；不开工作线程，每帧只用 6ms"
+            : "12 rollouts; no worker threads, 6 ms of each frame",
+        KernelCombatPlanner.TournamentPerf.Mid => zh
+            ? "24 个剧本；约用四分之一的核"
+            : "24 rollouts; about a quarter of the cores",
+        KernelCombatPlanner.TournamentPerf.Ultra => zh
+            ? "不截断候选 —— 每一张能出的牌都演算一遍；最贵，也最可能看出卡顿"
+            : "No candidate cap — every legal first action is rolled out; the most expensive",
+        _ => zh
+            ? "60 个剧本；除两个核外全用（2026-09-22 实测 p90 604ms / max 1015ms）"
+            : "60 rollouts; every core but two (measured 2026-09-22: p90 604 ms, max 1015 ms)",
+    };
 
     private static HBoxContainer Row(string label, Control control)
     {

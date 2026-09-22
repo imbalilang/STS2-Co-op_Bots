@@ -23,6 +23,15 @@ internal static class Archetypes
     internal sealed record Route(string Name, string Payoff, string[] Enablers, int PayoffThreshold,
         int EnablerThreshold = 1);
 
+    // A shop visit is where a missing signature/payoff of the deck's current route can be
+    // bought. The generic route bonus lives inside the legacy score and is clamped by the
+    // Elo-first rules term; these two premiums are deliberately outside that clamp, because
+    // a removal's value is raw deck points and a starter removal otherwise outbids every
+    // build-defining card (measured: 100 deck points = 300 gold versus a good card's 20-50).
+    // Only the top two compatible matches pay, and a duplicate copy is discounted below.
+    private const double SignatureCorePremium = 150;
+    private const double PayoffCorePremium = 100;
+
     // Role routes, expressed in tags derived from the cards themselves.
     private static readonly Route[] Routes =
     [
@@ -108,6 +117,37 @@ internal static class Archetypes
         // no part of it, and the further in it is the more that costs.
         if (bonus <= 0 && matches[0].Strength > 0.5) bonus -= 4 + Math.Max(0, matches[0].Hits - 2) * 2;
         return bonus;
+    }
+
+    /// <summary>
+    /// Shop-only premium for the missing core of the deck's current route:
+    /// a signature card of the top mined cluster, or the payoff role of the top
+    /// role route. Kept separate from <see cref="Bonus"/> because the shop
+    /// compares against a removal's raw deck-point value in gold, and the
+    /// Elo-first rules clamp would otherwise cap this term at a few points.
+    /// </summary>
+    /// <param name="route">Name of the match that paid the premium, empty when none did.</param>
+    internal static double CorePremium(CardProfile.Facts facts, CardModel card,
+        IReadOnlyList<CardModel> deck, Player? player, out string route)
+    {
+        var matches = Detect(deck, player);
+        route = matches.Count == 0 ? string.Empty : matches[0].Name;
+        if (matches.Count == 0) return 0;
+        var premium = 0.0;
+        for (var rank = 0; rank < Math.Min(2, matches.Count); rank++)
+        {
+            // The second match only pays when the data says the two routes combine.
+            // An unrelated hedge must not be priced as two core cards.
+            if (rank == 1 && !Compatible(matches[0], matches[rank])) continue;
+            var match = matches[rank];
+            var rankWeight = rank == 0 ? 1.0 : 0.5;
+            if (match.Signature.Contains(card.Id.Entry))
+                premium += SignatureCorePremium * match.Strength * rankWeight;
+            else if (match.Roles.Count > 0 && facts.Roles.Contains(match.Roles.First()))
+                premium += PayoffCorePremium * match.Strength * rankWeight;
+        }
+        if (premium <= 0) route = string.Empty;
+        return premium;
     }
 
     // Two routes may coexist only when the data says they do: they share a

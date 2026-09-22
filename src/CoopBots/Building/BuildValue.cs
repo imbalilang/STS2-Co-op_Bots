@@ -41,19 +41,27 @@ internal static class BuildValue
     private const double MechanismPayoffPerTrigger = 2.0;
     private const double MechanismPayoffCap = 6.0;
     private const double MechanismUnsupportedPenalty = 4.0;
+    // A producer whose resource has a separate multiplier/replayer that the deck does not
+    // hold yet. Bounded and small: it makes the incomplete package visible, but a good
+    // standalone producer (Hidden Daggers) can still be worth taking on its own numbers.
+    private const double ProducerWithoutPayoffPenalty = 5.0;
     // The most of a card's own pre-team contribution the team bonus may add.
     // Modest and absolute-free so it self-normalises across cards; it is what
     // stops a large flat team term from carrying a card the deck cannot use.
     private const double TeamBonusBuildShare = 0.5;
     // Thinning a starter card out of a real deck is worth this much before any
-    // comparison against the rest of the deck.
-    private const double StarterRemovalBaseline = 55;
+    // comparison against the rest of the deck. Lowered from 40 to 30 on 2026-09-23:
+    // a first starter removal was worth 100 deck points (300 gold), which outbid every
+    // build-defining card even after the route-core premium; the same 2.5x dead-draw
+    // pressure still makes a 150-gold removal payable (75 x 3.0 = 225 gold).
+    private const double StarterRemovalBaseline = 30;
     // Thinning is worth more the more dead draws the deck still carries: the
     // first removal takes one Strike out of fifteen, the eighth takes one out of
     // eight that are left. A flat baseline could never outbid the shop's growing
-    // price — 55 x 2.2 = 121 gold against a 150-gold second removal — so the
-    // decks that most needed thinning were exactly the ones that could not buy
-    // it, and every run ended with ten starters still in the deck.
+    // price — 40 x 3.0 = 120 gold, and the 2.5x dead-draw pressure carries it past
+    // a 150-gold removal — so the decks that most needed thinning can still buy it.
+    // The shop also discounts repeated removals once the starter pile has shrunk;
+    // see BotShopPlanner.RemovalValue.
     private static double StarterPressure(IReadOnlyList<CardModel> deck)
     {
         var starters = deck.Count(card => card.Rarity == CardRarity.Basic && !card.IsUpgraded);
@@ -154,6 +162,18 @@ internal static class BuildValue
         var saturation = RoleSaturation(facts, card, summary, candidateInDeck);
         var score = Base + RarityBonus(card);
         var reasons = new List<string>();
+
+        // A producer whose payoff is a separate multiplier that the deck does not hold.
+        // This is the shiv/poison half of the 2026-09-22 Silent loss: the deck drafted
+        // Blade Dance / Hidden Daggers, never saw the payoff, and the route ended as a pile
+        // of enablers. Only producers that Assess left Unknown take this; a card that is
+        // itself an amplifier goes through the existing supported/unsupported branch.
+        if (mechanism.Support == DeckMechanisms.Support.Unknown
+            && DeckMechanisms.ProducerWithoutPayoff(card, summary) is { } missingPayoff)
+        {
+            score -= ProducerWithoutPayoffPenalty;
+            reasons.Add("producer-no-payoff:" + missingPayoff);
+        }
 
         var offense = Math.Min(DamageCap, facts.Damage * DamageWeight + facts.Block * BlockWeight);
         if (offense > 0)
@@ -311,9 +331,15 @@ internal static class BuildValue
 
     private static bool HasDeckFit(string reason) =>
         FitTokens.Any(token => reason.Contains(token, StringComparison.Ordinal));
+    // A small early-deck bonus, NOT a target to fill. The previous +8 at deck size 12
+    // carried cards with a negative community baseline over the skip line — measured live
+    // 2026-09-22: HAND_TRICK (elo-base -8.00, rules +0.22) scored +0.2 and was taken, and
+    // act 1 took 19/20 rewards before act 3 skipped 13/20. The bonus stays bounded and
+    // small enough that a below-skip card cannot ride it alone; deciding to add a card must
+    // still come from the card's own Elo/rules/affinity.
     private const double DevelopmentDeckTarget = 22.0;
-    private const double DevelopmentPerCard = 1.0;
-    private const double DevelopmentMax = 8.0;
+    private const double DevelopmentPerCard = 0.25;
+    private const double DevelopmentMax = 2.0;
 
     // A compiled table with a finite SKIP row is the only state in which the
     // Elo-first branch may run. The empty placeholder keeps the exact legacy

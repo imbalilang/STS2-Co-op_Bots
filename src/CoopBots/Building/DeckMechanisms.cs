@@ -144,6 +144,29 @@ internal static class DeckMechanisms
                 yield return resource;
     }
 
+    /// <summary>
+    /// Resource name when this card produces a resource whose payoff is a separate
+    /// multiplier/replayer the deck does not hold yet.
+    ///
+    /// <see cref="Assess"/> only prices multipliers without producers; a producer is
+    /// Unknown and therefore free to draft. Measured 2026-09-22: BLADE_DANCE and
+    /// HIDDEN_DAGGERS were taken with no ACCURACY, and the final Silent deck's route was
+    /// left as a producer pile. A bounded penalty makes the incomplete package visible to
+    /// the same valuation without pretending the producer is worthless by itself.
+    /// </summary>
+    internal static string? ProducerWithoutPayoff(CardModel card, DeckStructure.Summary deck)
+    {
+        var entry = card.Id.Entry;
+        foreach (var resource in BakedResources.All)
+        {
+            if (!Contains(resource.Producers, entry)) continue;
+            if (resource.Multipliers.Length == 0 && resource.Replayers.Length == 0) continue;
+            if (Count(deck, resource.Multipliers) > 0 || Count(deck, resource.Replayers) > 0) continue;
+            return resource.Name;
+        }
+        return null;
+    }
+
     private static int Count(DeckStructure.Summary deck, string[] ids)
     {
         var total = 0;

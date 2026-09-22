@@ -232,7 +232,8 @@ internal static partial class MonsterMoveEffects
         ForecastMove move,
         Creature player,
         out bool killedOwner,
-        IReadOnlyList<PlanCardChoice>? plannedChoices = null, IReadOnlyList<Creature>? partyTargets = null)
+        IReadOnlyList<PlanCardChoice>? plannedChoices = null, IReadOnlyList<Creature>? partyTargets = null,
+        bool autoResolveKnowledgeChoices = false)
     {
         killedOwner = false;
         var targets = partyTargets ?? new[] { player };
@@ -342,11 +343,25 @@ internal static partial class MonsterMoveEffects
                 return true;
             case ("KnowledgeDemon", "CURSE_OF_KNOWLEDGE_MOVE"):
                 foreach (var partyTarget in targets)
-                    KnowledgeDemonChoiceSupport.Resolve(
-                    combat,
-                    move.Owner,
-                    partyTarget,
-                    plannedChoices);
+                {
+                    if (!KnowledgeDemonChoiceSupport.Resolve(
+                            combat,
+                            move.Owner,
+                            partyTarget,
+                            plannedChoices,
+                            autoResolveKnowledgeChoices))
+                    {
+                        // A planned branch is waiting for its explicit choice; do not
+                        // advance the counter for a move that has not resolved.
+                        return true;
+                    }
+                }
+                // ONE move, ONE counter increment. The native CurseOfKnowledgeMove
+                // selects for every target, then increments once after Task.WhenAll;
+                // doing it inside Resolve advanced once per party member and threw at
+                // counter >= 3 (measured: 69 round-exception decisions in the 2026-09-22
+                // Knowledge Demon fight).
+                combat.AdvanceKnowledgeDemonCurseCounter(move.Owner);
                 return true;
             case ("TestSubject", "RESPAWN_MOVE"):
                 return true;

@@ -118,7 +118,8 @@ internal static class LiveTestAutoStart
             // discover it was not saying.
             // `search=tournament` forces the roll-out tournament as the decision-maker, and
             // `search=search` forces the segmented search. LEAVE IT OUT for the shipped default,
-            // which since 0.38.0 is the tournament on an all-bot table. Read HERE, at arming
+            // which since 2026-09-23 is the tournament on every table with at least one driven
+            // seat (all-bot and mixed). Read HERE, at arming
             // time, because it is a property of how this run was launched and not of any
             // particular combat.
             var search = new string(File.ReadAllLines(FlagPath)
@@ -131,9 +132,19 @@ internal static class LiveTestAutoStart
                 "search" => false,
                 _ => null,
             };
+            // `perf=low|mid|high|ultra` picks the tournament's spend tier. It lives here rather
+            // than in a settings file because what we are comparing is one machine's stutter
+            // against its decision quality, and a batch has to be able to say which one it ran.
+            // Absent or unrecognised leaves the shipped default.
+            var perf = new string(File.ReadAllLines(FlagPath)
+                .Select(line => line.Trim())
+                .FirstOrDefault(line => line.StartsWith("perf=", StringComparison.OrdinalIgnoreCase))?
+                .Skip("perf=".Length).ToArray() ?? []);
+            KernelCombatPlanner.ApplyPerf(perf);
             Log.Info($"CoopBots live test: flag seed='{seed}' multiplayer={multiplayer} "
                 + $"room='{room}' encounter='{encounter}' search='{search}' "
-                + $"tournamentOverride={KernelCombatPlanner.TournamentOverride?.ToString() ?? "default"}.");
+                + $"tournamentOverride={KernelCombatPlanner.TournamentOverride?.ToString() ?? "default"} "
+                + $"perf='{perf}'(active={KernelCombatPlanner.Perf}).");
             if (multiplayer)
             {
                 if (!LiveTestMultiplayerRun.Start(seed, room, encounter)) failed = true;

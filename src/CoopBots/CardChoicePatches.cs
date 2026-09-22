@@ -14,7 +14,14 @@ internal static class BotCardChoiceDispatcher
 {
     public static bool TrySelect(MethodBase originalMethod, object[] args, out object? value)
     {
-        var player = args.OfType<Player>().FirstOrDefault();
+        // Most CardSelectCmd entry points carry the choosing Player explicitly. One
+        // does not: FromDeckForEnchantment(IReadOnlyList<CardModel>, ...), which is
+        // the exact overload RoyalStamp.AfterObtained calls. The native body derives
+        // the owner from cards[0].Owner, so the prefix has to do the same or the
+        // call falls through to the mixed-table deadlock this dispatcher exists to
+        // prevent (see tests/PatchSmoke/ChoiceSeatScenarios.cs).
+        var player = args.OfType<Player>().FirstOrDefault()
+            ?? args.OfType<IEnumerable<CardModel>>().FirstOrDefault()?.FirstOrDefault()?.Owner;
         if (player is null || !AutoPilot.Drives(player.NetId))
         {
             value = null;

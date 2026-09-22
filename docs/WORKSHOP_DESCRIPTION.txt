@@ -1,5 +1,5 @@
 [h1]Co-op Bots / 联机机器人[/h1]
-[b]0.38.1：战斗外的等待大幅缩短——路线 / 商店 / 奖励 / 遗物不再一个个角色各等 2 秒。[/b]
+[b]0.39.0：人机混合局也用锦标赛决策、剧本逐步执行不再卡；更会忍住不出牌。[/b]
 
 为多人房间加入 AI 队友，由房主统一调度。
 
@@ -10,12 +10,13 @@
 [*]游戏版本 v0.111.0
 [/list]
 
-[h2]0.38.1 更新[/h2]
+[h2]0.39.0 更新[/h2]
 [list]
-[*][b]战斗外的等待大幅缩短[/b]：地图投票 / 商店购买 / 奖励按钮 / 宝箱遗物不再一个个角色各等 2 秒，改为只在房间或战斗切换时静置一次、同一房间内按 250 毫秒推进（四席投票约 8 秒 → 约 1 秒）
-[*][b]全 Bot 局[/b]由「续演锦标赛」决策：每个动作从实盘重算，单次约 1.2 秒，不再开局沉默 3 / 8 分钟
-[*]桌上还有真人时完全不变；已知代价是单次决策同步执行，极端情况会短暂卡顿（秒级）
-[*]本版不宣称强度提升
+[*][b]人机混合局与全 Bot 局用同一套续演锦标赛[/b]，找到的剧本逐步执行、不再每张牌重搜——修掉混合局每帧约 6 毫秒的持续占用；性能档位在任何有 Bot 的桌上都可调
+[*][b]「不打」成为选项[/b]：鬼火、低威胁尖啸会保留；一回合增益（调制 / Fade / Coordinate）先于队友的攻击打出，单回合药水只在还有匹配牌时喝
+[*][b]偷牌有代价[/b]；[b]路线认遗物与金币[/b]（遗物决定精英取舍、500+ 金币直奔商店、健康全 Bot 队伍主动打精英）
+[*][b]商店为核心牌多出价[/b]；宝箱奖励每个 Bot 都补发（SPOILS_MAP 能变现）；修复知识恶魔诅咒与奖励屏卡死
+[*]上一版（0.38.2）：战斗内不再卡动画、性能档位、商店只买永久提升
 [/list]
 [url=https://github.com/imbalilang/STS2-Co-op_Bots/blob/main/CHANGELOG.md]完整变更记录[/url]
 
@@ -30,7 +31,7 @@
 [h2]特点[/h2]
 [list]
 [*]团队联合决策：共享易伤 / 虚弱、逐人承伤、格挡投射、斩杀呼叫
-[*]战斗搜索基于[b]真实模拟[/b]（CombatSolver 内核）：有真人时按实际局面重新规划，全 Bot 模式下开局一次长搜索并按剧本执行
+[*]战斗搜索基于[b]真实模拟[/b]（CombatSolver 内核），不是启发式打分
 [*]构筑按离目标流派的距离决策：拿牌 / 商店 / 删牌共用同一目标函数，可跳过
 [*]战斗、奖励、商店、事件、营地、路线建议均由 AI 处理
 [/list]
@@ -41,7 +42,6 @@
 [*]AI 在真人回合内行动，真人均结束后自动收尾并一次性结束
 [*]固定名称的 AI 队友（Bot 1/2/3）
 [*]本版为隔离构建，并在真实客户端上做过多人联机验证（4 席 A10 全 Bot 到第二幕）；不宣称胜率提升
-[*]全 Bot 模式下单次搜索可达数十秒到分钟级，这是有意换来的深度
 [/list]
 
 [h2]第三方 / Third-party[/h2]
@@ -71,11 +71,12 @@ Configurable AI teammates for the official multiplayer lobby. The host drives ev
 [*]Game version v0.111.0.
 [/list]
 
-[h2]0.38.1 changes[/h2]
+[h2]0.39.0 changes[/h2]
 [list]
-[*][b]Out-of-combat waits cut hard[/b]: map votes, shop purchases, reward buttons and treasure relics no longer cost 2 s each per character -- the settle is paid once per room or combat change, then actions advance at 250 ms (four seats voting: ~8 s to ~1 s).
-[*][b]All-bot mode[/b] is decided by a roll-out tournament: every action is replanned from the real board (~1.2 s each), instead of a 3-to-8 minute silence before the first card.
-[*]Tables with a human are unchanged. Cost: a decision runs synchronously, so a frame can hitch for up to about a second. No strength claim.
+[*][b]Mixed human/bot tables use the same roll-out tournament[/b] as all-bot tables, and the stored script is followed step by step instead of re-searched on every card — the per-step re-search was ~6 ms of the main thread every frame; that mixed-table stutter is gone. Performance tiers work on any table with a bot.
+[*][b]Not playing is a real option[/b]: Wisp and a low-threat Piercing Wail are held; one-turn buffs are played before the allies they boost; temporary stat potions need matching cards left.
+[*][b]Theft has a price[/b]; [b]routes read relics and gold[/b] (relics steer elites, 500+ gold heads for the nearest shop, healthy all-bot teams take elites).
+[*][b]Shops pay a premium for core cards[/b]; every bot gets its chest reward (SPOILS_MAP cashes out); the Knowledge Demon curse and the reward-screen freeze are fixed.
 [/list]
 [url=https://github.com/imbalilang/STS2-Co-op_Bots/blob/main/CHANGELOG.md]Full changelog[/url]
 
@@ -90,7 +91,7 @@ Configurable AI teammates for the official multiplayer lobby. The host drives ev
 [h2]Features[/h2]
 [list]
 [*]Joint team decisions: shared Vulnerable / Weak, per-member incoming damage, block projection, kill callouts
-[*]Combat search on a [b]real simulation[/b] (CombatSolver kernel): with a human at the table it replans from the real state, in all-bot mode it searches once and follows the script
+[*]Combat search on a [b]real simulation[/b] (CombatSolver kernel), not a heuristic score
 [*]Deck building by distance from the target build: rewards, shop and removals share one objective, skipping is real
 [*]Combat, rewards, shop, events, camp and route advice are all handled by the AI
 [/list]
@@ -100,8 +101,7 @@ Configurable AI teammates for the official multiplayer lobby. The host drives ev
 [*]Only the host runs the full logic; clients sync the results.
 [*]Bots act during the human turn and finish on their own once every human has ended.
 [*]Bots have fixed names (Bot 1/2/3).
-[*]Isolated build, verified live in multiplayer on the real client (A10, all bots, to act 2); no win-rate claim.
-[*]All-bot searches can run for tens of seconds to minutes; that depth is deliberate.
+[*]Isolated build, verified live in multiplayer on the real client; no win-rate claim.
 [/list]
 
 [h2]Third-party[/h2]

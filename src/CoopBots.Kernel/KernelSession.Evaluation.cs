@@ -82,6 +82,8 @@ public sealed partial class KernelSession
     }
 
     public int Power<T>(Creature target) where T : PowerModel => Combat.GetAmount<T>(target);
+    /// <summary>The Knowledge Demon curse counter this branch has reached.</summary>
+    public int KnowledgeDemonCurseCounter(Creature source) => Combat.GetKnowledgeDemonCurseCounter(source);
     /// <summary>
     /// Full visible-state text of this branch for one player: HP, block, energy,
     /// stars, gold, hands with upgrades, orbs and orb slots, potions, relics and
@@ -122,6 +124,9 @@ public sealed partial class KernelSession
         using var isolation = SimulationNotificationIsolation.Enter();
         return Hp(enemy) <= 0 ? 0 : Math.Max(0, (int)HookMirrors.ModifyDamage(simulator, target, enemy, raw, ValueProp.Move, null, null));
     }
+
+    /// <summary>Cards/gold still held by a thief in this branch. See TerminalRecord.</summary>
+    public int OutstandingStolenResource => Combat.OutstandingStolenResource(simulator);
 
     /// <summary>
     /// Strength a later round would have back: temporary Strength powers are

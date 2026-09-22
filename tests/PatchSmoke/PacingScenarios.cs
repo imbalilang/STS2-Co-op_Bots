@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using CoopBots;
 
 internal static class PacingScenarios
@@ -56,30 +56,6 @@ internal static class PacingScenarios
         Check(!Due(52_199) && Due(52_200), "An 800 ms plan must shorten the wait to the remaining 700 ms, not pay 1.5 s on top.");
         Mark(52_000, 0);
         Check(!Due(53_499) && Due(53_500), "A missing plan stamp must not shorten the human-facing wait.");
-
-        // R2 (2026-09-22, swapped the two branches of BotRuntime.NonCombatDelayMs) — the
-        // assertion below goes red, quoted:
-        //   System.Exception: a room change must keep the 2 s settle — it is what stops the bot
-        //   pressing a terminal continue before the act-transition event screen exists.
-
-        // OUT OF COMBAT, THE 2 s IS PAID ON A ROOM CHANGE, NOT ON EVERY ACTION.
-        //
-        // Those actions are one per tick by construction — one map vote, one reward button, one
-        // shop purchase — so the settle multiplied by the table: four seats voting cost 8 s per
-        // map generation, a four-reward set cost 8 s per seat, and a shop purchase paid 2 s on
-        // top of its own round trip. Reported by the user on 2026-09-22 as "choosing a route,
-        // shopping, picking a relic each take ages, character by character".
-        //
-        // What must NOT change: the settle still guards the transition race, where pressing the
-        // terminal reward screen's continue before the act-transition event screen existed lost
-        // the 80 %-heal event (measured 2026-09-21: act 2 entered at 7/87).
-        Check(BotRuntime.NonCombatDelayMs(roomChanged: true) == 2000,
-            "a room change must keep the 2 s settle — it is what stops the bot pressing a terminal "
-            + "continue before the act-transition event screen exists.");
-        Check(BotRuntime.NonCombatDelayMs(roomChanged: false) <= 300,
-            $"an action inside the SAME room must not pay the settle: got "
-            + $"{BotRuntime.NonCombatDelayMs(roomChanged: false)} ms, and a four-seat table pays it "
-            + "once per seat per action.");
         Console.WriteLine("PASS: Pro 1.5s / Flash 0.5s while a human decides, no wait once everyone has finished, pause override, round/reload resets, plan time overlaps the wait.");
     }
     private static void Check(bool ok, string message) { if (!ok) throw new Exception(message); }

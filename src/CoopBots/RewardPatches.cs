@@ -79,6 +79,19 @@ internal static class BotRewardDriver
         ActiveCardRewards.Remove(set.Player.NetId);
     }
 
+    /// <summary>
+    /// Converts the brain's card-reward index (-1 = skip) into the game's choice-result
+    /// shape. `FromIndex(-1)` is NOT a skip: `CardReward.OnSelect` reads the result with
+    /// `AsIndexOrNull()`, gets -1, passes `num < _cards.Count`, and then indexes
+    /// `_cards[-1]` — the `ArgumentOutOfRangeException` that fired 14 times in the
+    /// 2026-09-22 live run. `FromIndex(null)` is the game's own skip shape:
+    /// `AsIndexOrNull()` is null and the reward closes cleanly.
+    /// </summary>
+    internal static PlayerChoiceResult IndexChoiceOrSkip(int index, int count)
+        => index < 0 || index >= count
+            ? PlayerChoiceResult.FromIndex(null)
+            : PlayerChoiceResult.FromIndex(index);
+
     /// <summary>What a reward is, in one token, for a log that has to name what was lost.</summary>
     private static string Describe(Reward reward)
     {
@@ -117,7 +130,7 @@ internal static class BotRewardDriver
             && ActiveCardRewards.TryGetValue(player.NetId, out var reward))
         {
             var cards = reward.Cards.ToList();
-            return PlayerChoiceResult.FromIndex(BotBrain.ChooseCardReward(player, cards));
+            return IndexChoiceOrSkip(BotBrain.ChooseCardReward(player, cards), cards.Count);
         }
 
         if (declaringNames.Any(name => name.Contains("MendRestSiteOption", StringComparison.Ordinal)))

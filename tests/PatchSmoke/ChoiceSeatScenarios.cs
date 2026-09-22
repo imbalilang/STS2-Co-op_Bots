@@ -7,6 +7,7 @@ using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Models.Characters;
+using MegaCrit.Sts2.Core.Models.Enchantments;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Unlocks;
 
@@ -162,10 +163,60 @@ internal static class ChoiceSeatScenarios
             Fail("taking the seat back must remove the selector again, not leave it for the rest of the run.");
         AutoPilot.Clear();
 
+        // 6. RoyalStamp.AfterObtained calls the ONE CardSelectCmd overload that carries
+        //    no Player argument: FromDeckForEnchantment(IReadOnlyList<CardModel>, ...).
+        //    The prefix therefore has to recover the owner from cards[0].Owner, exactly
+        //    as the native body does. Without that, a mixed table never installs the
+        //    machine-wide selector, the synthetic path falls through to the remote
+        //    fallback, which returns an Index PlayerChoiceResult, and the native body
+        //    throws on AsDeckCards(); a handed-over local seat instead opens
+        //    NDeckEnchantSelectScreen and waits for a click nobody makes. Either way
+        //    the shop purchase awaits forever.
+        //
+        //    CHECKED (R2, 2026-09-23): restoring the old `args.OfType<Player>()`-only
+        //    lookup turns the first assertion below red, verbatim:
+        //      System.InvalidOperationException: ChoiceSeat: RoyalStamp's
+        //      FromDeckForEnchantment(cards, ...) must be answered for a synthetic bot;
+        //      the remote fallback returns an Index result and the native AsDeckCards()
+        //      throws.
+        //        at ChoiceSeatScenarios.Fail(...) ChoiceSeatScenarios.cs:line 35
+        //        at ChoiceSeatScenarios.Run()      ChoiceSeatScenarios.cs:line 204
+        var fromDeckEnchant = typeof(CardSelectCmd).GetMethods().Single(method =>
+            method.Name == nameof(CardSelectCmd.FromDeckForEnchantment)
+            && method.GetParameters().Length == 4
+            && method.GetParameters()[0].ParameterType == typeof(IReadOnlyList<CardModel>));
+        var royalStamp = ModelDb.Enchantment<RoyallyApproved>();
+        var enchantPrefs = new CardSelectorPrefs(CardSelectorPrefs.EnchantSelectionPrompt, 1);
+        object[] EnchantArgs(Player owner) =>
+        [
+            new List<CardModel>
+            {
+                combat.CreateCard<StrikeIronclad>(owner),
+                combat.CreateCard<Bash>(owner),
+            },
+            royalStamp,
+            1,
+            enchantPrefs,
+        ];
+
+        if (!BotCardChoiceDispatcher.TrySelect(fromDeckEnchant, EnchantArgs(bot), out var botEnchantPick))
+            Fail("RoyalStamp's FromDeckForEnchantment(cards, ...) must be answered for a synthetic bot; "
+                + "the remote fallback returns an Index result and the native AsDeckCards() throws.");
+        if (botEnchantPick is not IEnumerable<CardModel> botEnchantCards || botEnchantCards.Count() != 1)
+            Fail($"RoyalStamp's enchant choice must return exactly one card, got {botEnchantPick ?? "null"}.");
+
+        AutoPilot.Set(seat.NetId, true);
+        if (!BotCardChoiceDispatcher.TrySelect(fromDeckEnchant, EnchantArgs(seat), out _))
+            Fail("RoyalStamp's no-Player overload must also be answered for a handed-over seat.");
+        AutoPilot.Set(seat.NetId, false);
+        if (BotCardChoiceDispatcher.TrySelect(fromDeckEnchant, EnchantArgs(seat), out _))
+            Fail("an ordinary human's RoyalStamp enchant pick must stay on the native screen.");
+        AutoPilot.Clear();
+
         Console.WriteLine("PASS: the reported card-choice stalls are answered for every seat the bot "
             + "drives — a synthetic bot's potion pick and Survivor discard, and the same two on a "
-            + "handed-over real seat — while an ordinary human keeps the native screen and the "
-            + "machine-wide selector hatch stays off any table with a human at it, and an empty "
-            + "hand returns nothing instead of throwing.");
+            + "handed-over real seat plus RoyalStamp's owner-less deck-enchant overload — while an "
+            + "ordinary human keeps the native screen and the machine-wide selector hatch stays off "
+            + "any table with a human at it, and an empty hand returns nothing instead of throwing.");
     }
 }

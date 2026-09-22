@@ -222,7 +222,8 @@ internal static class ShopScenarios
         typeof(MerchantCardEntry).GetProperty("CreationResult")!.SetValue(lateEntry, new CardCreationResult(lateCard));
         // Priced just above break-even: inside the last-act discount, outside the
         // ordinary margin, so exactly one of the two acts buys it.
-        var worth = Math.Max(0, CoopBots.Building.BuildValue.Add(lateCard, lateBot).Total) * 2.2;
+        var worth = Math.Max(0, CoopBots.Building.BuildValue.Add(lateCard, lateBot).Total)
+            * BotShopPlanner.GoldPerDeckValue;
         var lateCost = (int)Math.Ceiling(worth / 0.9);
         typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(lateEntry, lateCost);
         ((List<MerchantCardEntry>)lateInventory.CharacterCardEntries).Add(lateEntry);
@@ -232,6 +233,50 @@ internal static class ShopScenarios
         SetAct(lateRun, 2);
         Check(Index(ChooseLate()) == 0, "The last act must spend gold it can no longer use on a break-even item.");
         Console.WriteLine("PASS: endgame gold is priced as terminal: the last act buys a break-even item the early act saves past.");
+
+        // SHOPS BUY DECK, NOT BOTTLES. The user's rule from their own play is "shop almost
+        // never buys a potion, only removals and key cards", and the reviewed act-1 run is
+        // the failure that rule prevents: 16 shop visits bought two potions and zero cards,
+        // and the party then lost the act-1 boss on a 14-card deck.
+        //
+        // The probe is built so the bottle is MAXIMALLY tempting — cheaper than the card
+        // (10 vs 40), a hurt buyer (so PotionValue pays the 160 rescue tier, not 65) and an
+        // open slot. That is exactly the comparison the old code lost, so this assertion is
+        // what goes red if the filter is removed.
+        // CHECKED (R2): dropping the `offers.Any(offer => !offer.IsPotion)` filter turns this
+        // red with "a shop holding a card worth buying must not spend the gold on a potion".
+        var bottleBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 9, 1));
+        var bottleRun = RunState.CreateForTest(new[] { bottleBot }, seed: "SHOP-DECK-FIRST");
+        bottleBot.ResetCombatState();
+        bottleBot.Creature.SetMaxHpInternal(80);
+        bottleBot.Creature.SetCurrentHpInternal(20);
+        // Just short of the pair's total (40 + 10): the pair is infeasible, so the planner must
+        // choose ONE item and the bottle-versus-card comparison decides it on its own. With
+        // enough gold the pair (card first, potion second) would win instead and the probe would
+        // pass for the wrong reason — measured, that is exactly what it did at 200 gold.
+        bottleBot.Gold = 45;
+        var bottleRoom = new MerchantRoom(); bottleRun.PushRoom(bottleRoom);
+        var bottleInventory = new MerchantInventory(bottleBot); bottleRoom.Inventories.Add(bottleInventory);
+        var deckCard = bottleRun.CreateCard<Adrenaline>(bottleBot);
+        var deckEntry = new MerchantCardEntry(bottleBot, bottleInventory, Array.Empty<CardModel>(), CardType.Skill);
+        typeof(MerchantCardEntry).GetProperty("CreationResult")!.SetValue(deckEntry, new CardCreationResult(deckCard));
+        typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(deckEntry, 40);
+        ((List<MerchantCardEntry>)bottleInventory.CharacterCardEntries).Add(deckEntry);
+        var bottleEntry = (MerchantPotionEntry)RuntimeHelpers.GetUninitializedObject(typeof(MerchantPotionEntry));
+        typeof(MerchantEntry).GetField("_player", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(bottleEntry, bottleBot);
+        typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(bottleEntry, 10);
+        typeof(MerchantPotionEntry).GetProperty("Model")!.SetValue(bottleEntry, ModelDb.Potion<BlockPotion>().ToMutable());
+        ((List<MerchantPotionEntry>)bottleInventory.PotionEntries).Add(bottleEntry);
+        object? ChooseBottleShop() => planner.GetMethod("Choose", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, new object[] { bottleInventory });
+        var bottleStock = bottleInventory.AllEntries.ToList();
+        var bottleChoice = Index(ChooseBottleShop());
+        Check(bottleChoice == bottleStock.IndexOf(deckEntry),
+            "a shop holding a card worth buying must not spend the gold on a potion instead — the probe's "
+            + $"bottle is cheaper (10 vs 40) and the buyer is hurt, so the old comparison lost: chose entry "
+            + $"{bottleChoice} [{bottleStock.ElementAtOrDefault(Math.Max(0, bottleChoice))?.GetType().Name}] "
+            + $"of {bottleStock.Count}.");
+        Console.WriteLine("PASS: a potion is bought only when the shop has nothing else worth buying.");
 
         // Depth is not just the act index: a shop with another shop still ahead
         // is not the last one, and only the last one has to empty the purse. The
@@ -267,5 +312,72 @@ internal static class ShopScenarios
         if (CoopBots.HumanCoopAdvisor.RelicValue(probeStrawberry, bot).Score != 0)
             throw new Exception("The specimen relic must still be worth zero on the value chain itself.");
         Console.WriteLine("PASS: an unmodelled relic is distinguishable from one modelled as worthless.");
+
+        // CORE CARD vs REMOVAL. A starter removal converts its deck points to a very
+        // large gold number; without a route premium the build-defining card loses the
+        // single-purchase comparison every visit. The fixture mirrors the mined-cluster
+        // probe: two signature cards on an Ironclad route, a missing signature on the
+        // shelf, and a starter Strike as the removal target.
+        object? ChooseFor(MerchantInventory inv) => planner.GetMethod("Choose", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, new object[] { inv });
+        MerchantInventory ShopWithDeck(string seed, Action<Player, RunState> fill, out Player buyer,
+            out MerchantCardEntry coreEntry, out MerchantCardRemovalEntry removalEntry)
+        {
+            buyer = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 11, 1));
+            typeof(Player).GetField("<Character>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(buyer, ModelDb.Character<Ironclad>());
+            var run = RunState.CreateForTest(new[] { buyer }, seed: seed);
+            buyer.ResetCombatState();
+            buyer.Creature.SetMaxHpInternal(80); buyer.Creature.SetCurrentHpInternal(80);
+            buyer.Gold = 200;
+            var shopRoom = new MerchantRoom(); run.PushRoom(shopRoom);
+            var shopInventory = new MerchantInventory(buyer); shopRoom.Inventories.Add(shopInventory);
+            foreach (var card in buyer.Deck.Cards.ToArray()) buyer.Deck.RemoveInternal(card);
+            fill(buyer, run);
+            coreEntry = new MerchantCardEntry(buyer, shopInventory, Array.Empty<CardModel>(), CardType.Attack);
+            typeof(MerchantCardEntry).GetProperty("CreationResult")!.SetValue(coreEntry,
+                new CardCreationResult(run.CreateCard<Inferno>(buyer)));
+            typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(coreEntry, 75);
+            ((List<MerchantCardEntry>)shopInventory.CharacterCardEntries).Add(coreEntry);
+            removalEntry = new MerchantCardRemovalEntry(buyer);
+            typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(removalEntry, 75);
+            typeof(MerchantInventory).GetProperty("CardRemovalEntry")!.SetValue(shopInventory, removalEntry);
+            return shopInventory;
+        }
+
+        var routeShop = ShopWithDeck("SHOP-CORE-ROUTE", (p, run) =>
+        {
+            p.Deck.AddInternal(run.CreateCard<Bloodletting>(p));
+            p.Deck.AddInternal(run.CreateCard<Breakthrough>(p));
+            for (var i = 0; i < 8; i++) p.Deck.AddInternal(run.CreateCard<StrikeIronclad>(p));
+            for (var i = 0; i < 4; i++) p.Deck.AddInternal(run.CreateCard<DefendIronclad>(p));
+        }, out var routeBot, out var routeCore, out var routeRemoval);
+        var routeStock = routeShop.AllEntries.ToList();
+        var routeCoreCard = routeCore.CreationResult!.Card;
+        var routePremium = CoopBots.Building.Archetypes.CorePremium(CoopBots.Building.CardProfile.Of(routeCoreCard),
+            routeCoreCard, routeBot.Deck.Cards.ToList(), routeBot, out var routeName);
+        Check(routePremium > 0,
+            $"a missing signature of the recognised route must get a core premium, got {routePremium:F1}.");
+        Check(!string.IsNullOrEmpty(routeName),
+            "the premium must name the route that paid it, or the log cannot explain the purchase.");
+        var routeChoice = Index(ChooseFor(routeShop));
+        Check(routeChoice == routeStock.IndexOf(routeCore),
+            "a build-defining card of the recognised route must beat a starter removal at the same price.");
+
+        var plainShop = ShopWithDeck("SHOP-CORE-PLAIN", (p, run) =>
+        {
+            for (var i = 0; i < 8; i++) p.Deck.AddInternal(run.CreateCard<StrikeIronclad>(p));
+            for (var i = 0; i < 4; i++) p.Deck.AddInternal(run.CreateCard<DefendIronclad>(p));
+        }, out var plainBot, out var plainCore, out var plainRemoval);
+        var plainStock = plainShop.AllEntries.ToList();
+        var plainCoreCard = plainCore.CreationResult!.Card;
+        var plainPremium = CoopBots.Building.Archetypes.CorePremium(CoopBots.Building.CardProfile.Of(plainCoreCard),
+            plainCoreCard, plainBot.Deck.Cards.ToList(), plainBot, out _);
+        Check(plainPremium == 0,
+            "a card with no recognised route must not receive a core premium.");
+        var plainChoice = Index(ChooseFor(plainShop));
+        Check(plainChoice == plainStock.IndexOf(plainRemoval),
+            "without a recognised route the same card must not get the core premium; the removal wins.");
+        Console.WriteLine("PASS: the shop pays a route-core premium that lets the build-defining card beat a starter removal.");
     }
 }

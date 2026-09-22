@@ -22,11 +22,12 @@ internal static class KnowledgeDemonChoiceSupport
         [CanonicalModels.Card<Disintegration>().Id.Entry, CanonicalModels.Card<WasteAway>().Id.Entry],
     ];
 
-    public static void Resolve(
+    public static bool Resolve(
         SimulatedCombatState combat,
         Creature source,
         Creature player,
-        IReadOnlyList<PlanCardChoice>? plannedChoices)
+        IReadOnlyList<PlanCardChoice>? plannedChoices,
+        bool autoResolve = false)
     {
         int counter = combat.GetKnowledgeDemonCurseCounter(source);
         if ((uint)counter >= (uint)OptionsByCounter.Length)
@@ -39,12 +40,28 @@ internal static class KnowledgeDemonChoiceSupport
             && string.Equals(candidate.SourceId, sourceId, StringComparison.Ordinal));
         if (choice == null)
         {
-            combat.SetPendingKnowledgeDemonChoice(new KnowledgeDemonChoiceRequest(
-                source,
-                counter,
+            if (!autoResolve)
+            {
+                combat.SetPendingKnowledgeDemonChoice(new KnowledgeDemonChoiceRequest(
+                    source,
+                    counter,
+                    sourceId,
+                    optionIds));
+                return false;
+            }
+            // Roll-out prediction, not a committed plan: every target still has to
+            // choose, and the tournament has no vector for those choices. Prefer the
+            // non-Disintegration curse (Mind Rot / Sloth / Waste Away) because
+            // Disintegration is direct unblockable damage and scales with the counter.
+            var disintegrationId = CanonicalModels.Card<Disintegration>().Id.Entry;
+            var defaultId = optionIds.FirstOrDefault(id =>
+                !string.Equals(id, disintegrationId, StringComparison.Ordinal)) ?? optionIds[0];
+            choice = new PlanCardChoice(
+                PlanChoiceEffect.ApplyKnowledgeCurse,
+                PileType.None,
+                [new PlanCardToken(defaultId, 0, string.Empty, 0, 0, defaultId)],
                 sourceId,
-                optionIds));
-            return;
+                Timing: PlanChoiceTiming.EnemyTurn);
         }
         if (choice.SourcePile != PileType.None || choice.Cards.Count != 1)
             throw new InvalidOperationException($"知识恶魔计划选牌格式无效：{sourceId}。");
@@ -64,8 +81,10 @@ internal static class KnowledgeDemonChoiceSupport
         else
             throw new InvalidOperationException($"知识恶魔诅咒 {selectedId} 没有模拟效果。");
 
-        combat.AdvanceKnowledgeDemonCurseCounter(source);
+        // The move-level caller advances the counter exactly once after every target
+        // has resolved. Doing it here advanced once per party member in 4-player play.
         combat.ClearPendingKnowledgeDemonChoice();
+        return true;
     }
 
     public static IReadOnlyList<PlanCardChoice> BuildChoices(

@@ -101,16 +101,26 @@ public static class BotRuntime
                 // as a state exists, before the game has finished putting screens up, and the
                 // room-proceed driver sits ahead of the rewards driver in Tick's order.
                 //
-                // Two seconds is the user's number. It is applied AT TRANSITIONS rather than
-                // before every choice: a blanket 2 s on each action would add two seconds to
-                // every card on top of the 1.5 s pacing, while the race this fixes only exists
-                // in the frames right after a scene changes.
+                // This is a TRANSITION delay, not a per-choice one: a blanket delay on every
+                // action would add it to every card on top of the difficulty's pacing, while
+                // the race it guards against only exists in the frames right after a scene
+                // changes. See SceneSettleMs for why it is 1 s and not 2 s any more.
                 _nextActionAt = DateTime.UtcNow.AddMilliseconds(SceneSettleMs);
-                // The non-combat block gets the same settle here. A fight ending is the other
-                // transition this gate has to survive — the terminal reward screen is what the
-                // bot races (see the block below) — and its room often does NOT change, so the
-                // room comparison alone would let the rewards screen be handled 250 ms in.
-                _nextNonCombatAt = DateTime.UtcNow.AddMilliseconds(NonCombatSettleMs);
+                // THE NON-COMBAT GATE NEEDS THE SAME TREATMENT, and for a while it did not get
+                // it. `_nextActionAt` alone never protected the drivers above it: the non-combat
+                // block runs BEFORE that check, so a driver that is both enabled and due fires
+                // in the very frame the new screen exists.
+                //
+                // `_nextNonCombatAt` was a free-running rate limiter — "at most one non-combat
+                // action per tick interval", measured from the previous tick — not a settle
+                // measured from the screen appearing. Measured live 2026-09-22: the terminal
+                // reward screen appeared and its continue was pressed in the same block that
+                // then voted on the act-2 map, skipping the reward set and the act-start event.
+                // Resetting it here is what makes the delay an actual settle.
+                //
+                // It is deliberately SceneSettleMs and NOT NonCombatSettleMs: entering a room
+                // waits for the UI, repeating an action inside one does not.
+                _nextNonCombatAt = DateTime.UtcNow.AddMilliseconds(SceneSettleMs);
                 _lastProgressAt = ClockMs;
                 BotCooperation.Reset();
                 HumanFinisherHints.Reset();
@@ -118,28 +128,28 @@ public static class BotRuntime
                 KernelPlanner.Reset(newCombat: true);
                 BotChoicePlanSync.Cancel();
             }
-            // ALL NON-COMBAT DECISIONS ARE THROTTLED — the user's 2 s, applied here because the
-            // act-transition bug lives in this block.
+            // ALL NON-COMBAT DECISIONS ARE THROTTLED at NonCombatSettleMs. This is a POLL
+            // INTERVAL, not a correctness gate — every driver in the block below gates on the
+            // game's own live UI state (a button must be enabled AND visible, a shop must have
+            // settled, a reward screen must have nothing left to take), so polling faster only
+            // makes the bot notice sooner; it cannot act sooner than the screen allows.
             //
-            // The transition is driven by the TERMINAL REWARD SCREEN'S CONTINUE BUTTON, which
-            // BotRoomProceedDriver presses (see the note further down about MoveToNextAct). Press
-            // it too early and the transition — including the NPC event that restores 80 % of
-            // lost HP — is gone: measured 2026-09-21, the run went boss -> rewards -> act 2
-            // combat with NO event room between, the party entering act 2 at 7/87. The block
-            // below the combat gate is a wall of "act on whatever exists this frame", and this
-            // gate is what stops the bot from being faster than the screens it depends on.
-            //
-            // IT IS PAID ON A ROOM CHANGE, NOT ON EVERY ACTION — see NonCombatCadenceMs. The
-            // race needs the settle once, while the screens are being built; the actions after
-            // that are one per tick (a vote, a reward button, one purchase) and each used to pay
-            // the full 2 s, which is what made a four-seat table take seconds per character.
-            var roomChanged = !ReferenceEquals(_nonCombatRoom, state.CurrentRoom);
-            if (roomChanged) _nonCombatRoom = state.CurrentRoom;
+            // The correctness that used to be blamed on this interval now lives where it
+            // belongs: BotRoomProceedDriver holds the continue while the reward screen still has
+            // rewards (see MustWaitForDriver). Before that gate existed, the act transition
+            // depended on this interval being long enough — measured 2026-09-21, the run went
+            // boss -> rewards -> act 2 combat with NO event room between, the party entering
+            // act 2 at 7/87, because the interval was measured from the previous tick rather
+            // than from the screen appearing.
             var nonCombatDue = DateTime.UtcNow >= _nextNonCombatAt;
             if (nonCombatDue)
             {
-                _nextNonCombatAt = DateTime.UtcNow.AddMilliseconds(NonCombatDelayMs(roomChanged));
+                _nextNonCombatAt = DateTime.UtcNow.AddMilliseconds(NonCombatSettleMs);
                 BotEventDriver.Tick(manager, state);
+                // Synthetic bots have no chest UI. The host grants their normal
+                // treasure-room rewards here; while that is in flight the room is held
+                // so gold/Quest effects cannot race the continue.
+                if (BotTreasureRewardDriver.TryGrant(manager, state)) return;
                 // Room-level proceeds are local UI, not synchronizer choices, so they sit
                 // outside BotEventDriver and everything else that talks to a synchronizer.
                 BotEventProceedDriver.TryProceed(manager, state);
@@ -635,42 +645,33 @@ public static class BotRuntime
     /// one constant to undo.
     /// </summary>
     private const int ActionSettleMs = 2000;
-    /// <summary>How long the bot lets a freshly-entered scene settle before it acts.</summary>
-    private const int SceneSettleMs = 2000;
     /// <summary>
-    /// The 2 s settle, for everything the bot decides OUTSIDE combat — but only when the ROOM
-    /// changed. It exists for the transition race (the act-transition event that restores 80 %
-    /// of lost HP vanished when the bot pressed the terminal reward screen's continue while the
-    /// screens were still being built), and that race only exists right after a room changes.
+    /// How long the bot lets a freshly-entered scene settle before it acts, on BOTH gates
+    /// (`_nextActionAt` and `_nextNonCombatAt`).
+    ///
+    /// Was 2 s. Cut to 1 s once BotRoomProceedDriver stopped depending on it: the 2 s was doing
+    /// double duty as a correctness gate — long enough that the reward screen's continue was
+    /// not pressed before the game had put the act-transition screens up — and a delay chosen
+    /// for correctness is a delay that can be shortened once the correctness is enforced
+    /// properly. The reward-screen gate (see MustWaitForDriver) is that enforcement.
+    ///
+    /// It is NOT zero: entering a room still has to wait for the game to finish putting the
+    /// scene and its overlay up, and a driver that reads a half-built screen acts on nothing.
     /// </summary>
-    private const int NonCombatSettleMs = 2000;
+    private const int SceneSettleMs = 1000;
     /// <summary>
-    /// What a non-combat action waits for when the room did NOT change: the next seat's map
-    /// vote, the next reward button, the next shop purchase, the next event page.
+    /// POLL INTERVAL for everything the bot decides OUTSIDE combat: map votes, room proceeds,
+    /// reward screens, chests, shops, events. The combat pacing is separate — a fight has its
+    /// own card cadence and <see cref="ActionSettleMs"/> as its floor.
     ///
-    /// THE 2 s USED TO BE SPENT HERE TOO, and those actions are one per tick by construction
-    /// (one vote, one button, one purchase), so the cost was multiplied by the table: measured
-    /// 2026-09-22 from the user's report — "choosing a route, shopping, picking a relic each
-    /// take ages, character by character": four seats voting cost 8 s, a four-reward set cost
-    /// 8 s per seat, and a shop round trip (command → ack → verify, one purchase per call) cost
-    /// 2 s per purchase on top of the network latency.
-    ///
-    /// Nothing has to APPEAR between two actions inside one room — the screen is already up —
-    /// so this is UI catch-up latency, not a settle. Every driver in the block below checks its
-    /// own state before acting (continue button enabled and visible, overlay on top of the
-    /// stack, shop inventory bound and the purchase acknowledged), which is what makes a short
-    /// cadence safe here.
+    /// Was 2000 ms. Every driver this interval paces gates on the game's OWN live UI state — a
+    /// button must be enabled and visible, a shop must have settled, a reward screen must have
+    /// nothing left to take — so this is a detection delay, not an action delay: polling faster
+    /// makes the bot notice sooner, it cannot act sooner than the screen permits. At 250 ms a
+    /// four-seat reward screen drains in well under a second instead of six.
     /// </summary>
-    private const int NonCombatCadenceMs = 250;
+    private const int NonCombatSettleMs = 250;
     private static DateTime _nextNonCombatAt = DateTime.MinValue;
-    /// <summary>The room the non-combat settle was last paid for. Identity, not equality:
-    /// one object per room instance, the same way `_combatIdentity` tracks a fight.</summary>
-    private static object? _nonCombatRoom;
-
-    /// <summary>Delay before the next non-combat action. Extracted so the rule — settle on a
-    /// room change, cadence otherwise — is assertable without a clock.</summary>
-    internal static int NonCombatDelayMs(bool roomChanged)
-        => roomChanged ? NonCombatSettleMs : NonCombatCadenceMs;
     private const long StallMs = 6000;
     private static DateTime _nextIdleLogAt = DateTime.MinValue;
     private static void ReportIdle(KernelCombatPlanner.Status status, bool legacy, bool humansFinished)
@@ -830,7 +831,8 @@ public static class BotRuntime
                 foreach (var (skipped, why) in RoutePlanner.UnbuildableChildren(state))
                     Log.Info($"CoopBots route: refusing to travel to {skipped} — {why}; "
                         + "entering it throws and strands the run (vanilla, not route preference).");
-                if (RoutePlanner.Plan(state, player) is not { Path.Count: > 1 } route)
+                var allBots = humanVotes.Count == 0 && bots.Count == state.Players.Count;
+                if (RoutePlanner.Plan(state, player, teamRoute: allBots) is not { Path.Count: > 1 } route)
                 {
                     // Name EVERY refused node, not just the start's children: the blocking one is
                     // usually deeper, and a silent children-log nearly cleared the exclusion that
@@ -845,7 +847,27 @@ public static class BotRuntime
                 humanVote = new MapVote
                 {
                     mapGenerationCount = manager.MapSelectionSynchronizer.MapGenerationCount,
-                    coord = route.Path[1].coord,
+                    // A FRESH ACT STARTS AT ROW 0, AND ROW 0 IS THE ANCIENT EVENT.
+                    //
+                    // `RoutePlanner.Plan` starts from `CurrentMapPoint ?? StartingMapPoint`, so on
+                    // a fresh act — where nothing has been visited and `CurrentMapPoint` is null —
+                    // `Path[0]` IS the starting node. Voting for `Path[1]` therefore skipped it and
+                    // travelled to its first child: measured live 2026-09-22, the act-2 vote went
+                    // `from act 1 coord (null) to MapCoord (4, 1)`, no `Creating NEventRoom` ever
+                    // appeared, and the party lost the Ancient's heal and reward every act.
+                    //
+                    // The game's own auto-play states the rule (AutoSlay/Handlers/Screens/
+                    // MapScreenHandler.SelectNextRoom): when `VisitedMapCoords.Count == 0` it picks
+                    // a `coord.row == 0` node, and only afterwards walks the last coord's child.
+                    // This is that rule. `CurrentMapPoint is null` is the same condition — see
+                    // RunState.CurrentMapPoint, which returns null exactly when CurrentMapCoord has
+                    // no value.
+                    //
+                    // Our own advisor already said it out loud (HumanCoopAdvisor: "路线建议：先选择
+                    // 起点") — the vote path was the half that did not.
+                    coord = state.CurrentMapPoint is null
+                        ? state.Map.StartingMapPoint.coord
+                        : route.Path[1].coord,
                 };
             }
             if (humanVote.Value.mapGenerationCount != manager.MapSelectionSynchronizer.MapGenerationCount)

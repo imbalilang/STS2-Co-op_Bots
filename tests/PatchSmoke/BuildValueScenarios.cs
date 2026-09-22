@@ -98,6 +98,25 @@ internal static class BuildValueScenarios
             throw new Exception("A refused removal must also not be worth gold.");
         Console.WriteLine("PASS: removal targets diluting cards and refuses to remove the deck's only defence.");
 
+        // Repeated shop removals must not keep outbidding the cards the deck still needs.
+        // CHECKED (R2) 2026-09-22: deleting the `value /= 1.0 + 0.35 * used` branch makes
+        // this assertion red, verbatim:
+        //   System.Exception: A repeated removal must be worth less than the first
+        //   (first=6.3, fourth=6.3).
+        // The live 2026-09-22 run bought 15 removals and 0 cards across 24 shop visits.
+        Clear(); Give<StrikeIronclad>(5); Give<DefendIronclad>(5);
+        var removalTarget = bot.Deck.Cards.First(card => card.Id.Entry == "STRIKE_IRONCLAD");
+        bot.ExtraFields.CardShopRemovalsUsed = 0;
+        var firstRemoval = BotShopPlanner.RemovalValue(removalTarget, bot);
+        bot.ExtraFields.CardShopRemovalsUsed = 3;
+        var fourthRemoval = BotShopPlanner.RemovalValue(removalTarget, bot);
+        if (!(fourthRemoval < firstRemoval))
+            throw new Exception($"A repeated removal must be worth less than the first "
+                + $"(first={firstRemoval:F1}, fourth={fourthRemoval:F1}).");
+        Console.WriteLine($"PASS: repeated removals diminish in value ({firstRemoval:F1} -> {fourthRemoval:F1}), "
+            + "so cards can compete after the starter pile has shrunk.");
+        bot.ExtraFields.CardShopRemovalsUsed = 0;
+
         // An upgrade that removes Exhaust must score above zero: the card becomes
         // reusable, which the previous blanket lost-role penalty inverted.
         Clear(); Give<StrikeIronclad>(5); Give<DefendIronclad>(4);
@@ -159,6 +178,41 @@ internal static class BuildValueScenarios
             throw new Exception($"The size pressure must be visible in the reason: {bigValuation.Reason}");
         Console.WriteLine("PASS: deck size pressure makes a filler card in a large deck score below skipping.");
 
+        // The development term is a small early-deck bonus, not a 22-card target.
+        // CHECKED (R2) 2026-09-22: restoring DevelopmentPerCard=1.0/DevelopmentMax=8.0
+        // makes this assertion red, verbatim:
+        //   System.Exception: The development term is still the old eight-point target:
+        //   elo:1493.0,skip:1573.0,elo-base:-8.00,rules:-0.30,fit:False,development:8.00,
+        //   affinity:0.00,legacy:block
+        // The live 2026-09-22 run took HAND_TRICK for exactly that +8 (elo-base -8.00).
+        Clear(); Give<StrikeSilent>(5); Give<DefendSilent>(9);
+        var handTrickValue = BuildValue.Add(combat.CreateCard<HandTrick>(bot), bot);
+        if (handTrickValue.Total >= 0)
+            throw new Exception($"A below-skip card must not be carried by the development term alone: "
+                + $"{handTrickValue.Total:F1} ({handTrickValue.Reason}).");
+        if (handTrickValue.Reason.Contains("development:8", StringComparison.Ordinal))
+            throw new Exception($"The development term is still the old eight-point target: {handTrickValue.Reason}");
+        Console.WriteLine("PASS: a below-skip card is no longer carried by a flat early-deck bonus.");
+
+        // A producer whose resource has a separate multiplier is cheaper to take once the
+        // multiplier is already in the deck. CHECKED (R2) 2026-09-22: disabling the
+        // producer-no-payoff branch turns this red, verbatim:
+        //   System.Exception: Blade Dance without Accuracy must name the missing shiv payoff:
+        //   elo:1633.3,skip:1573.0,elo-base:6.03,rules:-3.50,fit:False,development:2.00,
+        //   affinity:0.00,legacy:no role
+        Clear(); Give<StrikeSilent>(5); Give<DefendSilent>(4);
+        var bladeAlone = BuildValue.Add(combat.CreateCard<BladeDance>(bot), bot);
+        if (!bladeAlone.Reason.Contains("producer-no-payoff:shiv", StringComparison.Ordinal))
+            throw new Exception($"Blade Dance without Accuracy must name the missing shiv payoff: {bladeAlone.Reason}");
+        Give<Accuracy>();
+        var bladeWithPayoff = BuildValue.Add(combat.CreateCard<BladeDance>(bot), bot);
+        if (bladeWithPayoff.Reason.Contains("producer-no-payoff:shiv", StringComparison.Ordinal))
+            throw new Exception($"Accuracy in the deck must remove the missing-payoff penalty: {bladeWithPayoff.Reason}");
+        if (!(bladeWithPayoff.Total > bladeAlone.Total))
+            throw new Exception($"Blade Dance must be worth more with its shiv multiplier present: "
+                + $"{bladeWithPayoff.Total:F1} vs {bladeAlone.Total:F1}.");
+        Console.WriteLine("PASS: an incomplete multiplier package is named and priced lower than a completed one.");
+
         // A payoff whose enabler is missing must not read as a plan. Rupture gains
         // Strength when you lose HP, and every card the mining pairs it with is a
         // self-damage card; without one its scaling credit drops and the reason
@@ -200,7 +254,7 @@ internal static class BuildValueScenarios
         // Thinning must get more valuable as dead draws accumulate, or the shop's
         // growing price (a second removal costs 150) can never be paid: a flat
         // 55 x 2.2 = 121 left every run with ten starters still in the deck.
-        const double GoldPerDeckValue = 2.2;  // mirrors BotShopPlanner.GoldPerDeckValue
+        const double GoldPerDeckValue = BotShopPlanner.GoldPerDeckValue;
         Clear(); Give<StrikeIronclad>(5); Give<DefendIronclad>(5);
         for (var i = 0; i < 13; i++) Give<PommelStrike>(1);
         var heavyTarget = bot.Deck.Cards.First(card => card.Id.Entry == "STRIKE_IRONCLAD");
@@ -318,7 +372,7 @@ internal static class BuildValueScenarios
         // raw deck-value units and so could never beat a real removal price.
         Clear(); Give<StrikeIronclad>(11); Give<DefendIronclad>();
         var strikeToRemove = bot.Deck.Cards.First(card => card.Id.Entry == "STRIKE_IRONCLAD");
-        var removalGold = BotShopPlanner.RemovalValue(strikeToRemove, bot) * 2.2;
+        var removalGold = BotShopPlanner.RemovalValue(strikeToRemove, bot) * BotShopPlanner.GoldPerDeckValue;
         if (removalGold <= 75)
             throw new Exception($"Thinning a starter must be worth more than the first removal price (75), got {removalGold:F0}.");
         Console.WriteLine("PASS: a removal is priced in the same gold unit as everything else the shop sells.");
@@ -374,6 +428,18 @@ internal static class BuildValueScenarios
         if (BotBrain.SelectCards(bot, skipProbe, 1, 1, "FromChooseACardScreen", maySkip: true).Count != 1)
             throw new Exception("maySkip must not override an explicit minimum.");
         Console.WriteLine("PASS: a declinable card screen can be declined, a mandatory one cannot.");
+
+        // CHECKED (R2) 2026-09-22: changing IndexChoiceOrSkip back to
+        // `PlayerChoiceResult.FromIndex(index)` turns this red, verbatim:
+        //   System.Exception: A card-reward skip must be a null index, got -1.
+        // -1 is exactly the value CardReward.OnSelect later indexes `_cards[-1]` with.
+        var skipChoice = BotRewardDriver.IndexChoiceOrSkip(-1, 3);
+        if (skipChoice.AsIndexOrNull() is not null)
+            throw new Exception($"A card-reward skip must be a null index, got {skipChoice.AsIndexOrNull()}.");
+        var pickChoice = BotRewardDriver.IndexChoiceOrSkip(1, 3);
+        if (pickChoice.AsIndexOrNull() != 1)
+            throw new Exception($"A real pick must stay index 1, got {pickChoice.AsIndexOrNull()}.");
+        Console.WriteLine("PASS: a card-reward skip is a null index, not the out-of-range -1 that threw in the live log.");
 
         // The baked clusters come from real runs, so every card they name must
         // exist in this game build. A patch that removes one is a silent

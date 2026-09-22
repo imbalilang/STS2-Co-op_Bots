@@ -11,7 +11,8 @@ internal static partial class MonsterMoveSemantics
     // A native monster move receives the whole target list. Effects on the
     // monster (growth, summons, stance) are committed once, not once per target.
     internal static bool ApplyPartyMove(CombatPredictionSimulator simulator, SimulatedCombatState combat,
-        ForecastMove move, IReadOnlyList<Creature> targets, ISet<uint> deaths)
+        ForecastMove move, IReadOnlyList<Creature> targets, ISet<uint> deaths,
+        bool autoResolveKnowledgeChoices = false)
     {
         if (targets.Count == 0) return true;
         if (move.Owner.Monster is ThievingHopper && move.Move.Id == "THIEVERY_MOVE")
@@ -48,7 +49,8 @@ internal static partial class MonsterMoveSemantics
             if (move.Owner.Monster is BowlbugRock) combat.ForceStunnedMove(move.Owner, "HEADBUTT_MOVE");
             combat.StunNextMove(move.Owner);
         }
-        MonsterMoveEffects.Apply(simulator, combat, move, targets[0], out _, partyTargets: targets);
+        MonsterMoveEffects.Apply(simulator, combat, move, targets[0], out _,
+            partyTargets: targets, autoResolveKnowledgeChoices: autoResolveKnowledgeChoices);
         if (!CorePowerSupport.ApplyEnemyDeathPowers(simulator, combat, combat.KnownEnemies, deaths)) return false;
         simulator.SynchronizePowerAmountPredictionStates();
         PowerLifecycleSupport.ResolvePowerAmountChanges(simulator, combat);

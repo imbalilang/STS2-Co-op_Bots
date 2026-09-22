@@ -16,6 +16,7 @@ internal static class KernelTerminalScenarios
         VictoryBeatsEverything();
         ACutoffIsNotADefeat();
         FewerLostSeatsWins();
+        TheftOutranksPostCombatHp();
         TheReserveCurveIsOffByDefault();
         TheReserveCurveBreaksTiesTheWayItIsMeantTo();
         HealthIsChargedExactlyOnce();
@@ -34,18 +35,29 @@ internal static class KernelTerminalScenarios
         ObjectiveConfig? config = null) =>
         Check(TerminalComparer.Compare(a, b, config) > 0, why);
 
-    // (1) A victory the simulation produced outranks a wipe, and both outrank a cutoff —
-    // regardless of how much HP each one happens to leave behind. This is the whole reason
-    // the order is lexicographic rather than a weighted sum: no HP total may buy a defeat.
+    // (1) A victory the simulation produced outranks every non-victory, regardless of HP.
+    // Between the two non-victory categories, a cutoff (UNKNOWN) now outranks a verified
+    // wipe (a known fact): the 2026-09-22 final boss had 32 WIPE and 23 pending-choice
+    // decisions, and the old order made the tournament choose a known losing line over the
+    // unmodeled ones. "截断不算团灭" means it must not be scored as a loss — and that includes
+    // not losing to one.
+    //
+    // CHECKED (R2) 2026-09-22: restoring `Tier { Cutoff = 0, VerifiedDefeat = 1 }` turns
+    // the third assertion red:
+    //   System.Exception: an unfinished line must not be ranked below a verified defeat;
+    //   the simulator cannot see the rest of it, so preferring the wipe turns a coverage
+    //   hole into a deliberately losing move.
     private static void VictoryBeatsEverything()
     {
         Better(Win(1, 1, 1, 1), Wipe(80, 80, 80, 80),
             "a bare victory must outrank a full-HP wipe.");
-        Better(Wipe(1, 1, 1, 1), Cutoff("step-cap", 80, 80, 80, 80),
-            "a verified wipe must outrank a cutoff that merely looks healthy.");
         Better(Win(1, 1, 1, 1), Cutoff("step-cap", 99, 99, 99, 99),
             "a victory must outrank a cutoff with perfect HP.");
-        Console.WriteLine("PASS: terminal ranking is victory > verified defeat > cutoff, and no "
+        Better(Cutoff("step-cap", 80, 80, 80, 80), Wipe(1, 1, 1, 1),
+            "an unfinished line must not be ranked below a verified defeat; the simulator "
+            + "cannot see the rest of it, so preferring the wipe turns a coverage hole into "
+            + "a deliberately losing move.");
+        Console.WriteLine("PASS: terminal ranking is victory > cutoff > verified defeat, and no "
             + "amount of remaining HP lets a lesser ending outrank a greater one.");
     }
 
@@ -77,6 +89,25 @@ internal static class KernelTerminalScenarios
             "losing one seat must outrank losing two, even at much lower surviving HP.");
         Console.WriteLine("PASS: irreversible loss is compared before resources, so a line that "
             + "costs a seat loses to one that does not even when it leaves more HP behind.");
+    }
+
+    // (3b) Unrecovered stolen cards/gold are a permanent loss too. The live report was a bot
+    // that out-blocked a Thieving Hopper, ended at higher HP, and lost a key card; HP must not
+    // hide that any more than it hides a body.
+    // CHECKED (R2) 2026-09-22: deleting the OutstandingStolenResource comparison turns the
+    // first assertion red, verbatim:
+    //   System.Exception: a line that recovers the stolen cards must beat a higher-HP line
+    //   that lets the thief escape.
+    private static void TheftOutranksPostCombatHp()
+    {
+        var clean = new TerminalRecord(true, EvidenceKind.VerifiedTerminal, "", [1, 1, 1, 1], 0, 0, 0);
+        var stolen = new TerminalRecord(true, EvidenceKind.VerifiedTerminal, "", [80, 80, 80, 80], 0, 0, 2);
+        Better(clean, stolen,
+            "a line that recovers the stolen cards must beat a higher-HP line that lets the thief escape.");
+        var mostlyClean = new TerminalRecord(true, EvidenceKind.VerifiedTerminal, "", [1, 1, 1, 1], 0, 0, 1);
+        Better(clean, mostlyClean, "fewer outstanding stolen resources must win at equal HP.");
+        Console.WriteLine("PASS: unrecovered theft is compared before HP, so a high-HP escape "
+            + "does not hide a key card lost from the deck.");
     }
 
     // (4) Switching comparator must not silently change what the bot optimises for. With the

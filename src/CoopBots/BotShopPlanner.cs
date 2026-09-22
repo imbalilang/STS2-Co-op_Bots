@@ -23,8 +23,34 @@ internal static class BotShopPlanner
     // so could never beat the 75 gold a first removal costs.
     // Read by the draft pipeline (tests/PatchSmoke/DraftSim) so the simulated shop
     // and the live shop cannot disagree about what a deck improvement is worth in gold.
-    internal const double GoldPerDeckValue = 2.2;
+    // A permanent deck point is worth this many gold. Raised from 2.2 after the
+    // 2026-09-22 live run: 24 shop visits bought 15 removals, 7 potions/relics and
+    // ZERO cards, because a card valued 10-20 deck points converted to only 22-44
+    // gold while a starter removal converted to 121+. 3.0 lets a genuinely good
+    // card (score ~20-25) clear a 60-75 gold shelf, and the repeated-removal
+    // discount below stops the removal line from buying the whole shop forever.
+    internal const double GoldPerDeckValue = 3.0;
     private static double GoldFor(double deckValue) => Math.Max(0, deckValue) * GoldPerDeckValue;
+
+    /// <summary>
+    /// A card offer's gold value. The generic <see cref="BuildValue.Add"/> value is
+    /// shared with the reward screen; the route-core premium is the shop's answer to
+    /// a removal's raw deck-point value. A missing signature/payoff of the current
+    /// route is worth paying for, while a copy already in the deck is discounted so
+    /// the third copy is not priced like the missing key card.
+    /// </summary>
+    private static double CardGold(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
+    {
+        var deck = deckOverride ?? player.Deck.Cards.ToList();
+        var value = Building.BuildValue.Add(card, player, deckOverride).Total;
+        var premium = Archetypes.CorePremium(CardProfile.Of(card), card, deck, player, out _);
+        if (premium > 0)
+        {
+            var copies = deck.Count(existing => existing.Id == card.Id);
+            value += premium / (1 + 0.5 * copies);
+        }
+        return GoldFor(value);
+    }
     // The native MawBank only disables on a positive spend (AfterItemPurchased
     // returns early when goldSpent <= 0), so a free purchase leaves its income
     // alive. Matches the single-purchase evaluation exactly.
@@ -68,7 +94,18 @@ internal static class BotShopPlanner
         // nothing looks below average — and more so later, when the next chance
         // to remove one may be the one being offered right now.
         if (card.Type == CardType.Curse)
+        {
             value = Math.Max(value, 155 * RunDepth.BloatFactor(player));
+        }
+        else
+        {
+            // Repeated removals compete with buying the cards the run still needs.
+            // The 2026-09-22 live run bought 15 removals and 0 cards; the fifth
+            // removal is not worth what the first was, so scale it by how many this
+            // seat already bought. Curses keep the full value above.
+            var used = player.ExtraFields?.CardShopRemovalsUsed ?? 0;
+            value /= 1.0 + 0.35 * used;
+        }
         return value;
     }
 
@@ -95,9 +132,11 @@ internal static class BotShopPlanner
             var value = entry switch
             {
                 // Cards must clearly improve the deck, not just be playable filler:
-                // the same improvement the reward screen would see, priced in gold.
+                // the reward screen's Add value plus the current route's core premium,
+                // priced in gold. The premium is what lets a build-defining card beat
+                // a starter removal's raw deck-point value.
                 MerchantCardEntry card when card.CreationResult is not null =>
-                    GoldFor(Building.BuildValue.Add(card.CreationResult.Card, player).Total),
+                    CardGold(card.CreationResult.Card, player),
                 MerchantRelicEntry relic when relic.Model is not null => RelicWillingness(relic.Model, player, inventory),
                 MerchantPotionEntry potion when potion.Model is not null && player.HasOpenPotionSlots => PotionValue(potion.Model, player),
                 MerchantCardRemovalEntry => GoldFor(removal.value),
@@ -129,6 +168,23 @@ internal static class BotShopPlanner
                     entry, value, entry.Cost, entry is MerchantPotionEntry, IsVariablePrice(entry),
                     entry is MerchantRelicEntry));
         }
+
+        // SHOPS ARE FOR THE DECK. A potion is a one-shot consumable whose whole value is
+        // realised inside a single fight; gold is the only currency that buys PERMANENT
+        // improvement, and every later fight is measured against the permanent deck. The
+        // user's own play is the rule here — "商店里几乎不会买药水，只删牌和买关键牌" — and the
+        // reviewed act-1 run is what the opposite looks like: 16 shop visits bought two
+        // potions and zero cards, and the party then lost the act-1 boss holding a 13-15
+        // card deck whose only attacks were the starter Strikes.
+        //
+        // So a bottle is considered only when this shop has NOTHING else that cleared the
+        // bar — the case where the gold would otherwise be carried to a shop that may never
+        // arrive. It is deliberately a comparison rather than a discount: any card, relic or
+        // removal that is worth its price outranks every potion, in every act, at every
+        // price. Dropping them from `offers` (instead of pricing them at zero) also keeps
+        // them out of the pair comparison, so a card is never delayed to make room for one.
+        if (offers.Any(offer => !offer.IsPotion))
+            offers = offers.Where(offer => !offer.IsPotion).ToList();
 
         if (offers.Count == 0) return new ShopPlan(null, null, null, 0, 0, false);
         var bestSingle = offers
@@ -245,7 +301,7 @@ internal static class BotShopPlanner
         var value = second.Entry switch
         {
             MerchantCardEntry card when card.CreationResult is not null =>
-                GoldFor(Building.BuildValue.Add(card.CreationResult.Card, player, hypothetical).Total),
+                CardGold(card.CreationResult.Card, player, hypothetical),
             MerchantCardRemovalEntry =>
                 GoldFor(hypothetical is not null ? BestRemoval(hypothetical, player).value : currentRemoval.value),
             MerchantPotionEntry potion when potion.Model is not null && player.HasOpenPotionSlots =>

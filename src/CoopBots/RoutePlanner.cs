@@ -103,35 +103,72 @@ internal static class RoutePlanner
         }
     }
 
-    internal static Route? Plan(RunState state, Player human)
+    internal static Route? Plan(RunState state, Player human, bool teamRoute = false)
     {
         var start = state.CurrentMapPoint ?? state.Map.StartingMapPoint;
         var boss = state.Map.BossMapPoint;
         if (start is null || boss is null) return null;
-        var health = state.Players.Where(p => p.Creature.IsAlive)
+        var alive = state.Players.Where(p => p.Creature.IsAlive).ToArray();
+        var health = alive
             .Select(p => (double)p.Creature.CurrentHp / Math.Max(1, p.Creature.MaxHp))
             .DefaultIfEmpty(1).Min();
-        var shoppers = state.Players.Count(p => p.Creature.IsAlive && p.Gold >= 100);
+        var shoppers = alive.Count(p => p.Gold >= 100);
         var act = state.CurrentActIndex;
-        var deckSize = human.Deck.Cards.Count;
+        // ALL-BOT ROUTE: one shared vote. MapSelectionSynchronizer picks a RANDOM
+        // submitted coordinate, so four per-seat routes can random-walk the team past
+        // the room the healthiest deck wanted. Use the party's average deck when every
+        // seat is driven, and the same inputs for every seat, so all four votes agree.
+        var deckPlayers = teamRoute && alive.Length > 0 ? alive : new[] { human };
+        var deckSize = (int)Math.Round(deckPlayers.Average(p => (double)p.Deck.Cards.Count));
         // Walk the act with resource state: a second rest is worth less than the
         // first, a shop after spending is worth less than one while rich.
-        var maturity = DeckMaturity(human);
+        var maturity = deckPlayers.Average(DeckMaturity);
+        // Shared route => every living seat's relics can change the room; a single-seat
+        // recommendation uses that seat's own relics. A dead seat adds no route value.
+        var relics = RouteRelicProfile.FromPlayers(teamRoute ? alive : new[] { human });
         // A room the game cannot build is not merely worth less — it is unreachable, and
         // the DP already reads non-finite as unreachable (it skips such children and
         // returns null rather than a route that ends in one). So the executability rule
         // rides on machinery that already exists instead of a second filter in the search.
         Func<MapPointType, int, int, double> Value = (type, hpTier, goldTier) =>
-            !IsBuildable(type, act) ? UnreachableValue
-            : NodeValue(type, RepresentativeHealth(hpTier), (int)RepresentativeGold(goldTier), act, deckSize, maturity)
-            + (type == MapPointType.Shop ? Math.Min(15, shoppers * 5) : 0);
+            ValueForNode(type, hpTier, goldTier, act, deckSize, maturity, shoppers, teamRoute, relics);
         return Plan(start, boss, Value, Tier(health, .4, .75), GoldTier(human.Gold));
     }
 
+    /// <summary>
+    /// One node's route value with the state the DP carries. Kept separate from the
+    /// closure so the rich-shop rule is testable without building a whole RunState/map.
+    /// </summary>
+    internal static double ValueForNode(MapPointType type, int hpTier, int goldTier, int act,
+        int deckSize, double maturity, int shoppers, bool teamRoute = false,
+        RouteRelicProfile? relics = null)
+    {
+        if (!IsBuildable(type, act)) return UnreachableValue;
+        var value = NodeValue(type, RepresentativeHealth(hpTier), (int)RepresentativeGold(goldTier),
+            act, deckSize, maturity, teamRoute, relics);
+        return type == MapPointType.Shop ? value + Math.Min(15, shoppers * 5) : value;
+    }
+
+    /// <summary>
+    /// Gold at or above this makes “reach a shop and spend it” the route's first job.
+    /// The live case was 500+ gold while the planner kept shopping for value as if the
+    /// purse would still be there next act; the gold is dead weight until spent, and the
+    /// route is the only thing that can get it to a counter.
+    /// </summary>
+    internal const int RichGoldThreshold = 500;
+
+    /// <summary>
+    /// A rich shop is worth far more than a normal one. It is still a finite node score,
+    /// so a map whose only path runs through something unbuildable remains unreachable;
+    /// the 0.92 discount then makes the NEAREST shop the best rich route.
+    /// </summary>
+    private const double RichShopValue = 450;
+
     internal static int Tier(double ratio, double low, double high) => ratio < low ? 0 : ratio < high ? 1 : 2;
-    internal static int GoldTier(int gold) => gold < 100 ? 0 : gold < 250 ? 1 : 2;
+    internal static int GoldTier(int gold) =>
+        gold < 100 ? 0 : gold < 250 ? 1 : gold < RichGoldThreshold ? 2 : 3;
     internal static double RepresentativeHealth(int tier) => tier switch { 0 => .3, 1 => .6, _ => .9 };
-    internal static double RepresentativeGold(int tier) => tier switch { 0 => 50, 1 => 180, _ => 350 };
+    internal static double RepresentativeGold(int tier) => tier switch { 0 => 50, 1 => 180, 2 => 350, _ => 600 };
 
     /// <summary>
     /// State-propagating DP: the value of a room depends on the resources the
@@ -146,12 +183,15 @@ internal static class RoutePlanner
 
         static (int Health, int Gold) Advance(MapPointType type, int health, int gold) => type switch
         {
-            MapPointType.Monster => (Math.Max(0, health - 1), Math.Min(2, gold + 1)),
-            MapPointType.Elite => (Math.Max(0, health - 2), Math.Min(2, gold + 1)),
+            // The >=500 "rich" tier has to SURVIVE the rooms between it and the shop, or
+            // the shop cannot be found in time. It must not be CREATED by a fight either:
+            // tier 2 is 250-499, and a normal room reward does not always cross 500.
+            MapPointType.Monster => (Math.Max(0, health - 1), gold >= 3 ? 3 : Math.Min(2, gold + 1)),
+            MapPointType.Elite => (Math.Max(0, health - 2), gold >= 3 ? 3 : Math.Min(2, gold + 1)),
             MapPointType.RestSite => (Math.Min(2, health + 2), gold),
             MapPointType.Shop => (health, Math.Max(0, gold - 1)),
-            MapPointType.Treasure => (health, Math.Min(2, gold + 1)),
-            MapPointType.Unknown => (health, Math.Min(2, gold + 1)),
+            MapPointType.Treasure => (health, gold >= 3 ? 3 : Math.Min(2, gold + 1)),
+            MapPointType.Unknown => (health, gold >= 3 ? 3 : Math.Min(2, gold + 1)),
             _ => (health, gold),
         };
 
@@ -208,11 +248,11 @@ internal static class RoutePlanner
     private const int ShopRemovalCost = 75;
 
     internal static double NodeValue(MapPointType type, double health, int gold, int act, int deckSize,
-        double maturity = .5)
+        double maturity = .5, bool teamRoute = false, RouteRelicProfile? relics = null)
     {
         var unknown = (act <= 0 ? 22 : act == 1 ? 16 : 13) - (health < .4 ? 12 : 0);
         var monster = (act <= 0 ? 9 : act == 1 ? 7 : 5) + (deckSize < 15 ? 4 : 0) - (health < .4 ? 25 : 0);
-        return type switch
+        var value = type switch
         {
             MapPointType.RestSite => health < .65 ? 60 : 18,
             // A SHOP YOU CANNOT REMOVE A CARD AT IS A WASTED NODE.
@@ -227,25 +267,172 @@ internal static class RoutePlanner
             // wasted step, and the penalty now says so. Deliberately NOT an absolute exclusion:
             // a shop that is the only way forward must stay reachable, and -60 loses to almost
             // everything without becoming unreachable.
-            MapPointType.Shop => gold >= ShopRemovalCost ? 35 : -60,
-            MapPointType.Elite => EliteValue(health, act, maturity),
+            MapPointType.Shop => gold >= RichGoldThreshold
+                ? RichShopValue
+                : gold >= ShopRemovalCost ? 35 : -60,
+            MapPointType.Elite => EliteValue(health, act, maturity, teamRoute),
             MapPointType.Treasure => 45,
             MapPointType.Monster => monster,
             MapPointType.Unknown => unknown,
             MapPointType.Ancient => 40,
             _ => 0,
         };
+        return relics is null ? value : value + RelicNodeBonus(type, health, gold, act, relics);
+    }
+
+    /// <summary>
+    /// Relic-driven room value, split by the three batches the relic scan produced:
+    /// 1. shared-room relics (Juzu Bracelet, Miniature Tent) use Any(): one holder changes the
+    ///    shared room for everyone;
+    /// 2. self-only relics (Eternal Feather, Shovel, …) count holders, because only those seats
+    ///    collect the room's extra benefit;
+    /// 3. conditional relics (Black Star, Membership Card, Maw Bank, …) are priced only in the
+    ///    room they modify and keep their downside.
+    ///
+    /// Magnitudes are deliberately small relative to the base room values: a relic must move the
+    /// branch, not replace the room's own HP/act/deck evidence.
+    ///
+    /// PATH-CONTROL RELICS ARE DELIBERATELY ABSENT. Golden Compass replaces the Act 2 map before
+    /// the DP sees it, so the topology already encodes its effect; Winged Boots changes which
+    /// nodes are REACHABLE, not what a room is worth, and would need a map-adjacency change
+    /// rather than a node bonus (faking it as node value would route toward unrelated rooms).
+    /// </summary>
+    private static double RelicNodeBonus(MapPointType type, double health, int gold, int act,
+        RouteRelicProfile relics) => type switch
+    {
+        MapPointType.Unknown => UnknownRelicBonus(health, relics),
+        MapPointType.Monster => MonsterRelicBonus(health, relics),
+        MapPointType.Elite => EliteRelicBonus(health, relics),
+        MapPointType.RestSite => RestSiteRelicBonus(relics),
+        MapPointType.Shop => ShopRelicBonus(gold, relics),
+        MapPointType.Treasure => TreasureRelicBonus(relics),
+        MapPointType.Boss => BossRelicBonus(act, relics),
+        _ => 0,
+    };
+
+    private static double UnknownRelicBonus(double health, RouteRelicProfile relics)
+    {
+        var value = 0.0;
+        // One holder removes regular enemy combats from the shared ? room; +12 also cancels the
+        // low-health unknown penalty above, which is exactly the risk this relic removes.
+        if (relics.Any("JuzuBracelet")) value += 12;
+        value += relics.HolderCount("Planisphere") * 5;
+        // Fur Coat marks random combats; when a ? room rolls into one it is the marked case.
+        if (relics.Any("FurCoat")) value += 4;
+        return value;
+    }
+
+    private static double MonsterRelicBonus(double health, RouteRelicProfile relics)
+    {
+        var value = 0.0;
+        if (relics.Any("FurCoat")) value += 10;
+        value += relics.HolderCount("PrayerWheel") * 6;
+        value += relics.HolderCount("AmethystAubergine") * 4;
+        value += relics.HolderCount("BowlerHat") * 4;
+        value += relics.HolderCount("WhiteBeastStatue") * 4;
+        value += relics.HolderCount("FishingRod") * 3;
+        value += relics.HolderCount("LastingCandy") * 3;
+        value += relics.HolderCount("PaelsWing") * 3;
+        value += relics.HolderCount("Glitter") * 2;
+        value += relics.HolderCount("WingCharm") * 2;
+        value += relics.HolderCount("DingyRug") * 2;
+        value += relics.HolderCount("Driftwood") * 2;
+        value += relics.HolderCount("PrismaticGem") * 2;
+        // Lava Lamp only pays on a no-damage fight, so it cannot rescue a hurt party.
+        if (health >= .85) value += relics.HolderCount("LavaLamp") * 5;
+        return value;
+    }
+
+    private static double EliteRelicBonus(double health, RouteRelicProfile relics)
+    {
+        // The base already keeps a hurt party out of elites (-45 below .7 health). Reward relics
+        // must not override that survival gate; the team still has to be able to beat the elite.
+        if (health < .7) return 0;
+        var value = 0.0;
+        value += relics.HolderCount("BlackStar") * 14;
+        value += relics.HolderCount("WhiteStar") * 9;
+        value += relics.HolderCount("WarHammer") * 8;
+        value += relics.HolderCount("SwordOfStone") * 4;
+        value += relics.HolderCount("BoomingConch") * 6;
+        value += relics.HolderCount("SlingOfCourage") * 6;
+        if (relics.Any("FurCoat")) value += 4;
+        return value;
+    }
+
+    private static double RestSiteRelicBonus(RouteRelicProfile relics)
+    {
+        var value = 0.0;
+        // Shared: one holder can choose any number of options, which in multiplayer includes
+        // MEND for a teammate while still smithing/healing.
+        if (relics.Any("MiniatureTent")) value += 18;
+        value += relics.HolderCount("EternalFeather") * 4;
+        value += relics.HolderCount("DreamCatcher") * 5;
+        value += relics.HolderCount("RegalPillow") * 4;
+        value += relics.HolderCount("TinyMailbox") * 3;
+        value += relics.HolderCount("Shovel") * 6;
+        value += relics.HolderCount("Girya") * 5;
+        value += relics.HolderCount("MeatCleaver") * 4;
+        value += relics.HolderCount("StoneHumidifier") * 4;
+        value += (relics.HolderCount("VenerableTeaSet") + relics.HolderCount("FakeVenerableTeaSet")) * 4;
+        value += relics.HolderCount("PumpkinCandle") * 3;
+        return value;
+    }
+
+    private static double ShopRelicBonus(int gold, RouteRelicProfile relics)
+    {
+        var value = 0.0;
+        // One holder can buy out the entire merchant; the rest of the party does not have to
+        // reach the removal threshold for this to be worth a detour.
+        if (relics.Any("LordsParasol")) value += 120;
+        var membership = relics.HolderCount("MembershipCard");
+        var courier = relics.HolderCount("TheCourier");
+        if (gold >= ShopRemovalCost)
+        {
+            value += membership * 12 + courier * 18;
+        }
+        else if (gold > 0)
+        {
+            // A discount can make a below-removal purse useful, but it is still a weak shop.
+            value += membership * 6 + courier * 6;
+        }
+        value += relics.HolderCount("MealTicket") * 5;
+        // Maw Bank pays per floor and stops forever on the first purchase; entering a shop has a
+        // real opportunity cost for its holder.
+        value -= relics.HolderCount("MawBank") * 18;
+        // No future gold means the shop's usual jobs (removal, cards) are mostly gone.
+        value -= relics.HolderCount("Ectoplasm") * 25;
+        // No potions removes one of the shop's shelves; Seal of Gold drains the purse it needs.
+        value -= relics.HolderCount("Sozu") * 8;
+        value -= relics.HolderCount("SealOfGold") * 8;
+        return value;
+    }
+
+    private static double TreasureRelicBonus(RouteRelicProfile relics)
+        => relics.HolderCount("SilverCrucible") * -30;
+
+    private static double BossRelicBonus(int act, RouteRelicProfile relics)
+    {
+        var value = relics.HolderCount("Pantograph") * 5;
+        // Lava Rock only adds to the Act 1 boss reward; later bosses get no bonus.
+        if (act <= 0) value += relics.HolderCount("LavaRock") * 8;
+        return value;
     }
 
     // Elites scale much harder than the act's normal fights, so their value must
-    // fall with the act and with how ready the deck is: a healthy team with an
-    // unfinished deck should still skip an Act 2/3 elite.
-    private static double EliteValue(double health, int act, double maturity)
+    // fall with the act and with how ready the deck is. A healthy team with a
+    // decent deck should still TAKE the act-1/2 elite: the relic/gold/card is the
+    // payoff that makes the boss winnable, and "avoid every elite to save HP"
+    // under-builds the exact deck the boss checks. Act 3 stays cautious unless the
+    // deck is genuinely mature; the all-bot team route adds a small aggression
+    // term because there is no human seat whose HP must be protected.
+    private static double EliteValue(double health, int act, double maturity, bool teamRoute)
     {
         if (health < .7) return -45;
-        var byAct = act <= 0 ? 22 : act == 1 ? 2 : -16;
+        var byAct = act <= 0 ? 28 : act == 1 ? 14 : -8;
         var deckAdjust = (Math.Clamp(maturity, 0, 1) - 0.55) * 60;
-        return byAct + deckAdjust;
+        var healthyBonus = health >= .85 ? 8 : 0;
+        var teamBonus = teamRoute ? 6 : 0;
+        return byAct + deckAdjust + healthyBonus + teamBonus;
     }
 
     /// <summary>
@@ -300,5 +487,56 @@ internal static class RoutePlanner
             path.Add(cursor);
         }
         return new Route(path, total);
+    }
+}
+
+/// <summary>
+/// The party relics that change a room's worth, counted once per living holder.
+///
+/// WHY THIS IS NOT A FLAT LIST: the three batches the route model cares about behave
+/// differently in multiplayer. A shared-room relic (Juzu Bracelet, Miniature Tent) only
+/// needs ONE holder to change the whole team's room value; a self-only relic (Eternal
+/// Feather, Shovel) is worth something per holder; and an elite/shop relic (Black Star,
+/// Membership Card) is conditional on the team paying the room's cost. Keeping the holder
+/// count lets each room apply the right aggregation instead of flattening all three into
+/// "has relic".
+/// </summary>
+internal sealed class RouteRelicProfile
+{
+    private readonly Dictionary<string, int> holders = new(StringComparer.Ordinal);
+    public int PartySize { get; }
+    private RouteRelicProfile(int partySize) => PartySize = Math.Max(1, partySize);
+    public int HolderCount(string relicType) => holders.GetValueOrDefault(relicType);
+    public bool Any(string relicType) => HolderCount(relicType) > 0;
+    public bool All(string relicType) => HolderCount(relicType) >= PartySize;
+
+    public static RouteRelicProfile None { get; } = new(1);
+
+    public static RouteRelicProfile FromPlayers(IEnumerable<Player> players)
+    {
+        var alive = players.Where(player => player.Creature.IsAlive).ToArray();
+        var profile = new RouteRelicProfile(alive.Length);
+        foreach (var player in alive)
+        {
+            foreach (var relic in player.Relics)
+            {
+                // A used-up relic is not a future room benefit. Maw Bank is the live case:
+                // once any gold has been spent, the per-floor income is gone and the relic
+                // must stop pulling the route toward shops.
+                if (relic.IsUsedUp) continue;
+                var type = relic.GetType().Name;
+                profile.holders[type] = profile.HolderCount(type) + 1;
+            }
+        }
+        return profile;
+    }
+
+    /// <summary>Fixture-only profile: each named type counts as one holder.</summary>
+    internal static RouteRelicProfile ForTest(int partySize, params string[] relicTypes)
+    {
+        var profile = new RouteRelicProfile(partySize);
+        foreach (var name in relicTypes)
+            profile.holders[name] = profile.HolderCount(name) + 1;
+        return profile;
     }
 }

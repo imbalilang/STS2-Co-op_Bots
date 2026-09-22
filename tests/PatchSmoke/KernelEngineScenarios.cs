@@ -30,6 +30,7 @@ internal static class KernelEngineScenarios
         KernelPowerRouteScenarios.Run();
         KernelRoundScenarios.Run();
         RunContinuationInvariants();
+        KnowledgeDemonCurseAdvancesOnceForTheWholeMove();
         var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
         var a = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
         var b = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 2));
@@ -1362,20 +1363,27 @@ internal static class KernelEngineScenarios
                 + "belongs to the target and never to the caster.");
         Console.WriteLine("PASS: BLAZE is modelled — it grants its declared Strength to the chosen ally.");
 
-        // Coordinate grants a temporary Strength power: the paired real Strength
-        // must be applied too, or the end-of-turn restore would subtract it.
+        // Coordinate grants a temporary Strength power: both its own CoordinatePower and the
+        // paired real Strength must be applied, or the end-of-turn restore subtracts a buff
+        // the card never actually granted.
+        // CHECKED (R2) 2026-09-23: removing the Coordinate/Fade registry entries turns this
+        // red, verbatim:
+        //   System.Exception: COORDINATE must be playable now, not a boundary:
+        //   prediction-risk:PredictionGap { SourceId = COORDINATE, Method = OnPlay,
+        //   Reason = MethodNotMirrored, Compensated = False, Key = COORDINATE.OnPlay }
         a.PlayerCombatState.Hand.RemoveInternal(blaze);
         var coordinate = combat.CreateCard<Coordinate>(a); a.PlayerCombatState.Hand.AddInternal(coordinate);
         var coordinateBranch = KernelSession.Capture(combat).Fork();
-        // Same reversal as Blaze: refused, not estimated. The paired-Strength handling this
-        // used to assert lives in StructuralCardMirror and is now unreachable from a plan, so
-        // asserting it here would only pin dead behaviour.
-        if (coordinateBranch.Play(coordinate, b.Creature, out var coordinateReason))
-            throw new Exception("An unmirrored temporary-Strength buff must be SKIPPED now, not estimated.");
-        if (!coordinateReason.StartsWith("prediction-risk:", StringComparison.Ordinal))
-            throw new Exception($"Expected a prediction-risk refusal, got: {coordinateReason}");
-        Console.WriteLine("PASS: an unmirrored temporary-Strength buff is skipped as well; "
-            + "no unmodelled card can reach a plan on an estimate.");
+        if (!coordinateBranch.Play(coordinate, b.Creature, out var coordinateReason))
+            throw new Exception($"COORDINATE must be playable now, not a boundary: {coordinateReason}");
+        if (coordinateBranch.Power<StrengthPower>(b.Creature) != 5
+            || coordinateBranch.Power<CoordinatePower>(b.Creature) != 5)
+            throw new Exception("COORDINATE must grant the temporary power and its paired real "
+                + $"Strength to the chosen ally (strength="
+                + $"{coordinateBranch.Power<StrengthPower>(b.Creature)}, "
+                + $"coordinate={coordinateBranch.Power<CoordinatePower>(b.Creature)}).");
+        Console.WriteLine("PASS: COORDINATE is modelled — its temporary Strength and paired real "
+            + "Strength both land on the chosen ally.");
 
         // Cards outside the describable shape must keep their boundary: an
         // unmirrored card that does anything else may not be guessed at.
@@ -2292,6 +2300,58 @@ internal static class KernelEngineScenarios
     /// A board for the continuation invariants: two driven seats, an enemy that does not
     /// kill anyone, and enough energy to play.
     /// </summary>
+    // CHECKED (R2) 2026-09-23: adding AdvanceKnowledgeDemonCurseCounter back inside
+    // KnowledgeDemonChoiceSupport.Resolve turns this red, verbatim:
+    //   System.Exception: Knowledge Demon curse crossing failed:
+    //   round-exception:InvalidOperationException
+    // The live 2026-09-22 Knowledge Demon fight had 69 of those decisions because the
+    // per-target counter ran past its three-entry table.
+    private static void KnowledgeDemonCurseAdvancesOnceForTheWholeMove()
+    {
+        var party = Enumerable.Range(0, 4).Select(index => Player.CreateForNewRun<Deprived>(
+            UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 11, index))).ToArray();
+        var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "KDEMON-CURSE"));
+        foreach (var player in party)
+        {
+            player.ResetCombatState();
+            combat.AddPlayer(player);
+            player.Creature.SetMaxHpInternal(80);
+            player.Creature.SetCurrentHpInternal(80);
+            player.PlayerCombatState!.Phase = PlayerTurnPhase.Play;
+            player.PlayerCombatState.GainEnergy(3);
+            for (var draw = 0; draw < 5; draw++)
+                player.PlayerCombatState.DrawPile.AddInternal(combat.CreateCard<StrikeIronclad>(player));
+        }
+        var demon = combat.CreateCreature(
+            ModelDb.Monster<KnowledgeDemon>().ToMutable(), CombatSide.Enemy, "knowledge");
+        combat.AddCreature(demon);
+        demon.Monster!.SetUpForCombat();
+        demon.SetMaxHpInternal(379);
+        demon.SetCurrentHpInternal(379);
+        demon.Monster.SetMoveImmediate(
+            (MoveState)demon.Monster.MoveStateMachine!.States["CURSE_OF_KNOWLEDGE_MOVE"], true);
+
+        var session = KernelSession.Capture(combat);
+        session.AutoResolveEnemyChoices = true;
+        foreach (var player in party)
+            if (!session.EndTurn(player, maxRounds: 1, out var boundary))
+                throw new Exception($"Knowledge Demon curse crossing failed: {boundary}");
+
+        var inBranch = session.Enemies.Single();
+        var counter = session.KnowledgeDemonCurseCounter(inBranch);
+        if (counter != 1)
+            throw new Exception($"CURSE_OF_KNOWLEDGE must advance its counter once per move, got {counter}.");
+        foreach (var player in party)
+        {
+            var mindRot = session.Power<MindRotPower>(player.Creature);
+            if (mindRot != 1)
+                throw new Exception($"The default curse must resolve for every target; "
+                    + $"{player.NetId} has MindRot={mindRot}.");
+        }
+        Console.WriteLine("PASS: Knowledge Demon's curse resolves for every target and advances "
+            + "its counter exactly once per move in tournament roll-outs.");
+    }
+
     private static (Player Bot, Player Other, CombatState Combat) ContinuationBoard(string seed)
     {
         var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 9, 9));

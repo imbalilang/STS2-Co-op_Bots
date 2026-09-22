@@ -222,6 +222,9 @@ ChoicePolicyScenarios.Run();
 // The seat question behind the reported card-choice stalls (Survivor, choice potions):
 // answered for every seat the bot drives, declined for a seat it does not.
 ChoiceSeatScenarios.Run();
+// The room continue is enabled before the room is done in two rooms (the shop and the
+// terminal reward screen); pressing either early skips work that room still owed the run.
+RoomProceedScenarios.Run();
 CooperativeScenarios.Run();
 // Runs before the build-value scenarios: it publishes this build's card ids for
 // the bake scripts, and a stale generated table fails the guards below on

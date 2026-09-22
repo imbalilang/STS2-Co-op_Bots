@@ -507,6 +507,14 @@ internal sealed class KernelCombatPlanner
     /// <summary>Decisions this combat that came from the tournament rather than the search.</summary>
     private int tournamentDriven;
     /// <summary>
+    /// Fresh tournament passes run this combat (one per no-potion/potion pass). The count that
+    /// must stay near the number of DECISIONS, not the number of stored script STEPS: the
+    /// 2026-09-23 mixed table re-searched every step (553 stored steps, one decision each) and
+    /// the main thread paid ~6 ms every frame for the rest of the fight. Logged so the next
+    /// live read can tell "the script is being followed" from "the script is being re-derived".
+    /// </summary>
+    private int tournamentPasses;
+    /// <summary>
     /// SHADOW TOURNAMENT — OFF BY DEFAULT, and it stays off until a live run has been read.
     ///
     /// When on, the first decision of each combat also runs <see cref="KernelTournament"/> on a
@@ -537,36 +545,38 @@ internal sealed class KernelCombatPlanner
     /// </summary>
     private const bool ShadowTournamentEnabled = false;
     /// <summary>
-    /// WHICH POLICY DECIDES AN ALL-BOT FIGHT — the roll-out tournament (C) or the segmented
-    /// search (B). Null = the shipped default.
+    /// WHICH POLICY DECIDES A COMBAT — the roll-out tournament (C) or the segmented search (B).
+    /// Null = the shipped default.
     ///
-    /// DEFAULT: THE TOURNAMENT DRIVES AN ALL-BOT TABLE (0.38.0). The user's call, and the reason
-    /// is the watcher rather than the player: B answers an all-bot fight by searching for three
-    /// minutes — up to eight with the retry ladder — BEFORE the first card, and a human who hands
-    /// every seat over still has to sit through that. C replans from the live board on every
-    /// action, so a decision costs its own budget (1200 ms, see TournamentDriveBudgetMs) instead
-    /// of minutes of silence.
+    /// DEFAULT: THE TOURNAMENT DECIDES EVERY TABLE WITH AT LEAST ONE DRIVEN SEAT. It replaced
+    /// the all-bot segmented search because B answers by searching for three minutes — up to
+    /// eight with the retry ladder — BEFORE the first card, and C replans from the live board on
+    /// every action. A mixed table now uses the same path: the non-driven human seats are
+    /// simulated as "end their turn" rather than fed invented actions (see KernelRollout).
     ///
     /// false: force the segmented search. The kernel suite's planner fixtures set this — they
     /// guard the segmented search and must keep exercising it (the ~18 assertions that went red
     /// the one time this was a compile-time constant are that guard).
-    /// true: force the tournament. The live-test sentinel's `search=tournament` — how the preview
-    /// builds were measured before this became the default.
-    ///
-    /// A table with a human in it never takes this path: <see cref="TournamentDrives"/> requires
-    /// every seat to be driven, and the segmented search keeps its interactive budget there.
+    /// true: force the tournament, including on a mixed table.
     /// </summary>
     internal static bool? TournamentOverride { get; set; }
 
     /// <summary>Is every seat in this combat answered by the bot? The gate the whole
     /// "the kernel is authoritative" family shares — the deep opening budget, the engine
-    /// scorer, and the tournament's own eligibility.</summary>
+    /// scorer, and the probes. It deliberately does NOT gate the tournament: a mixed table
+    /// runs the tournament with only its driven seats as actors.</summary>
     internal static bool AllSeatsDriven(CombatState combat)
         => combat.Players.All(player => AutoPilot.Drives(player.NetId));
 
-    /// <summary>Does the roll-out tournament decide THIS combat?</summary>
-    internal static bool TournamentDrives(CombatState combat)
-        => AllSeatsDriven(combat) && TournamentOverride != false;
+    /// <summary>Does the roll-out tournament decide THIS combat? It runs whenever there is at
+    /// least one driven seat, i.e. all-bot and mixed tables both; a handed-over human seat is an
+    /// actor like a synthetic bot.</summary>
+    internal static bool TournamentDrives(CombatState combat, IReadOnlyList<Player> actors)
+        => actors.Count > 0 && TournamentOverride != false;
+
+    /// <summary>May the tournament put “end this seat's turn” into its candidate list?</summary>
+    internal static bool TournamentCanEndTurn(CombatState combat, bool humansFinished)
+        => humansFinished || AllSeatsDriven(combat);
     /// <summary>
     /// The decision point the tournament has already been asked about AND declined.
     ///
@@ -578,8 +588,124 @@ internal sealed class KernelCombatPlanner
     /// was to stop burning CPU. A declined decision point is remembered until the board moves.
     /// </summary>
     private string? tournamentDeclined;
-    private const int TournamentDriveTopK = 6;
-    private const int TournamentDriveBudgetMs = 1200;
+
+    // THE TOURNAMENT'S OWN SCRIPT.
+    // UPSTREAM: CombatSolver keeps the finished search as `_combat.ContinuationSource` and
+    // deploys its line (TryCreateContinuation / DeployCurrentTurn), so the segmented path here
+    // already had a plan to keep (see KernelContinuation).
+    // OURS: the tournament path had no equivalent — it took the first action of the winning
+    // roll-out and threw the rest away, then re-searched every card. The measured final-boss
+    // failure was: card one found VICTORY (hp 0/0/0/28), the next eighty decisions found WIPE
+    // hp=0/0/0/0, and the party lost the line it had already found.
+    // WHY WE DEVIATE: user request 2026-09-23 — cache the winning script and keep stepping it
+    // while no fresh candidate's ending beats the cached one. Index 0 is the action already
+    // submitted, so the cursor starts at 1.
+    private IReadOnlyList<KernelTeamSearch.Action>? tournamentScript;
+    private TerminalRecord? tournamentScriptRecord;
+    private int tournamentScriptIndex;
+    private CombatState? tournamentScriptCombat;
+    // Index-aligned with the cached script: the living seats the roll-out itself had immediately
+    // BEFORE each action. A script may predict a death; the replayer may continue only while the
+    // live living-seat set matches that step's prediction. Measured live 2026-09-23: after the
+    // host died earlier than the script's line, the old code silently skipped the dead seat's
+    // steps and kept using a VICTORY record priced before the death, overriding fresh WIPEs.
+    private IReadOnlyList<ulong[]>? tournamentScriptAliveStates;
+
+    /// <summary>
+    /// How much the tournament is allowed to spend, as a player-facing tier.
+    ///
+    /// ONE TABLE INSTEAD OF THREE CONSTANTS. The three knobs move together — widening the
+    /// candidate list without widening the budget just moves the deadline, and a wider list on
+    /// fewer workers makes the decision slower rather than better — so they are chosen from the
+    /// tier rather than tuned one at a time.
+    ///
+    /// WHY THE BUDGET IS IN THE TABLE AND NOT JUST RAISED: measured live 2026-09-21 over 385
+    /// decisions at TopK=6, 86 % stopped at `top-k-exhausted` and only 14 % at `deadline`. The
+    /// budget was never what ended a decision, so raising it alone would not have bought one
+    /// extra rollout. <see cref="TournamentDriveTopK"/> is the strength knob; the budget only
+    /// has to be large enough not to clip the list.
+    /// </summary>
+    internal enum TournamentPerf
+    {
+        /// <summary>No extra threads at all: one sliced rollout at a time, ~6 ms per frame.</summary>
+        Low,
+        Mid,
+        /// <summary>
+        /// The shipped default, and what `Ultra` was before the ladder was re-cut: TopK 20 x 3
+        /// policies = 60 rollouts, every core but two, 3200 ms. Measured on the 2026-09-22 live
+        /// run it reached `rollouts=60` at p90 604 ms / max 1015 ms.
+        /// </summary>
+        High,
+        /// <summary>
+        /// THE CANDIDATE LIST IS NOT TRUNCATED AT ALL — every legal first action the table has is
+        /// rolled out, so the damage-only pre-ranking stops deciding what is even considered.
+        ///
+        /// That is the only lever left above <see cref="High"/>: 20 was already close to the whole
+        /// list (4 seats x ~5-7 cards each), so raising the number again would usually change
+        /// nothing, while removing the cap always means "consider everything". Where the list is
+        /// shorter than 20 the two tiers coincide — expected, not a bug.
+        /// </summary>
+        Ultra,
+    }
+
+    /// <summary>
+    /// The active tier. Set from the live-test sentinel's `perf=` line; everything else gets the
+    /// default.
+    ///
+    /// AS A TIER RATHER THAN A RAW NUMBER ON PURPOSE: whatever we measure here is one machine's
+    /// number, and the plan is to ship these as low/mid/high choices the player makes. The
+    /// values below are estimates from a single 8-physical/16-logical box, and the ones that
+    /// scale with hardware are expressed as fractions of the core count so a 4-core laptop does
+    /// not get handed a 16-way pool.
+    /// </summary>
+    internal static TournamentPerf Perf { get; set; } = TournamentPerf.High;
+
+    /// <summary>Parse a `perf=` sentinel value. An unknown value keeps the current tier and says so.</summary>
+    internal static void ApplyPerf(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return;
+        if (Enum.TryParse<TournamentPerf>(name.Trim(), ignoreCase: true, out var tier)) Perf = tier;
+        else Log.Warn($"CoopBots: unknown perf tier '{name}'; keeping {Perf}.");
+    }
+
+    /// <summary>
+    /// How many first actions the tournament rolls out, per pass. THIS, not the budget, is the
+    /// strength knob. TopK x 3 policies is the rollout count, so 20 is already close to "every
+    /// legal first action this table has" and `Ultra` removes the cap rather than raising it.
+    /// </summary>
+    private static int TournamentDriveTopK => Perf switch
+    {
+        TournamentPerf.Low => 4,              // 12 rollouts
+        TournamentPerf.Mid => 8,              // 24
+        TournamentPerf.Ultra => int.MaxValue, // no cap: every legal first action
+        _ => 20,                              // High: 60 rollouts
+    };
+
+    /// <summary>
+    /// Compute budget for ONE tournament pass. The caller asks twice (without potions, then —
+    /// only if that line does not win — with), so a decision can spend this twice over.
+    /// ~30 ms per rollout, plus the 300 ms reserve a rollout is never started inside.
+    /// </summary>
+    private static int TournamentDriveBudgetMs => Perf switch
+    {
+        TournamentPerf.Low => 600,    // 12 rollouts is ~360 ms; the deadline never binds
+        TournamentPerf.Mid => 1200,   // 24 is ~720 ms
+        TournamentPerf.Ultra => 6000, // uncapped candidate list, both passes possible
+        _ => 3200,                    // High: 60 is ~1.8 s, and the second pass may follow
+    };
+
+    /// <summary>
+    /// Rollout workers. <see cref="TournamentPerf.Low"/> deliberately parks on the sliced single
+    /// -threaded path: that tier exists to cost the renderer nothing, not to be fast.
+    /// </summary>
+    private static int TournamentParallelism => Perf switch
+    {
+        TournamentPerf.Low => 1,
+        TournamentPerf.Mid => Math.Clamp(Environment.ProcessorCount / 4, 1, 4),
+        // High and Ultra both take everything the machine can spare: the candidate list, not the
+        // worker count, is what separates them.
+        _ => Math.Clamp(Environment.ProcessorCount - 2, 1, 16),
+    };
     private const int ShadowTournamentTopK = 4;
     private const int ShadowTournamentBudgetMs = 1500;
     // Proactive potions the search proposed but that were declined as redundant.
@@ -775,6 +901,10 @@ internal sealed class KernelCombatPlanner
         if (newCombat)
         {
             disabledCombat = null; staleCount = 0; noActionStamp = "";
+            // A sliced tournament belongs to the fight that is over. Dropping it here is what
+            // stops a half-finished run from being resumed against a board that no longer exists.
+            ClearTournament();
+            ClearTournamentScript("new combat");
             openingSearch = true;
             planCommitted = false;
             ContinuationSource = null;
@@ -807,7 +937,7 @@ internal sealed class KernelCombatPlanner
                     : string.Join(";", firstActionKinds.OrderByDescending(pair => pair.Value)
                         .ThenBy(pair => pair.Key).Select(pair => $"{pair.Key}x{pair.Value}"));
                 Log.Info($"CoopBots kernel combat summary: encounter={combatLabel}, "
-                    + $"tournamentDriven={tournamentDriven}, "
+                    + $"tournamentDriven={tournamentDriven}, tournamentPasses={tournamentPasses}, "
                     + $"plans={plans} (coverage={coverage:F0}%), boundary={fallbackBoundary}, no-action={fallbackNoAction}, "
                     // X4 acceptance reading: how many of the deployed plans were routes
                     // that actually reached the end of the fight, and how often the search
@@ -848,7 +978,7 @@ internal sealed class KernelCombatPlanner
             plansWithRoute = 0;
             fallbackStaleRoot = fallbackStaleNoise = 0; potionDeclined = 0; noActionKinds.Clear();
             planRefusals = 0; planTicksWithoutScript = 0; seatStepsSkipped = 0;
-            fallbackFirstAction = 0; firstActionKinds.Clear(); probesDone = false; shadowDone = false; shadowChoice = null; shadowCombat = null; tournamentDriven = 0; tournamentDeclined = null;
+            fallbackFirstAction = 0; firstActionKinds.Clear(); probesDone = false; shadowDone = false; shadowChoice = null; shadowCombat = null; tournamentDriven = 0; tournamentPasses = 0; tournamentDeclined = null;
             openingAttempts = 0; openingNoRouteAtCap = 0;
             // The three L1 counters were missing from this reset, so they accumulated
             // across fights while planRefusals beside them was cleared — a summary would
@@ -869,7 +999,7 @@ internal sealed class KernelCombatPlanner
         ConfirmedEndTurn = null;
 
         if (actors.Count == 0) { Reset(); return Status.Ready; }
-        if (TournamentDrives(combat))
+        if (TournamentDrives(combat, actors))
         {
             // NEVER LET A TOURNAMENT DECLINE FALL INTO THE OPENING LADDER.
             //
@@ -882,8 +1012,16 @@ internal sealed class KernelCombatPlanner
             // search instead of a whole episode, which is what "fall back cheaply" has to mean.
             openingSearch = false;
             var point = $"{combat.GetHashCode()}/{combat.RoundNumber}/{actionVersion}";
-            if (point != tournamentDeclined && TryTournamentDecision(combat, actors, out decision))
-                return Status.Ready;
+            if (point != tournamentDeclined)
+            {
+                // PENDING IS NOT DECLINED. The tournament is sliced, so it answers across
+                // several frames; returning Pending keeps the caller polling and — the whole
+                // point — keeps the main thread free to render the card animation in between
+                // (this branch used to block for up to a second inside one Poll).
+                var outcome = TryTournamentDecision(combat, actors, humansFinished, point, out decision);
+                if (outcome == TournamentOutcome.Pending) return Status.Pending;
+                if (outcome == TournamentOutcome.Decided) return Status.Ready;
+            }
             // Declined (or already declined) for this point: do not ask again until the board
             // moves — and DO NOT RUN THE SEARCH.
             //
@@ -896,6 +1034,11 @@ internal sealed class KernelCombatPlanner
             // `Status.Fallback` hands the tick to the legacy planner, which returns a legal
             // action immediately. C either decides, or the simplest planner covers the tick, and
             // nothing in between looks like C when it is not.
+            //
+            // A cached script is only valid while the tournament is the thing driving the fight.
+            // The legacy planner is about to submit an action the script never priced, so the
+            // line stops describing the board here and must not be replayed on a later tick.
+            ClearTournamentScript("the tournament declined; the legacy planner may move the board");
             tournamentDeclined = point;
             return Status.Fallback;
         }
@@ -1112,13 +1255,12 @@ internal sealed class KernelCombatPlanner
                 // opening=False`). The previous "cheap fallback" fix addressed a flag that was
                 // never in this path. With the tournament driving, a decline must cost a per-tier
                 // search (450 ms), which is what "fall back cheaply" has to mean.
-                // BOTH halves matter: `TournamentDrives` is false on a MIXED table too, and a
-                // human's turn must keep the 450 ms interactive budget — the kernel suite's
-                // "Pro's INTERACTIVE wall budget must stay bounded at 450ms when a human is
-                // seated" assertion is what catches the difference (it did, on the first cut of
-                // the 0.38.0 switch: the deep budget leaked to every table that was not the
-                // tournament's).
-                if (!TournamentDrives(combat) && AllSeatsDriven(combat))
+                // BOTH halves matter: `TournamentDrives` is true on a mixed table now, so the
+                // deep opening ladder must never leak there through AllSeatsDriven. The gate is
+                // still "every seat is driven" for the deep budget; only the tournament itself
+                // was widened. (The kernel suite's "Pro's INTERACTIVE wall budget must stay
+                // bounded at 450ms when a human is seated" assertion catches a leak.)
+                if (!TournamentDrives(combat, actors) && AllSeatsDriven(combat))
                 {
                     // Captured before the overrides: the first version of this line divided
                     // the already-overwritten budgetMs and printed "was 60000ms", which is
@@ -2351,12 +2493,226 @@ internal sealed class KernelCombatPlanner
     /// action, a card the live hand cannot resolve, or an exception. A driving path that can
     /// stall a turn is worse than the thing it replaces, so every exit here is a fallback.
     /// </summary>
-    private bool TryTournamentDecision(CombatState combat, IReadOnlyList<Player> actors,
-        out TeamCombatPlanner.Decision? decision)
+    /// <summary>
+    /// How much COMPUTE the tournament may do per frame before giving the frame back.
+    ///
+    /// The tournament used to run 500-1200 ms in one call on the main thread, which is longer
+    /// than a card-play animation, so the animation froze mid-flight and the mod looked buggy
+    /// (measured live 2026-09-22: `Completed execution of action` immediately followed by
+    /// `decision-ms=1003.1`). A frame at 60 fps has ~16.7 ms; taking ~6 of them leaves the rest
+    /// for the game, so the animation stays smooth.
+    ///
+    /// WHAT IT COSTS: the same rollouts now span more wall time — a decision whose compute was
+    /// 400 ms takes roughly 400/6 frames ≈ 1.1 s. That is the trade the user asked for
+    /// ("打一张牌时多思考一会可以接受，动画不能卡"). Raise it for faster decisions, lower it for
+    /// an even smoother frame.
+    /// </summary>
+    private const int TournamentSliceMs = 6;
+
+
+    /// <summary>Whether a sliced tournament produced an answer this tick.</summary>
+    private enum TournamentOutcome { Pending, Decided, Declined }
+
+    /// <summary>Where the sliced tournament is between its (up to) two passes.</summary>
+    private enum TournamentPhase { Idle, NoPotions, Potions }
+
+    private TournamentPhase tournamentPhase;
+    private TournamentRun? tournamentRun;
+    private TournamentResult? tournamentFirstPass;
+    private KernelSession? tournamentRoot;
+    private IReadOnlyList<Player>? tournamentParty;
+    private IReadOnlyList<Player>? tournamentActors;
+    private TournamentOptions? tournamentOptions;
+    private string? tournamentPoint;
+    private Stopwatch? tournamentWatch;
+
+    /// <summary>Drop anything in flight. Called when the board moves and on a new fight.</summary>
+    private void ClearTournament()
+    {
+        tournamentPhase = TournamentPhase.Idle;
+        tournamentRun = null;
+        tournamentFirstPass = null;
+        tournamentRoot = null;
+        tournamentParty = null;
+        tournamentActors = null;
+        tournamentOptions = null;
+        tournamentWatch = null;
+    }
+
+    /// <summary>
+    /// True while the cached tournament line still has a step to play.
+    /// </summary>
+    private bool HasTournamentScript =>
+        tournamentScript is { Count: > 0 } && tournamentScriptIndex < tournamentScript.Count;
+
+    /// <summary>
+    /// The boundary the stored-line feature was specified with: a fresh ending only displaces a
+    /// stored one when STRICTLY better. Kept as a named, tested predicate so the rule itself
+    /// cannot drift. The live planner no longer runs a fresh tournament per step to evaluate it
+    /// (that per-step re-search was the 2026-09-23 mixed-table stutter); it follows the stored
+    /// line, and only searches fresh once that line can no longer be executed.
+    /// </summary>
+    internal static bool FreshEndingDoesNotBeat(TerminalRecord? fresh, TerminalRecord? script)
+        => script is not null && (fresh is null || TerminalComparer.Compare(fresh, script) <= 0);
+
+    /// <summary>
+    /// Adopt the winning roll-out as the running script. Index 1 because the caller is about
+    /// to submit index 0; a one-action result has no tail worth keeping, so it clears instead.
+    /// </summary>
+    private void AdoptTournamentScript(TournamentResult result, CombatState combat)
+    {
+        if (result.Script is { Count: > 1 } script
+            && result.ScriptAliveStates is { Count: > 1 } aliveStates
+            && aliveStates.Count == script.Count
+            && result.Record is not null)
+        {
+            tournamentScript = script;
+            tournamentScriptRecord = result.Record;
+            tournamentScriptIndex = 1;
+            tournamentScriptCombat = combat;
+            tournamentScriptAliveStates = aliveStates;
+            ReportSearchLine($"tournament script cached: steps={script.Count} "
+                + $"ending={Describe(result.Record)}");
+            return;
+        }
+        ClearTournamentScript("the winning result has no multi-step tail");
+    }
+
+    private void ClearTournamentScript(string reason)
+    {
+        if (tournamentScript is null) return;
+        ReportSearchLine($"tournament script dropped: {reason}");
+        tournamentScript = null;
+        tournamentScriptRecord = null;
+        tournamentScriptIndex = 0;
+        tournamentScriptCombat = null;
+        tournamentScriptAliveStates = null;
+    }
+
+    private static ulong[] LivingSeats(CombatState combat)
+        => combat.Players.Where(player => player.Creature.IsAlive)
+            .Select(player => player.NetId).OrderBy(id => id).ToArray();
+
+    private static bool SameSeats(ulong[] a, ulong[] b)
+        => a.Length == b.Length && a.SequenceEqual(b);
+
+    /// <summary>
+    /// Emit the cached script's next step when it is still executable. A refusal drops the
+    /// script and returns false, which lets the caller use the fresh tournament answer instead.
+    ///
+    /// ONE refusal does NOT drop the script: an end-turn step on a mixed table is still valid,
+    /// it just cannot be submitted until every human has ended their turn (BotRuntime refuses
+    /// it earlier). That leaves the script and cursor untouched and returns false, which the
+    /// caller reads as "park until the humans finish" rather than "re-search everything".
+    /// </summary>
+    private bool TryEmitFromTournamentScript(CombatState combat, IReadOnlyList<Player> actors,
+        bool humansFinished, out TeamCombatPlanner.Decision? decision)
     {
         decision = null;
-        var decisionWatch = Stopwatch.StartNew();
-        try
+        if (tournamentScript is not { } script) return false;
+        if (!ReferenceEquals(tournamentScriptCombat, combat))
+        {
+            ClearTournamentScript("the combat changed");
+            return false;
+        }
+        // EACH SCRIPT STEP CARRIES ITS OWN LIVING-SEAT PREDICTION. A script is allowed to plan a
+        // death: the next step may legitimately expect a seat to be gone. Continue only while the
+        // live set matches that step's prediction; a death earlier/later than the script planned,
+        // or a different seat, drops the script and lets the fresh tournament re-plan.
+        if (tournamentScriptAliveStates is not { } aliveStates
+            || tournamentScriptIndex >= aliveStates.Count
+            || !SameSeats(aliveStates[tournamentScriptIndex], LivingSeats(combat)))
+        {
+            ClearTournamentScript("the live living-seat set no longer matches the script step");
+            return false;
+        }
+        if (tournamentScriptIndex >= script.Count)
+        {
+            ClearTournamentScript("exhausted");
+            return false;
+        }
+        var next = script[tournamentScriptIndex];
+        if (!actors.Contains(next.Player) || !next.Player.Creature.IsAlive)
+        {
+            ClearTournamentScript("the next planned seat can no longer act");
+            return false;
+        }
+        var stepLabel = $"{tournamentScriptIndex + 1}/{script.Count}";
+        if (next.EndTurn)
+        {
+            if (!actors.Contains(next.Player)) { ClearTournamentScript("end-turn seat is inactive"); return false; }
+            if (!TournamentCanEndTurn(combat, humansFinished))
+            {
+                // KEEP THE LINE. Live 2026-09-23 mixed table: this one guard dropped 180
+                // valid stored lines, each drop followed by a full fresh tournament (both
+                // passes) whose only finding was the same WIPE — that churn is the stutter.
+                // The step is valid; only its submission is gated on the humans' end-turn.
+                return false;
+            }
+            ConfirmedEndTurn = next.Player;
+            noActionStamp = "";
+            tournamentScriptIndex++;
+            tournamentDriven++;
+            ReportSearchLine($"tournament script: end-turn step {stepLabel}");
+            return true;
+        }
+        if (next.Potion is { } wantedPotion)
+        {
+            if (!actors.Contains(next.Player) || next.Player.PlayerCombatState is null)
+            {
+                ClearTournamentScript("potion seat is inactive");
+                return false;
+            }
+            var livePotion = FindLivePotion(next.Player, wantedPotion);
+            if (livePotion is null
+                || livePotion.IsQueued
+                || livePotion.HasBeenRemovedFromState
+                || !livePotion.PassesCustomUsabilityCheck
+                || !livePotion.IsValidTarget(next.Target))
+            {
+                ClearTournamentScript("the planned potion is no longer usable");
+                return false;
+            }
+            ConfirmedPotion = new PotionPlan(livePotion, next.Target,
+                $"kernel-tournament-script:potion:{livePotion.Id.Entry},step:{stepLabel}");
+            noActionStamp = "";
+            tournamentScriptIndex++;
+            tournamentDriven++;
+            ReportSearchLine($"tournament script: potion {livePotion.Id.Entry} step {stepLabel}");
+            return true;
+        }
+        if (next.Card is null)
+        {
+            ClearTournamentScript("the cached step is neither a card, a potion, nor end-turn");
+            return false;
+        }
+        if (!actors.Contains(next.Player)) { ClearTournamentScript("the cached step's seat is inactive"); return false; }
+        var card = KernelSession.FindLiveCardByKey(next.Player, next.CardStateKey, next.CardStateOccurrence);
+        if (card is null && next.Card is { } instance
+            && next.Player.PlayerCombatState?.Hand.Cards.Contains(instance) == true)
+        {
+            card = instance;
+        }
+        if (card is null || !card.CanPlayTargeting(next.Target))
+        {
+            ClearTournamentScript("the planned card is no longer playable");
+            return false;
+        }
+        tournamentScriptIndex++;
+        tournamentDriven++;
+        decision = new TeamCombatPlanner.Decision(next.Player,
+            new(card, next.Target, 0.0,
+                $"kernel-tournament-script:step:{tournamentScriptIndex}/{script.Count}",
+                next.Choices),
+            script.Count - tournamentScriptIndex);
+        ReportSearchLine($"tournament script: play {card.Id.Entry} step {stepLabel}");
+        return true;
+    }
+
+    private bool BeginTournamentPhase(CombatState combat, IReadOnlyList<Player> actors,
+        bool humansFinished)
+    {
+        if (tournamentPhase == TournamentPhase.Idle)
         {
             // C replans after every live action. rootSession belongs to the segmented
             // search and can describe an already-played hand or a previous combat.
@@ -2373,99 +2729,217 @@ internal sealed class KernelCombatPlanner
                 return false;
             }
             rootSession = root;
-            var party = root.Party.Count > 0 ? root.Party : actors;
+            tournamentRoot = root;
+            tournamentActors = actors;
+            tournamentParty = root.Party.Count > 0 ? root.Party : actors;
             // ASK TWICE. First without potions: if the line already wins, there is nothing worth
             // spending a cross-fight resource on. Only when it does not win is the question
             // "would a potion change this?" even meaningful — and that is the case where it is
-            // worth paying for a second tournament.
-            var withoutPotions = new TournamentOptions(TournamentDriveTopK,
+            // worth paying for a second tournament. The potion pass is the same options with the
+            // switch flipped, built when that phase starts.
+            tournamentOptions = new TournamentOptions(TournamentDriveTopK,
                 Rollout: new RolloutOptions(RolloutPolicyKind.Kill, Seed: combat.RoundNumber),
-                IncludePotions: false);
-            var result = KernelTournament.Run(root, party, actors, withoutPotions, TournamentDriveBudgetMs);
-            if (result.Record?.Victory != true)
+                IncludePotions: false,
+                // A mixed table must not offer end-turn while a human is still acting: the
+                // runtime will not submit it, and asking again every tick would burn a whole
+                // tournament per frame. All-bot tables are always allowed.
+                IncludeEndTurns: TournamentCanEndTurn(combat, humansFinished),
+                // The second pass is this with the potion switch flipped, so it inherits this too.
+                MaxDegreeOfParallelism: TournamentParallelism);
+            tournamentPhase = TournamentPhase.NoPotions;
+        }
+        var options = tournamentPhase == TournamentPhase.NoPotions
+            ? tournamentOptions!
+            : tournamentOptions! with { IncludePotions = true };
+        tournamentRun = new TournamentRun(tournamentRoot!, tournamentParty!, tournamentActors!,
+            options, TournamentDriveBudgetMs);
+        tournamentPasses++;
+        return true;
+    }
+
+    private TournamentOutcome TryTournamentDecision(CombatState combat, IReadOnlyList<Player> actors,
+        bool humansFinished, string point, out TeamCombatPlanner.Decision? decision)
+    {
+        decision = null;
+        try
+        {
+            // The board moved, so anything in flight describes a position that no longer
+            // exists. `point` is the same key the decline memo uses.
+            if (tournamentPoint != point)
             {
-                var withPotions = withoutPotions with { IncludePotions = true };
-                var drugged = KernelTournament.Run(root, party, actors, withPotions, TournamentDriveBudgetMs);
-                // Keep the potion line only if it is actually BETTER; a second run that changes
-                // nothing must not be allowed to spend a potion on a tie.
-                // CAPTURE THE FIRST PASS BEFORE OVERWRITING IT. `result` is reassigned below, so
-                // reading it in the diagnostic afterwards printed the DRUGGED ending under the
-                // `noPotion=` label — a diagnostic that reports the wrong value is worse than
-                // none, and this one nearly shipped with exactly that bug.
-                var firstPass = result.Record;
-                var better = drugged.Record is not null
-                    && (firstPass is null || TerminalComparer.Compare(drugged.Record, firstPass) > 0);
-                if (better) result = drugged;
-                // SAY WHAT THE SECOND PASS DID. Without this the log shows "no potion was used"
-                // and cannot distinguish "the potion pass did not run", "it ran and was no
-                // better", and "it ran, won, and the planner failed to act on it" — measured
-                // 2026-09-21, one run had two WIPE windows and zero potion uses, and there was
-                // no way to tell which of the three had happened.
-                Log.Info($"CoopBots tournament: potion pass — "
-                    + $"noPotion={Describe(firstPass)} withPotion={Describe(drugged.Record)} "
-                    + $"took={better} druggedFirst={drugged.FirstAction?.Potion?.Id.Entry ?? "none"} "
-                    + $"hadPotions={(party.Any(p => root.UsablePotions(p).Count > 0) ? "yes" : "no")}");
+                ClearTournament();
+                tournamentPoint = point;
+                tournamentWatch = Stopwatch.StartNew();
             }
-            var next = result.FirstAction;
-            if (next is null)
+
+            while (true)
             {
-                Log.Info($"CoopBots tournament: declined — {result.StopReason}");
-                return false;
-            }
-            if (next.EndTurn)
-            {
-                ConfirmedEndTurn = next.Player;
+                // FOLLOW THE STORED LINE BEFORE PAYING FOR A FRESH ONE.
+                //
+                // The first cut re-ran the whole tournament (both passes) on EVERY step just to
+                // check whether some fresh ending beat the stored one. Measured live on a mixed
+                // table 2026-09-23: 553 stored steps, each carrying `decision-ms=100-880`, i.e.
+                // ~6 ms of the main thread every frame for the rest of the fight — the stutter
+                // the user reported. The stored line is the plan; replay it, and only re-search
+                // when a step is no longer executable (or the line is exhausted). This is the
+                // same reuse the segmented path does in TryEmitFromPlan.
+                if (HasTournamentScript)
+                {
+                    var step = tournamentScriptIndex + 1;
+                    var total = tournamentScript!.Count;
+                    var indexBefore = tournamentScriptIndex;
+                    if (TryEmitFromTournamentScript(combat, actors, humansFinished, out decision))
+                    {
+                        Log.Info($"CoopBots tournament: script step {step}/{total} "
+                            + "followed without a fresh search");
+                        return FinishTournament(TournamentOutcome.Decided);
+                    }
+                    if (tournamentScript is not null && tournamentScriptIndex == indexBefore)
+                    {
+                        // The step is VALID but cannot be submitted yet — an end-turn whose
+                        // seat has to wait for the humans. Keep the line and park; a fresh
+                        // tournament would only rediscover it after burning both passes.
+                        return TournamentOutcome.Pending;
+                    }
+                    // The step was refused and the script cleared. Fall through and re-search.
+                }
+                if (tournamentRun is null && !BeginTournamentPhase(combat, actors, humansFinished))
+                {
+                    return FinishTournament(TournamentOutcome.Declined);
+                }
+                // ONE FRAME'S WORTH. This is the whole point of the slicing: return to the
+                // caller without the animation having missed a frame.
+                if (!tournamentRun!.Advance(TimeSpan.FromMilliseconds(TournamentSliceMs)))
+                {
+                    return TournamentOutcome.Pending;
+                }
+
+                var result = tournamentRun.Result!;
+                if (tournamentPhase == TournamentPhase.NoPotions)
+                {
+                    tournamentFirstPass = result;
+                    if (result.Record?.Victory != true)
+                    {
+                        // Not a win without potions, so the second question is worth paying for.
+                        tournamentRun = null;
+                        tournamentPhase = TournamentPhase.Potions;
+                        continue;
+                    }
+                }
+                else if (tournamentPhase == TournamentPhase.Potions)
+                {
+                    // Keep the potion line only if it is actually BETTER; a second run that
+                    // changes nothing must not be allowed to spend a potion on a tie.
+                    // CAPTURE THE FIRST PASS BEFORE OVERWRITING IT. `result` is reassigned
+                    // below, so reading it in the diagnostic afterwards printed the DRUGGED
+                    // ending under the `noPotion=` label — a diagnostic that reports the wrong
+                    // value is worse than none, and this one nearly shipped with exactly that bug.
+                    var firstPass = tournamentFirstPass!.Record;
+                    // A bottle is only worth spending when it turns a NON-WIN first pass
+                    // into a real victory. A first-pass null/cutoff must not make any
+                    // second-pass record "better": measured live 2026-09-22, `noPotion=none`
+                    // plus a SPEED_POTION cutoff at the end of the turn spent the bottle
+                    // after the last card, where temporary Dexterity could not do anything.
+                    var better = result.Record is { Victory: true };
+                    // SAY WHAT THE SECOND PASS DID. Without this the log shows "no potion was
+                    // used" and cannot distinguish "the potion pass did not run", "it ran and was
+                    // no better", and "it ran, won, and the planner failed to act on it" —
+                    // measured 2026-09-21, one run had two WIPE windows and zero potion uses, and
+                    // there was no way to tell which of the three had happened.
+                    Log.Info($"CoopBots tournament: potion pass — "
+                        + $"noPotion={Describe(firstPass)} withPotion={Describe(result.Record)} "
+                        + $"took={better} druggedFirst={result.FirstAction?.Potion?.Id.Entry ?? "none"} "
+                        + $"hadPotions={(tournamentParty!.Any(p => tournamentRoot!.UsablePotions(p).Count > 0) ? "yes" : "no")}");
+                    if (!better) result = tournamentFirstPass!;
+                }
+
+                var next = result.FirstAction;
+                if (next is null)
+                {
+                    // A stored line was already tried at the top of the loop, so there is
+                    // nothing left to fall back to here.
+                    Log.Info($"CoopBots tournament: declined — {result.StopReason}");
+                    return FinishTournament(TournamentOutcome.Declined);
+                }
+
+                // Defence in depth for a mixed table: BeginTournamentPhase already keeps
+                // end-turn out of the candidate list while a human is acting, but a cached
+                // first pass or a stale decision must not reach the executor either — BotRuntime
+                // would refuse it and the same decision point would be recomputed every tick.
+                if (next.EndTurn && !TournamentCanEndTurn(combat, humansFinished))
+                {
+                    Log.Info("CoopBots tournament: declined — an end-turn decision arrived while "
+                        + "a human is still acting");
+                    return FinishTournament(TournamentOutcome.Declined);
+                }
+                AdoptTournamentScript(result, combat);
+                if (next.EndTurn)
+                {
+                    ConfirmedEndTurn = next.Player;
+                    tournamentDriven++;
+                    return FinishTournament(TournamentOutcome.Decided);   // ConfirmedEndTurn is the decision
+                }
+                if (next.Potion is { } chosenPotion)
+                {
+                    // A potion decision. This is the piece the first preview build lacked: the
+                    // branch sat ahead of the search-side potion planner, so a tournament-driven
+                    // fight never drank. Now the tournament can SEE potions (they are candidates)
+                    // and the planner can ACT on one.
+                    ConfirmedPotion = new PotionPlan(chosenPotion, next.Target,
+                        $"tournament:rollouts={result.Rollouts},predicted="
+                        + (result.Record is null ? "?" : result.Record.Victory ? "VICTORY" : "not-a-win"));
+                    tournamentDriven++;
+                    Log.Info($"CoopBots tournament: uses potion {chosenPotion.Id.Entry} on "
+                        + $"{next.Target?.CombatId} rollouts={result.Rollouts}");
+                    return FinishTournament(TournamentOutcome.Decided);
+                }
+                var card = KernelSession.FindLiveCardByKey(next.Player, next.CardStateKey, next.CardStateOccurrence);
+                if (card is null && next.Card is { } instance
+                    && next.Player.PlayerCombatState?.Hand.Cards.Contains(instance) == true) card = instance;
+                if (card is null || !card.CanPlayTargeting(next.Target))
+                {
+                    Log.Info($"CoopBots tournament: declined — "
+                        + $"{(card is null ? "live-card-not-found" : "live-target-unplayable")}");
+                    return FinishTournament(TournamentOutcome.Declined);
+                }
+                var ending = result.Record is null ? "?"
+                    : result.Record.Victory ? "VICTORY"
+                    : result.Record.Verified ? "WIPE" : result.Record.CutoffReason;
                 tournamentDriven++;
-                return true;                              // ConfirmedEndTurn is the decision
+                decision = new TeamCombatPlanner.Decision(next.Player,
+                    new(card, next.Target, 0.0,
+                        $"tournament:rollouts={result.Rollouts},cutoffs={result.Cutoffs},predicted={ending}",
+                        next.Choices),
+                    // The first card, but now backed by the winning line's tail when one
+                    // exists. PlannedCards only feeds the choice-plan sync, so this is the
+                    // number of steps downstream code should expect from the cached script.
+                    result.Script?.Count ?? 1);
+                Log.Info($"CoopBots tournament: plays {CardLabel(card)} on {next.Target?.CombatId} "
+                    + $"predicted={ending} hp={string.Join('/', result.Record?.PostCombatHp ?? [])} "
+                    + $"rollouts={result.Rollouts} stop={result.StopReason}");
+                return FinishTournament(TournamentOutcome.Decided);
             }
-            if (next.Potion is { } chosenPotion)
-            {
-                // A potion decision. This is the piece the first preview build lacked: the branch
-                // sat ahead of the search-side potion planner, so a tournament-driven fight never
-                // drank. Now the tournament can SEE potions (they are candidates) and the planner
-                // can ACT on one.
-                ConfirmedPotion = new PotionPlan(chosenPotion, next.Target,
-                    $"tournament:rollouts={result.Rollouts},predicted="
-                    + (result.Record is null ? "?" : result.Record.Victory ? "VICTORY" : "not-a-win"));
-                tournamentDriven++;
-                Log.Info($"CoopBots tournament: uses potion {chosenPotion.Id.Entry} on "
-                    + $"{next.Target?.CombatId} rollouts={result.Rollouts}");
-                return true;
-            }
-            var card = KernelSession.FindLiveCardByKey(next.Player, next.CardStateKey, next.CardStateOccurrence);
-            if (card is null && next.Card is { } instance
-                && next.Player.PlayerCombatState?.Hand.Cards.Contains(instance) == true) card = instance;
-            if (card is null || !card.CanPlayTargeting(next.Target))
-            {
-                Log.Info($"CoopBots tournament: declined — "
-                    + $"{(card is null ? "live-card-not-found" : "live-target-unplayable")}");
-                return false;
-            }
-            var ending = result.Record is null ? "?"
-                : result.Record.Victory ? "VICTORY"
-                : result.Record.Verified ? "WIPE" : result.Record.CutoffReason;
-            tournamentDriven++;
-            decision = new TeamCombatPlanner.Decision(next.Player,
-                new(card, next.Target, 0.0,
-                    $"tournament:rollouts={result.Rollouts},cutoffs={result.Cutoffs},predicted={ending}",
-                    next.Choices),
-                // One card, not a script: this planner replans from the live board on every
-                // decision, which is the whole difference from the segmented search.
-                1);
-            Log.Info($"CoopBots tournament: plays {CardLabel(card)} on {next.Target?.CombatId} "
-                + $"predicted={ending} hp={string.Join('/', result.Record?.PostCombatHp ?? [])} "
-                + $"rollouts={result.Rollouts} stop={result.StopReason}");
-            return true;
         }
         catch (Exception error)
         {
             Log.Info($"CoopBots tournament: falling back for this tick — {error.GetType().Name}: {error.Message}");
-            return false;
+            return FinishTournament(TournamentOutcome.Declined);
         }
-        finally
-        {
-            Log.Info($"CoopBots tournament: decision-ms={decisionWatch.Elapsed.TotalMilliseconds:F1}");
-        }
+    }
+
+    /// <summary>
+    /// Close out a finished decision: log how long the bot thought, drop the in-flight state,
+    /// and hand the outcome back. `decision-ms` is now WALL time across every slice, which is
+    /// what the player actually waited — `rollouts` and `stop=` on the play line still describe
+    /// the compute, and those are the two that must not change.
+    /// </summary>
+    private TournamentOutcome FinishTournament(TournamentOutcome outcome)
+    {
+        Log.Info($"CoopBots tournament: decision-ms={tournamentWatch?.Elapsed.TotalMilliseconds:F1} "
+            + $"(sliced {TournamentSliceMs}ms/frame)");
+        ClearTournament();
+        tournamentPoint = null;
+        return outcome;
     }
 
     /// <summary>
