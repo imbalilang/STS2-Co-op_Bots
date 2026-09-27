@@ -181,6 +181,14 @@ internal static class HumanCoopAdvisor
 
     internal static (double Score, string Reason) RelicValue(RelicModel relic, Player player)
     {
+        if (relic.GetType().Name == "ChosenCheese")
+        {
+            var fights = RunDepth.RemainingCombats(player);
+            var amount = relic.DynamicVars.TryGetValue("MaxHp", out var hp) ? (double)hp.BaseValue : 1;
+            // Permanent capacity plus the healing awarded by GainMaxHp. Both
+            // shrink with the remaining horizon, in the same health-point unit.
+            return (fights * amount * 2, $"预计剩余约{fights:F1}战；每战+{amount}生命上限并恢复等量生命");
+        }
         var party = player.RunState.Players;
         var attacks = party.Sum(p => p.Deck.Cards.Count(c => c.Type == CardType.Attack));
         var sameRelics = party.Sum(p => p.Relics.Count(r => r.Id == relic.Id));

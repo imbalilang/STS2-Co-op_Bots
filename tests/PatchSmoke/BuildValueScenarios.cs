@@ -6,7 +6,7 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
-using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Enchantments;
 using MegaCrit.Sts2.Core.Models.Characters;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Unlocks;
@@ -97,6 +97,42 @@ internal static class BuildValueScenarios
         if (BotShopPlanner.RemovalValue(lastDefend, bot) != 0)
             throw new Exception("A refused removal must also not be worth gold.");
         Console.WriteLine("PASS: removal targets diluting cards and refuses to remove the deck's only defence.");
+
+        // (community 2026-09-23) A Strike carrying the Replay enchantment was removed while
+        // plain Strikes/Defends still sat in the deck. The starter floor is applied with
+        // `max`, so an enchanted Basic and a plain Basic both scored the SAME floor and the
+        // enchantment could not move the score; the tie-break then picked whichever copy came
+        // first. This fixture puts the enchanted copy first, so the old order takes it.
+        Clear(); Give<StrikeIronclad>(5); Give<TwinStrike>(7);
+        var enchantedStrike = bot.Deck.Cards.First(card => card.Id.Entry == "STRIKE_IRONCLAD");
+        var replay = ModelDb.Enchantment<Spiral>().ToMutable();
+        enchantedStrike.EnchantInternal(replay, 1m);
+        replay.ModifyCard();
+        if (enchantedStrike.GetEnchantedReplayCount() <= 0)
+            throw new Exception("the fixture must actually attach a Replay enchantment to the Strike.");
+        var plainStrike = bot.Deck.Cards.First(card =>
+            card.Id.Entry == "STRIKE_IRONCLAD" && card.Enchantment is null);
+        var enchantedRemoval = BuildValue.Remove(enchantedStrike, bot).Total;
+        var plainRemoval = BuildValue.Remove(plainStrike, bot).Total;
+        // CHECKED (R2) 2026-09-25: dropping the enchantment/replay terms from IsPlainStarter
+        // (i.e. going back to `Rarity == Basic && !IsUpgraded`) turns this red, verbatim:
+        //   System.Exception: a Replay Strike must be less removable than a plain one
+        //   (replay=72.0, plain=72.0) — the enchantment is invisible.
+        // Both scored 72.0: the starter floor is a `max`, so the enchantment could not move
+        // the removal value at all.
+        if (!(enchantedRemoval < plainRemoval))
+            throw new Exception($"a Replay Strike must be less removable than a plain one "
+                + $"(replay={enchantedRemoval:F1}, plain={plainRemoval:F1}) — the enchantment is invisible.");
+        // Enchanted copy FIRST: the old index tie-break is exactly what removed it.
+        var removalCandidates = new List<CardModel> { enchantedStrike };
+        removalCandidates.AddRange(bot.Deck.Cards.Where(card => !ReferenceEquals(card, enchantedStrike)));
+        var removalPlan = RemovalPlan.Choose(bot, removalCandidates, 1);
+        if (ReferenceEquals(removalPlan.Steps[0].Card, enchantedStrike))
+            throw new Exception("removal must not take the Replay-enchanted Strike while a plain copy remains.");
+        if (removalPlan.Steps[0].Card.Enchantment is not null)
+            throw new Exception($"removal must prefer an unenchanted copy, got {removalPlan.Steps[0].Card.Id.Entry}.");
+        Console.WriteLine("PASS: a Replay-enchanted Strike is kept while plain copies remain; "
+            + "the starter removal floor no longer erases the enchantment.");
 
         // Repeated shop removals must not keep outbidding the cards the deck still needs.
         // CHECKED (R2) 2026-09-22: deleting the `value /= 1.0 + 0.35 * used` branch makes

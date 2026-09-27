@@ -25,6 +25,8 @@ public enum RolloutPolicyKind
     Defend,
     /// <summary>Setup first: prefer powers and other non-damage, non-block cards, then damage.</summary>
     Growth,
+    /// <summary>Bounded one-action lookahead using resolved damage and useful defence.</summary>
+    Tactical,
 }
 
 public sealed record RolloutOptions(
@@ -51,6 +53,10 @@ public sealed record RolloutOutcome(
     // script cache uses this to tell "this seat was already dead in the line" from "the
     // live death no longer matches the line", which the final HP array cannot express.
     IReadOnlyList<ulong[]> AliveStates,
+    // Index-aligned with Actions: the LIVING ENEMIES immediately BEFORE that action. The seat
+    // array says which party members the line expected to be standing; this says which ENEMIES
+    // it expected to be standing, which is what a step that planned a kill depends on.
+    IReadOnlyList<Creature[]> EnemyStates,
     int Steps,
     int RoundsAdvanced,
     TerminalRecord Record)
@@ -109,19 +115,26 @@ public sealed class RolloutRun
     private KernelSession session;
     private readonly IReadOnlyList<Player> party;
     private readonly HashSet<Player> driven;
+    private readonly IReadOnlyList<Player> actors;
     private readonly Random plannerRng;
     private readonly RolloutOptions o;
     private readonly List<KernelTeamSearch.Action> actions = new();
     private readonly List<ulong[]> aliveStates = new();
+    // Index-aligned with aliveStates, and for the same reason: a script whose line assumed
+    // an enemy would be dead by step N must not keep replaying as if it were.
+    private readonly List<Creature[]> enemyStates = new();
     private readonly List<(CardModel Card, Creature? Target, string Key, int Occurrence, double Score)> candidates = new();
     private readonly Queue<string> recentStates = new();
     private int steps;
+    private readonly bool exploreAttrition;
+    private readonly Queue<KernelTeamSearch.Action> attritionSequence = new();
+    private int attritionCheckedRound = -1;
 
     public RolloutOutcome? Result { get; private set; }
     public bool Done => Result is not null;
 
     internal RolloutRun(KernelSession session, IReadOnlyList<Player> party,
-        IReadOnlyList<Player> actors, RolloutOptions? options)
+        IReadOnlyList<Player> actors, RolloutOptions? options, bool exploreAttrition = false)
     {
         this.session = session;
         // A rollout is a prediction, not a committed plan: a start-of-turn choice
@@ -133,6 +146,8 @@ public sealed class RolloutRun
         this.party = party;
         o = options ?? new RolloutOptions();
         driven = actors.ToHashSet();
+        this.actors = actors;
+        this.exploreAttrition = exploreAttrition;
         plannerRng = new Random(o.Seed);
     }
 
@@ -147,15 +162,19 @@ public sealed class RolloutRun
         if (session.HasTerminal)
         {
             Result = new RolloutOutcome(true, session.HasWon, session.HasWon ? "victory" : "wipe",
-                actions, aliveStates, steps, session.RoundsAdvanced, Record(session, party, true, ""));
+                actions, aliveStates, enemyStates, steps, session.RoundsAdvanced, Record(session, party, true, ""));
             return;
         }
         if (steps >= o.MaxSteps) { Result = Cutoff("step-cap"); return; }
         if (session.RoundsAdvanced >= o.MaxRounds) { Result = Cutoff("round-cap"); return; }
 
-        var acted = false;
+        // Choose across all delegated seats before ending anybody's turn. A
+        // per-seat TryPlay loop emptied seat 1, then seat 2, on EVERY simulated
+        // round, including the cached continuation after a joint-search prefix.
+        var acted = TryAttritionSequence() || TryPlay() || TryAttritionContinuation();
+        if (acted) attritionCheckedRound = -1;
         var stuck = "no-actor";
-        foreach (var p in party)
+        foreach (var p in acted ? Array.Empty<Player>() : party)
         {
             if (!session.CanAct(p)) continue;
             if (!driven.Contains(p))
@@ -168,14 +187,22 @@ public sealed class RolloutRun
                 else stuck = "undelegated-seat-cannot-end";
                 break;
             }
-            if (TryPlay(p))
-            {
-                acted = true;
-                break;
-            }
+            // SNAPSHOT BEFORE THE ACTION. The record's contract (see RolloutOutcome) is "the
+            // living seats / enemies immediately BEFORE that action", and the script cache is
+            // built on that: it compares the entry at step i against the LIVE board, which is
+            // the state after step i-1 — i.e. exactly the state before step i. Recording AFTER
+            // the action instead made that comparison one step too far ahead, so live always
+            // looked like it had an EXTRA enemy. Measured live 2026-09-27 with the diff
+            // instrumentation: every mismatch in a whole run was `missing=[] extra=[X]` (13/13
+            // in round 1), and the check fired 20-34 times a run with more than half of them in
+            // the first half of a script — the tournament was dropping its plan and re-searching
+            // after almost every kill instead of following it.
+            var aliveBefore = SnapshotAlive();
+            var enemiesBefore = SnapshotEnemies();
             if (session.EndTurn(p, o.MaxRounds, out var endBoundary))
             {
-                aliveStates.Add(SnapshotAlive());
+                aliveStates.Add(aliveBefore);
+                enemyStates.Add(enemiesBefore);
                 actions.Add(new KernelTeamSearch.Action(p, null, null, EndTurn: true));
                 steps++;
                 acted = true;
@@ -189,6 +216,11 @@ public sealed class RolloutRun
         }
         if (!acted)
         {
+            if (stuck == "no-actor")
+            {
+                if (session.TryAdvanceReadySide(o.MaxRounds, out var automaticBoundary)) return;
+                if (automaticBoundary.Length > 0) stuck = "stuck:" + automaticBoundary;
+            }
             Result = Cutoff(stuck == "no-actor" ? NoActorReason() : stuck);
             return;
         }
@@ -204,7 +236,7 @@ public sealed class RolloutRun
     }
 
     private RolloutOutcome Cutoff(string reason) =>
-        new(false, false, reason, actions, aliveStates, steps, session.RoundsAdvanced,
+        new(false, false, reason, actions, aliveStates, enemyStates, steps, session.RoundsAdvanced,
             Record(session, party, false, reason));
 
     /// <summary>
@@ -224,53 +256,63 @@ public sealed class RolloutRun
     }
 
     /// <summary>
-    /// Play the policy's best card for one seat. Tries candidates in descending score order
+    /// Play the policy's best card across delegated seats. Tries candidates in descending score order
     /// rather than only the top one: a card can be playable by the cheap predicate and still
     /// be refused by the simulator (a pending choice, a targeting rule), and falling through
     /// to the next-best card is both cheaper and truer than ending the turn on it.
     /// </summary>
-    private bool TryPlay(Player player)
+    private bool TryPlay()
     {
         // One Hand() call, not three. Hand() materialises a fresh array per call, and this
         // method runs once per action of a ~220-action fight; the first version measured
         // 0.053 MB/step against 0.009 for a loop that skipped the bookkeeping, and this is
         // where the difference was. A rollout only earns its keep if it stays cheap.
+        if (o.Policy == RolloutPolicyKind.Tactical) return TryTacticalPlay();
         var seenCardStates = new Dictionary<string, int>(StringComparer.Ordinal);
         candidates.Clear();
-        foreach (var card in session.Hand(player))
+        foreach (var player in party.Where(p => driven.Contains(p) && session.CanAct(p)))
         {
-            var key = Vendor.CardChoiceSupport.ChoiceCardKey(card);
-            var occurrence = seenCardStates.GetValueOrDefault(key);
-            seenCardStates[key] = occurrence + 1;
-            if (!session.CanPlay(card)) continue;
-            var targets = session.Targets(card);
-            // One target per card is enough for a baseline policy. The full target space is
-            // the search's job; a rollout that branched on targets would stop being cheap.
-            // Nulls are skipped rather than ordered around: Targets may be non-empty and
-            // entirely null for a non-targeted card, and First() on that throws.
-            Creature? target;
-            if (KernelTemporaryBuffs.IsAllyTarget(card)
-                && KernelTemporaryBuffs.Timing(card) is { } buffTiming)
+            seenCardStates.Clear();
+            foreach (var card in session.Hand(player))
             {
-                // Aim the one-turn buff at the ally with the most relevant actions
-                // left, not the lowest-HP ally: it is worth zero after that ally has
-                // already played the cards it would amplify.
-                target = BestBuffTarget(session, targets, buffTiming);
-            }
-            else
-            {
-                target = null;
-                var lowest = int.MaxValue;
-                for (var i = 0; i < targets.Count; i++)
+                var key = session.CardStateKey(card);
+                var occurrence = seenCardStates.GetValueOrDefault(key);
+                seenCardStates[key] = occurrence + 1;
+                if (!session.CanPlay(card)) continue;
+                var targets = session.Targets(card);
+                // One target per card is enough for a baseline policy. The full target space is
+                // the search's job; a rollout that branched on targets would stop being cheap.
+                // Nulls are skipped rather than ordered around: Targets may be non-empty and
+                // entirely null for a non-targeted card, and First() on that throws.
+                Creature? target;
+                if (KernelTemporaryBuffs.IsAllyTarget(card)
+                    && KernelTemporaryBuffs.Timing(card) is { } buffTiming)
                 {
-                    if (targets[i] is not { } t) continue;
-                    var hp = session.Hp(t);
-                    if (hp >= lowest) continue;
-                    lowest = hp; target = t;
+                    // Aim the one-turn buff at the ally with the most relevant actions
+                    // left, not the lowest-HP ally: it is worth zero after that ally has
+                    // already played the cards it would amplify.
+                    target = BestBuffTarget(session, targets, buffTiming);
                 }
+                else
+                {
+                    target = null;
+                    var lowest = int.MaxValue;
+                    var needsPoison = CardPoisonEffects.RequiresPoison(card);
+                    var hasPoisonedTarget = needsPoison && targets.Any(t => t is not null
+                        && session.Power<MegaCrit.Sts2.Core.Models.Powers.PoisonPower>(t) > 0);
+                    for (var i = 0; i < targets.Count; i++)
+                    {
+                        if (targets[i] is not { } t) continue;
+                        if (hasPoisonedTarget && session.Power<MegaCrit.Sts2.Core.Models.Powers.PoisonPower>(t) <= 0) continue;
+                        var hp = session.Hp(t);
+                        if (hp >= lowest) continue;
+                        lowest = hp; target = t;
+                    }
+                }
+                candidates.Add((card, target, key, occurrence,
+                    Score(session, party, o.Policy, player, card, target, plannerRng)
+                    + KernelTeamCoordination.OrderingBonus(session, actors, card, target, o.Policy)));
             }
-            candidates.Add((card, target, key, occurrence,
-                Score(session, party, o.Policy, player, card, target, plannerRng)));
         }
         if (candidates.Count == 0) return false;
 
@@ -283,6 +325,7 @@ public sealed class RolloutRun
             for (var i = 1; i < candidates.Count; i++)
                 if (candidates[i].Score > candidates[pick].Score) pick = i;
             var (card, target, key, occurrence, _) = candidates[pick];
+            var player = card.Owner;
             // NOT PLAYING IS A REAL OPTION. A 0-cost exhaust that cannot unlock a card,
             // or a low-threat pure-setup exhaust (Piercing Wail), is worth more held:
             // skipping it here lets the caller end the turn instead. Clearing the best
@@ -299,10 +342,20 @@ public sealed class RolloutRun
                 .FirstOrDefault(branch => branch.Boundary.Length == 0);
             if (resolved is not null)
             {
+                if(!exploreAttrition && session.HasWitheringPresence(player) && !resolved.State.HasWon
+                    && KernelTacticalPolicy.ActionValue(session,resolved.State,party,actors)
+                        <= KernelTacticalPolicy.Value(session,party,actors))
+                {
+                    candidates.RemoveAt(pick);
+                    continue;
+                }
+                // BEFORE the action resolves, not after: see the EndTurn branch above for the
+                // live measurement that pinned this contract.
+                aliveStates.Add(SnapshotAlive());
+                enemyStates.Add(SnapshotEnemies());
                 session = resolved.State;
                 session.AutoResolveTurnStartChoices = true;
                 session.AutoResolveEnemyChoices = true;
-                aliveStates.Add(SnapshotAlive());
                 actions.Add(new KernelTeamSearch.Action(player, card, target,
                     Choices: resolved.Choices,
                     ChoiceOrdinals: resolved.ChoiceOrdinals,
@@ -313,6 +366,131 @@ public sealed class RolloutRun
             candidates.RemoveAt(pick);
         }
         return false;
+    }
+
+    private bool TryTacticalPlay()
+    {
+        candidates.Clear();
+        var seen = new Dictionary<string, int>(StringComparer.Ordinal);
+        var playable = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var player in party.Where(p => driven.Contains(p) && session.CanAct(p)))
+        {
+            seen.Clear();
+            playable.Clear();
+            foreach (var card in session.Hand(player))
+            {
+                var key = session.CardStateKey(card);
+                var occurrence = seen.GetValueOrDefault(key);
+                seen[key] = occurrence + 1;
+                if (!session.CanPlay(card) || !playable.Add(key) || ShouldHold(session, party, player, card)) continue;
+                foreach (var target in session.Targets(card))
+                    candidates.Add((card, target, key, occurrence,
+                        Score(session, party, RolloutPolicyKind.Kill, player, card, target, plannerRng)
+                        + KernelTeamCoordination.OrderingBonus(session, actors, card, target, RolloutPolicyKind.Kill)));
+            }
+        }
+        // Cover distinct cards first, then alternate targets. Identical Strikes must
+        // not consume every probe while a block or draw card waits outside the cap.
+        var ranked = candidates.OrderByDescending(c => c.Score).ToArray();
+        // Identical card states belonging to DIFFERENT players are distinct
+        // actions: their Strength, energy and legal targets can differ.
+        var cleanup = KernelActionCoverage.HasHarmfulHand(session, party);
+        var probes = ranked.Where(c => KernelActionCoverage.TeamDefence(c.Card)).Take(1)
+            .Concat(ranked.Where(c => cleanup && KernelActionCoverage.Cleanup(c.Card)).Take(1))
+            .Concat(ranked.Where(c => c.Card.GainsBlock).Take(1))
+            .Concat(ranked.DistinctBy(c => (c.Card.Owner, c.Key))).Concat(ranked)
+            .DistinctBy(c => (c.Card.Owner, c.Key, c.Target))
+            .Take(KernelTacticalPolicy.Width);
+        KernelSession.CardBranch? best = null;
+        KernelTeamSearch.Action? action = null;
+        // Under card-count/status pressure, ending the turn is a real baseline.
+        // This is a rollout preference, not a legality gate on the full search.
+        var bestValue = !exploreAttrition && session.HasAttritionPressure
+            ? KernelTacticalPolicy.Value(session, party, actors) : double.NegativeInfinity;
+        foreach (var candidate in probes)
+        {
+            var player = candidate.Card.Owner;
+            var resolved = session.CardBranches(candidate.Card, candidate.Target, maximumBranches: 1)
+                .FirstOrDefault(b => b.Boundary.Length == 0);
+            if (resolved is null) continue;
+            var value = KernelTacticalPolicy.ActionValue(session, resolved.State, party, actors);
+            // Preserve the existing timing model for short-lived team buffs.
+            if (KernelTemporaryBuffs.Timing(candidate.Card) is not null)
+                value += RelevantRemaining(session, party, player, candidate.Card, candidate.Target) * 4;
+            if (value <= bestValue) continue;
+            bestValue = value;
+            best = resolved;
+            action = new KernelTeamSearch.Action(player, candidate.Card, candidate.Target,
+                Choices: resolved.Choices, ChoiceOrdinals: resolved.ChoiceOrdinals,
+                CardStateKey: candidate.Key, CardStateOccurrence: candidate.Occurrence);
+        }
+        if (best is null || action is null) return false;
+        aliveStates.Add(SnapshotAlive());
+        enemyStates.Add(SnapshotEnemies());
+        session = best.State;
+        session.AutoResolveTurnStartChoices = true;
+        session.AutoResolveEnemyChoices = true;
+        actions.Add(action);
+        steps++;
+        return true;
+    }
+
+    // A one-action loss is not proof that the remaining turn is unprofitable.
+    // At CardsLeft=1 every first card pays the whole immediate Wither hit;
+    // subsequent attacks/block can repay it. Explore bounded, distinct continuations
+    // without that local veto, then compare all native effects against the same root. Keep
+    // the best profitable prefix as a sequence: re-vetoing its first step would
+    // recreate the bug. These are proposals; the tournament still judges real endings.
+    private bool TryAttritionContinuation()
+    {
+        if (exploreAttrition || attritionCheckedRound == session.TurnNumber
+            || !actors.Any(p => session.CanAct(p) && session.HasWitheringPresence(p))) return false;
+        attritionCheckedRound = session.TurnNumber;
+        foreach (var action in FindAttritionSequence(session, party, actors, o)) attritionSequence.Enqueue(action);
+        return TryAttritionSequence();
+    }
+
+    internal static IReadOnlyList<KernelTeamSearch.Action> FindAttritionSequence(KernelSession session,
+        IReadOnlyList<Player> party, IReadOnlyList<Player> actors, RolloutOptions o)
+    {
+        var bestValue = KernelTacticalPolicy.ActionValue(session, session, party, actors);
+        KernelTeamSearch.Action[] best = [];
+        foreach (var policy in new[] { RolloutPolicyKind.Kill, RolloutPolicyKind.Defend, RolloutPolicyKind.Growth })
+        {
+            var probe = new RolloutRun(session.Fork(), party, actors,
+                o with { Policy = policy, MaxSteps = 10 }, exploreAttrition: true);
+            for (var depth = 0; depth < 10; depth++)
+            {
+                // Stay within the current player phase; no credit for refreshing
+                // energy or re-drawing the next hand across an end-turn boundary.
+                if (!probe.TryPlay()) break;
+                var value = KernelTacticalPolicy.ActionValue(session, probe.session, party, actors);
+                if (value > bestValue + .01)
+                {
+                    bestValue = value;
+                    best = probe.actions.ToArray();
+                }
+                if (probe.session.HasTerminal) break;
+            }
+        }
+        return best;
+    }
+
+    private bool TryAttritionSequence()
+    {
+        if (!attritionSequence.TryDequeue(out var action)) return false;
+        var branch = session.Fork();
+        if (!branch.ReplayPlanned(action, o.MaxRounds, out _))
+        {
+            attritionSequence.Clear();
+            return false;
+        }
+        aliveStates.Add(SnapshotAlive());
+        enemyStates.Add(SnapshotEnemies());
+        session = branch;
+        actions.Add(action);
+        steps++;
+        return true;
     }
 
     /// <summary>
@@ -336,8 +514,15 @@ public sealed class RolloutRun
         // A one-turn setup card is worth zero once nothing it enables is left.
         if (KernelTemporaryBuffs.IsPureSetup(card))
             return RelevantRemaining(session, party, player, card, target: null) <= 0;
-        var energyGain = EnergyGain(card);
-        if (energyGain > 0) return WastesEnergyGain(session, player, card, energyGain);
+        var resources = CardResourceTiming.Of(card, session.Energy(player));
+        // Future resources do not need a payable card in this turn's hand.
+        // Mixed cards (block/draw/ally support) also cannot be refused just
+        // because their immediate energy happens not to unlock a card yet.
+        if (resources.EnergyNextTurn > 0 || resources.DrawNextTurn > 0) return false;
+        var energyGain = (int)resources.EnergyNow;
+        if (energyGain > 0 && card.TargetType == TargetType.Self && !card.GainsBlock
+            && Variable<DamageVar>(card) <= 0 && Variable<CardsVar>(card) <= 0)
+            return WastesEnergyGain(session, player, card, energyGain);
         return IsPureExhaustSetup(card) && LowThreatTurn(session, party, player);
     }
 
@@ -413,12 +598,6 @@ public sealed class RolloutRun
         return true;
     }
 
-    private static int EnergyGain(CardModel card)
-    {
-        try { return (int)card.DynamicVars.Values.OfType<EnergyVar>().Sum(v => v.BaseValue); }
-        catch { return 0; }
-    }
-
     private static int CardCost(CardModel card)
     {
         try { return (int)card.EnergyCost.GetWithModifiers(CostModifiers.All); }
@@ -427,10 +606,10 @@ public sealed class RolloutRun
 
     private static bool IsPureExhaustSetup(CardModel card)
     {
-        if (!card.Keywords.Contains(CardKeyword.Exhaust)) return false;
-        var damage = Variable<DamageVar>(card);
-        var block = card.DynamicVars.Values.OfType<BlockVar>().Sum(v => (double)v.BaseValue);
-        return damage <= 0 && block <= 0;
+        // Exhaust alone does not mean "only useful against this turn's attack".
+        // Adrenaline draws now; Apotheosis and LimitBreak improve later turns.
+        // Only the actual one-turn enemy attack reductions belong in this gate.
+        return card.GetType().Name is "PiercingWail" or "DarkShackles";
     }
 
     internal static bool LowThreatTurn(KernelSession session, IReadOnlyList<Player> party, Player player)
@@ -443,7 +622,7 @@ public sealed class RolloutRun
                 if (session.Hp(member.Creature) <= 0) continue;
                 var incoming = attacks.Sum(a =>
                     session.IntentHit(a.Enemy, member.Creature, a.Raw) * a.Repeats);
-                if (incoming - session.Block(member.Creature) > 4) return false;
+                if (incoming > 0 && session.Threat(member).HpLoss > 4) return false;
             }
             return true;
         }
@@ -469,21 +648,12 @@ public sealed class RolloutRun
     private static TerminalRecord Record(KernelSession session, IReadOnlyList<Player> party,
         bool terminal, string cutoffReason)
     {
-        var hp = new int[party.Count];
-        var dead = 0;
-        for (var i = 0; i < party.Count; i++)
+        // Share terminal/remaining-enemy capture with other search paths, while
+        // preserving this rollout's existing dead-seat count for cutoffs.
+        return TerminalRecord.Capture(session, party, terminal, cutoffReason) with
         {
-            hp[i] = Math.Max(0, session.Hp(party[i].Creature));
-            if (hp[i] <= 0) dead++;
-        }
-        return new TerminalRecord(
-            Victory: terminal && session.HasWon,
-            Kind: terminal ? EvidenceKind.VerifiedTerminal : EvidenceKind.EstimatedCutoff,
-            CutoffReason: cutoffReason,
-            PostCombatHp: hp,
-            IrreversibleLoss: dead,
-            ResourcesConsumed: 0,
-            OutstandingStolenResource: session.OutstandingStolenResource);
+            IrreversibleLoss = party.Count(p => session.Hp(p.Creature) <= 0),
+        };
     }
 
     /// <summary>The living party immediately before the next action, ordered for comparison.</summary>
@@ -492,27 +662,44 @@ public sealed class RolloutRun
             .Select(player => player.NetId).OrderBy(id => id).ToArray();
 
     /// <summary>
+    /// The enemies the line expects to still be standing, by reference, immediately before
+    /// the action this is aligned with. Reads the SIMULATED hp, not the live board — this is
+    /// the line's own expectation, which is the thing the replayer compares against.
+    /// </summary>
+    private Creature[] SnapshotEnemies() => session.Enemies.ToArray();
+
+    /// <summary>
     /// Cheap and evaluation-free on purpose: the moment a rollout calls the real evaluator it
     /// inherits the evaluator's cost, and the measured advantage over the search disappears.
     /// </summary>
     private static double Score(KernelSession session, IReadOnlyList<Player> party,
         RolloutPolicyKind kind, Player actor, CardModel card, Creature? target, Random rng)
     {
-        var damage = Variable<DamageVar>(card);
+        var damage = target is not null && card.Type == CardType.Attack
+            ? session.AttackDamageHint(card, target) : Variable<DamageVar>(card);
+        var poisonReady = !CardPoisonEffects.RequiresPoison(card) || target is not null
+            && session.Power<MegaCrit.Sts2.Core.Models.Powers.PoisonPower>(target) > 0;
+        var delayedDamage = poisonReady ? CardPoisonEffects.TwoTicks(CardPoisonEffects.DirectAmount(card)) : 0;
+        if (target is not null) delayedDamage = Math.Min(delayedDamage, session.Hp(target));
+        var offense = damage + delayedDamage;
         var block = card.DynamicVars.Values.OfType<BlockVar>().Sum(v => (double)v.BaseValue);
         // An attack that kills the target it is aimed at is worth more than any amount of
         // damage that does not, in every policy: leaving an enemy alive costs a whole enemy
         // phase, and no baseline policy should need to be told that twice.
-        var lethal = damage > 0 && target is not null && damage >= session.Hp(target);
+        var lethal = damage > 0 && target is not null && damage >= session.Hp(target) + session.Block(target);
         var setup = damage <= 0 && block <= 0 ? 1 : 0;
         var tie = rng.NextDouble();
         var score = kind switch
         {
-            RolloutPolicyKind.Kill => (lethal ? 1e9 : 0) + damage * 1e3 + block + tie,
-            RolloutPolicyKind.Defend => (lethal ? 1e9 : 0) + block * 1e3 + damage + tie,
-            RolloutPolicyKind.Growth => (lethal ? 1e9 : 0) + setup * 1e6 + damage * 1e3 + block + tie,
-            _ => damage + tie,
+            RolloutPolicyKind.Kill => (lethal ? 1e9 : 0) + offense * 1e3 + block + tie,
+            RolloutPolicyKind.Defend => (lethal ? 1e9 : 0) + block * 1e3 + offense + tie,
+            RolloutPolicyKind.Growth => (lethal ? 1e9 : 0) + setup * 1e6 + offense * 1e3 + block + tie,
+            _ => offense + tie,
         };
+        // A conditional body with no trigger cannot outrank the source that
+        // enables it. This is ordering, not a legality veto: trigger synergies
+        // remain available to the resolved-state search.
+        if (!poisonReady) score -= 1_000_000;
         if (KernelTemporaryBuffs.Timing(card) is not null)
         {
             // Play it BEFORE the cards it amplifies. Every remaining attack/block/card

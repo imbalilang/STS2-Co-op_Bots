@@ -21,13 +21,9 @@ public sealed record TournamentOptions(
     /// <summary>
     /// Whether potions are candidates at all.
     ///
-    /// WHY THIS IS A SWITCH AND NOT A PRICE: a potion is a CROSS-FIGHT resource, and the
-    /// objective prices consumables at zero by default (ConsumableUnitCost = 0), so a tournament
-    /// that always saw potions would drink them the moment they improved this fight — which they
-    /// almost always do, and which is the wrong trade. The alternative was to invent an HP price
-    /// per potion; that is a made-up number. Instead the caller asks twice: once without potions,
-    /// and only if that line does not WIN does it ask again with them. A potion then costs
-    /// nothing in the common case and is spent exactly when it changes the outcome.
+    /// The caller may first establish a no-potion baseline, then compare a
+    /// potion-only pass under an explicit consumable price. Keeping the two
+    /// passes separate preserves the baseline when bottles cannot improve it.
     /// </summary>
     bool IncludePotions = true,
     // False evaluates only Rollout.Policy (or Policy if Rollout is absent), for A/B probes.
@@ -47,7 +43,15 @@ public sealed record TournamentOptions(
     /// end-turn answer produced earlier is a decision the executor must refuse — and the same
     /// decision point would then be recomputed on every following tick.
     /// </summary>
-    bool IncludeEndTurns = true);
+    bool IncludeEndTurns = true,
+    ObjectiveConfig? Objective = null,
+    bool PotionsOnly = false,
+    // Opening actors can be a subset because some bots have already ended this
+    // turn. Those bots still play future turns; only actual humans stay passive.
+    IReadOnlyList<Player>? ContinuationActors = null,
+    // Production searches multi-action team prefixes before cheap rollout probes.
+    // Explicit switch keeps the old algorithm available for controlled comparisons.
+    bool EnableJointSearch = false);
 
 /// <summary>
 /// What the tournament decided. <see cref="FirstAction"/> is the deployable answer and is
@@ -76,6 +80,17 @@ public sealed record TournamentResult(
     /// tells the replayer whether a live death happened at the moment the script expected.
     /// </summary>
     public IReadOnlyList<ulong[]>? ScriptAliveStates { get; init; }
+
+    /// <summary>
+    /// Index-aligned with <see cref="Script"/>: the living enemies immediately before each
+    /// action in the winning roll-out. The party side alone cannot catch a line whose planned
+    /// kill did not happen — every later step of such a line aims at the wrong enemy.
+    /// </summary>
+    public IReadOnlyList<Creature[]>? ScriptEnemyStates { get; init; }
+    public int JointNodes { get; init; }
+    public int JointPrefixes { get; init; }
+    public int JointMaxActions { get; init; }
+    public bool JointSelected { get; init; }
 }
 
 /// <summary>
@@ -124,6 +139,7 @@ public static class KernelTournament
         var scored = new List<(KernelTeamSearch.Action Action, double Score, ActionRole Role)>();
         var seenCardStates = new Dictionary<string, int>(StringComparer.Ordinal);
         var party = root.Party.Count > 0 ? root.Party : actors;
+        IReadOnlyList<KernelTeamSearch.Action>? attritionSequence = null;
         foreach (var player in actors)
         {
             if (!root.CanAct(player)) continue;
@@ -144,47 +160,59 @@ public static class KernelTournament
                 scored.Add((new KernelTeamSearch.Action(player, null, potionTarget, potion), 1e8,
                     ActionRole.Potion));
             }
+            if (o.PotionsOnly) continue;
+            var withering = root.HasWitheringPresence(player);
+            var profitablePlay = false;
+            var holdValue = withering ? KernelTacticalPolicy.Value(root,party,actors) : 0;
             seenCardStates.Clear();
             foreach (var card in root.Hand(player))
             {
-                var key = Vendor.CardChoiceSupport.ChoiceCardKey(card);
+                var key = root.CardStateKey(card);
                 var occurrence = seenCardStates.GetValueOrDefault(key);
                 seenCardStates[key] = occurrence + 1;
                 if (!root.CanPlay(card)) continue;
-                // One target per card: the full target space belongs to the search, and a
-                // tournament that branched on targets would cost |cards| x |enemies| rollouts.
-                Creature? target;
-                if (KernelTemporaryBuffs.IsAllyTarget(card)
-                    && KernelTemporaryBuffs.Timing(card) is { } buffTiming)
+                // Enumerate legal targets; complete rollouts decide whether a shielded
+                // low-HP enemy is preferable to a vulnerable attacker. Keep distinct
+                // card states, not four identical opening Strikes per seat.
+                if (occurrence > 0) continue;
+                foreach (var target in root.Targets(card))
                 {
-                    target = RolloutRun.BestBuffTarget(root, root.Targets(card), buffTiming);
-                }
-                else
-                {
-                    target = null;
-                    var lowest = int.MaxValue;
-                    foreach (var candidate in root.Targets(card))
+                    if(withering && !profitablePlay)
                     {
-                        if (candidate is not { } t) continue;
-                        var hp = root.Hp(t);
-                        if (hp >= lowest) continue;
-                        lowest = hp; target = t;
+                        var trial=root.CardBranches(card,target,1).FirstOrDefault(b=>b.Boundary.Length==0);
+                        profitablePlay=trial is not null && (trial.State.HasWon
+                            || KernelTacticalPolicy.ActionValue(root,trial.State,party,actors)>holdValue);
                     }
+                    var damage = card.DynamicVars.Values.OfType<DamageVar>().Sum(v => (double)v.BaseValue);
+                    var block = card.DynamicVars.Values.OfType<BlockVar>().Sum(v => (double)v.BaseValue);
+                    var lethal = damage > 0 && target is not null && damage >= root.Hp(target);
+                    var rider = KernelTemporaryBuffs.Timing(card) is not null
+                        ? RolloutRun.RelevantRemaining(root, party, player, card, target) * 1_000_000d
+                        : 0;
+                    var poisonReady = !CardPoisonEffects.RequiresPoison(card)
+                        || target is not null && root.Power<MegaCrit.Sts2.Core.Models.Powers.PoisonPower>(target) > 0;
+                    var poison = poisonReady ? CardPoisonEffects.TwoTicks(CardPoisonEffects.DirectAmount(card)) : -1e6;
+                    var teamSetup = KernelTeamCoordination.SetupPayoff(root, actors, card, target);
+                    var role = lethal ? ActionRole.Lethal
+                        : KernelActionCoverage.TeamDefence(card) ? ActionRole.TeamDefence
+                        : KernelActionCoverage.Cleanup(card) && KernelActionCoverage.HasHarmfulHand(root, party) ? ActionRole.Cleanup
+                        : teamSetup > 0 ? ActionRole.TeamSetup
+                        : damage + poison > 0 ? ActionRole.Damage
+                        : block > 0 ? ActionRole.Block
+                        : card.Type == CardType.Power ? ActionRole.Power
+                        : ActionRole.Other;
+                    scored.Add((new KernelTeamSearch.Action(player, card, target,
+                        CardStateKey: key, CardStateOccurrence: occurrence),
+                        (lethal ? 1e9 : 0) + damage + poison + rider
+                        + teamSetup * 1e6, role));
                 }
-                var damage = card.DynamicVars.Values.OfType<DamageVar>().Sum(v => (double)v.BaseValue);
-                var block = card.DynamicVars.Values.OfType<BlockVar>().Sum(v => (double)v.BaseValue);
-                var lethal = damage > 0 && target is not null && damage >= root.Hp(target);
-                var rider = KernelTemporaryBuffs.Timing(card) is not null
-                    ? RolloutRun.RelevantRemaining(root, party, player, card, target) * 1_000_000d
-                    : 0;
-                var role = lethal ? ActionRole.Lethal
-                    : damage > 0 ? ActionRole.Damage
-                    : block > 0 ? ActionRole.Block
-                    : card.Type == CardType.Power ? ActionRole.Power
-                    : ActionRole.Other;
-                scored.Add((new KernelTeamSearch.Action(player, card, target,
-                    CardStateKey: key, CardStateOccurrence: occurrence),
-                    (lethal ? 1e9 : 0) + damage + rider, role));
+            }
+            // A costly first step can enable a profitable sequence. A one-step
+            // veto must not promote Pass ahead of every continuation under TopK.
+            if (withering && !profitablePlay)
+            {
+                attritionSequence ??= RolloutRun.FindAttritionSequence(root, party, actors, o.Rollout ?? new());
+                profitablePlay = attritionSequence.Any(a => a.Player == player);
             }
             // NOT PLAYING IS A CANDIDATE, not an absence of one. Only added when a cheap
             // hold rule actually fires, so a normal turn still offers every card and no
@@ -194,10 +222,21 @@ public static class KernelTournament
             //
             // A mixed table suppresses this while a human is still acting: see
             // TournamentOptions.IncludeEndTurns.
-            if (o.IncludeEndTurns
-                && root.Hand(player).Any(card => RolloutRun.ShouldHold(root, party, player, card)))
-                scored.Add((new KernelTeamSearch.Action(player, null, null, EndTurn: true), 1e6,
-                    ActionRole.Pass));
+            if (o.IncludeEndTurns && (withering
+                || root.Hand(player).Any(card => RolloutRun.ShouldHold(root, party, player, card))
+                // Holding one exhaust/setup card does not mean passing the whole
+                // hand. Otherwise Pass ranks first and a tied losing rollout
+                // skips affordable Strikes while preserving a useless Wisp.
+                && !root.Hand(player).Any(card => root.CanPlay(card)
+                    && !RolloutRun.ShouldHold(root, party, player, card))))
+                // V14 live R5 ended seat one with 3 energy and useful defence:
+                // unconditional Pass coverage consumed the first rollout budget.
+                // Keep an optional pass searchable, but reserve early coverage
+                // for it only when neither a single play nor a sequence improves
+                // the current position after its native costs.
+                scored.Add((new KernelTeamSearch.Action(player, null, null, EndTurn: true),
+                    withering && profitablePlay ? -1e6 : 1e6,
+                    withering && profitablePlay ? ActionRole.Other : ActionRole.Pass));
         }
 
         // COVERAGE BEFORE SCORE. When the deadline binds — 53% of the 2026-09-22 live
@@ -223,12 +262,14 @@ public static class KernelTournament
         }
         foreach (var role in new[]
                  {
-                     ActionRole.Pass, ActionRole.Lethal, ActionRole.Potion, ActionRole.Damage,
+                     ActionRole.Pass, ActionRole.Lethal, ActionRole.Potion, ActionRole.TeamDefence, ActionRole.Cleanup, ActionRole.TeamSetup, ActionRole.Damage,
                      ActionRole.Block, ActionRole.Power, ActionRole.Other,
                  })
             TakeFirst(entry => entry.Role == role);
         foreach (var player in ranked.Select(entry => entry.Action.Player).Distinct())
             TakeFirst(entry => ReferenceEquals(entry.Action.Player, player));
+        foreach (var target in ranked.Select(entry => entry.Action.Target).Where(t => t is not null).Distinct())
+            TakeFirst(entry => ReferenceEquals(entry.Action.Target, target));
         foreach (var entry in ranked)
             if (chosen.Count >= Math.Max(1, topK)) break;
             else TakeFirst(_ => true);
@@ -288,7 +329,7 @@ public static class KernelTournament
     /// across the card types when the budget cuts the list; it is deliberately cheaper and
     /// blunter than the evaluator.
     /// </summary>
-    private enum ActionRole { Pass, Lethal, Damage, Block, Power, Other, Potion }
+    private enum ActionRole { Pass, Lethal, TeamDefence, Cleanup, TeamSetup, Damage, Block, Power, Other, Potion }
 }
 
 /// <summary>
@@ -339,6 +380,7 @@ public sealed class TournamentRun
     // the planner can keep playing a line the fresh tournament can no longer reproduce.
     private IReadOnlyList<KernelTeamSearch.Action>? bestScript;
     private IReadOnlyList<ulong[]>? bestScriptAliveStates;
+    private IReadOnlyList<Creature[]>? bestScriptEnemyStates;
     private int rollouts;
     private int cutoffs;
     private string stop = "top-k-exhausted";
@@ -362,6 +404,9 @@ public sealed class TournamentRun
 
     /// <summary>Time actually spent computing, across every Advance. Never wall time.</summary>
     private double computeMs;
+    private KernelJointTurnRun? joint;
+    private bool jointFinished;
+    private bool jointSelected;
 
     public TournamentResult? Result { get; private set; }
     public bool Done => Result is not null;
@@ -401,7 +446,7 @@ public sealed class TournamentRun
         // Rollout.Run mutates its argument. Every policy must start from an independent
         // copy of the SAME opened position, never from another policy's terminal state.
         policies = o.UsePolicyPortfolio
-            ? new[] { rolloutOptions.Policy, RolloutPolicyKind.Kill, RolloutPolicyKind.Defend, RolloutPolicyKind.Growth }.Distinct().ToArray()
+            ? new[] { RolloutPolicyKind.Tactical, rolloutOptions.Policy, RolloutPolicyKind.Kill, RolloutPolicyKind.Defend, RolloutPolicyKind.Growth }.Distinct().ToArray()
             : new[] { rolloutOptions.Policy };
     }
 
@@ -417,7 +462,31 @@ public sealed class TournamentRun
     /// returns to the frame after the slice, then collects/completes on later ticks.
     /// </summary>
     public bool Advance(TimeSpan slice)
-        => dop <= 1 ? AdvanceSerial(slice) : AdvanceParallel(slice);
+    {
+        if (Done) return true;
+        // Joint prefixes inherit the potion-only opening constraint, while
+        // retaining multi-bottle combinations after that first action.
+        if (o.EnableJointSearch && !jointFinished)
+        {
+            var watch = Stopwatch.StartNew();
+            joint ??= new KernelJointTurnRun(root, party, actors, o, Math.Max(1, budgetMs / 2));
+            var complete = joint.Advance(slice);
+            computeMs += watch.Elapsed.TotalMilliseconds;
+            if (!complete) return false;
+            jointFinished = true;
+            if (joint.Result is { FirstAction: not null, Record: not null } found)
+            {
+                bestAction = found.FirstAction; bestRecord = found.Record;
+                bestScript = found.Script; bestScriptAliveStates = found.ScriptAliveStates;
+                bestScriptEnemyStates = found.ScriptEnemyStates;
+                considered.AddRange(found.Considered);
+                rollouts += joint.Prefixes; cutoffs += found.Considered.Count(r => !r.Verified);
+                jointSelected = true;
+            }
+            return false;
+        }
+        return dop <= 1 ? AdvanceSerial(slice) : AdvanceParallel(slice);
+    }
 
     private bool AdvanceSerial(TimeSpan slice)
     {
@@ -578,7 +647,7 @@ public sealed class TournamentRun
             if (BudgetSpent(watch)) { stop = "deadline"; return OpenOutcome.Deadline; }
             // The fork happens HERE, on the caller's thread, one at a time — see the class
             // remarks for why this line may not move into the worker.
-            rollout = new RolloutRun(branch.Fork(), party, actors,
+            rollout = new RolloutRun(branch.Fork(), party, o.ContinuationActors ?? actors,
                 rolloutOptions with { Policy = policies[policyIndex++] });
             return OpenOutcome.Opened;
         }
@@ -596,16 +665,25 @@ public sealed class TournamentRun
     {
         var outcome = run.Result!;
         rollouts++;
-        considered.Add(outcome.Record);
+        // Rollouts do not drink in their suffix; the opening action is the
+        // consumed bottle and must be charged even if its effect later expires.
+        var record = outcome.Record with { ResourcesConsumed = action.Potion is null ? 0 : 1 };
+        considered.Add(record);
         if (outcome.Cutoff) cutoffs++;
-        if (bestRecord is null || TerminalComparer.Compare(outcome.Record, bestRecord) > 0)
+        if (bestRecord is null || TerminalComparer.Compare(record, bestRecord, o.Objective) > 0)
         {
-            bestRecord = outcome.Record;
+            jointSelected = false;
+            bestRecord = record;
             bestAction = action;
-            // Copy: the outcome's list belongs to a finished rollout, but copying keeps the
-            // cached script immune to any later reuse of that collection.
-            bestScript = outcome.Actions.ToArray();
-            bestScriptAliveStates = outcome.AliveStates.ToArray();
+            // The rollout starts AFTER the opening action. The live executor emits
+            // that opening now and resumes the cached script at index 1. Include it
+            // here, or the executor silently skips the first action of the suffix.
+            bestScript = new[] { action }.Concat(outcome.Actions).ToArray();
+            bestScriptAliveStates = new[]
+            {
+                party.Where(p => root.Hp(p.Creature) > 0).Select(p => p.NetId).OrderBy(id => id).ToArray(),
+            }.Concat(outcome.AliveStates).ToArray();
+            bestScriptEnemyStates = new[] { root.Enemies.ToArray() }.Concat(outcome.EnemyStates).ToArray();
         }
     }
 
@@ -618,6 +696,11 @@ public sealed class TournamentRun
             {
                 Script = bestScript,
                 ScriptAliveStates = bestScriptAliveStates,
+                ScriptEnemyStates = bestScriptEnemyStates,
+                JointNodes = joint?.Nodes ?? 0,
+                JointPrefixes = joint?.Prefixes ?? 0,
+                JointMaxActions = joint?.MaxPrefixActions ?? 0,
+                JointSelected = jointSelected,
             };
     }
 

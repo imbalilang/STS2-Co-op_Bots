@@ -43,6 +43,94 @@ internal static class CommunityDraftScenarios
             + $"{BakedCardElo.MissingKnownCount} known ids without Elo, SKIP={BakedCardElo.SkipElo:F1}, "
             + $"sha={BakedCardElo.SnapshotSha256[..16]}...).");
 
+        // THE POPULATION ELO MUST NOT VETO FOREVER. A card can reach its own rules ceiling
+        // (+8.00) plus the development bonus and still lose to an unbounded negative Elo term,
+        // and that is exactly what the live A5 rounds showed: FIGHT_ME skipped at elo-base
+        // -14.20 with rules already at +8.00, SETUP_STRIKE five times at -12.56 with +7.22 —
+        // both strength-scaling attacks the model itself flagged — while the party needed ~15
+        // turns to kill a 972-hp four-player act-1 boss and survived six to ten.
+        // See BuildValue.EloVetoCap for the bound and why it is RulesMax.
+        // CHECKED (R2): reverting the cap turns this red, verbatim:
+        //   System.Exception: Community draft regression: a strength-scaling attack the deck
+        //   already wants must not be vetoed by the population Elo alone: FIGHT_ME total=-4.20
+        //   (elo-base -14.20, rules 8.00, fit=True)
+        Clear(); Give<StrikeIronclad>(5); Give<DefendIronclad>(4); Give<Bash>(); Give<Inflame>();
+        var fightMe = BuildValue.AddDetailed(Card<FightMe>(), bot);
+        Check(fightMe.Total > 0,
+            "a strength-scaling attack the deck already wants must not be vetoed by the population "
+            + $"Elo alone: FIGHT_ME total={fightMe.Total:F2} (elo-base {fightMe.EloBase:F2}, "
+            + $"rules {fightMe.Rules:F2}, fit={fightMe.DeckFit})");
+
+        // FOUR SEATS MOVE THE BASELINE. The baked Elo is a SINGLE-PLAYER revealed-preference
+        // table; the four-player community data separates winners from losers on a different
+        // axis (outputs/mp-a10-deck-findings.md §4.1): Ironclad winners take efficient
+        // damage-plus-draw and one-card block, losers take the slow strength profile —
+        // INFLAME 0/31 winners vs 13/23 losers, MOLTEN_FIST 11% vs 61%. Without the
+        // correction the live A5 bot built exactly that losing profile (A5J1: MOLTEN_FIST
+        // three times, SHRUG_IT_OFF once, dying at the act-1 boss).
+        // CHECKED (R2): forcing MultiplayerPickLift.Term to 0 turns this red, verbatim:
+        //   System.Exception: Community draft regression: a four-seat run must steer away from
+        //   the slow strength profile: MOLTEN_FIST multiplayer=0.00
+        Clear(); Give<StrikeIronclad>(5); Give<DefendIronclad>(4); Give<Bash>();
+        var soloMolten = BuildValue.AddDetailed(Card<MoltenFist>(), bot);
+        Check(soloMolten.Multiplayer == 0,
+            $"a one-seat run must not take the four-player lift: MOLTEN_FIST multiplayer={soloMolten.Multiplayer:F2}");
+        var quartet = new[]
+        {
+            Player.CreateForNewRun<Deprived>(UnlockState.all, 11),
+            Player.CreateForNewRun<Deprived>(UnlockState.all, 12),
+            Player.CreateForNewRun<Deprived>(UnlockState.all, 13),
+            Player.CreateForNewRun<Deprived>(UnlockState.all, 14),
+        };
+        var quadCombat = new CombatState(runState: RunState.CreateForTest(quartet, seed: "COMMUNITYDRAFT4"));
+        var leader = quartet[0];
+        leader.ResetCombatState(); quadCombat.AddPlayer(leader);
+        foreach (var card in leader.Deck.Cards.ToArray()) leader.Deck.RemoveInternal(card);
+        for (var i = 0; i < 5; i++) leader.Deck.AddInternal(quadCombat.CreateCard<StrikeIronclad>(leader));
+        for (var i = 0; i < 4; i++) leader.Deck.AddInternal(quadCombat.CreateCard<DefendIronclad>(leader));
+        leader.Deck.AddInternal(quadCombat.CreateCard<Bash>(leader));
+        var quadMolten = BuildValue.AddDetailed(quadCombat.CreateCard<MoltenFist>(leader), leader);
+        var quadPommel = BuildValue.AddDetailed(quadCombat.CreateCard<PommelStrike>(leader), leader);
+        Check(quadMolten.Multiplayer < 0,
+            "a four-seat run must steer away from the slow strength profile: "
+            + $"MOLTEN_FIST multiplayer={quadMolten.Multiplayer:F2}");
+        Check(quadPommel.Multiplayer > 0,
+            "a four-seat run must steer toward efficient damage-plus-draw: "
+            + $"POMMEL_STRIKE multiplayer={quadPommel.Multiplayer:F2}");
+        Check(MultiplayerPickLift.Term("POMMEL_STRIKE", 4) > 0 && MultiplayerPickLift.Term("POMMEL_STRIKE", 1) == 0,
+            "the four-player lift must be gated on the seat count, not on the card alone.");
+        Console.WriteLine($"PASS: the four-player pick list moves {MultiplayerPickLift.CardCount} cards "
+            + "(MOLTEN_FIST down, POMMEL_STRIKE up) and leaves one-seat runs untouched.");
+
+        // DRAW RECOGNITION (strength-review §4.1 / P0-2b). The portrait's `Draw` is what gives a
+        // card the deck-building `draw` role and the reward/shop engine credit, and it was gated
+        // by a hand-maintained whitelist that 29 real `CardPileCmd.Draw` cards were missing from.
+        // Live: DRUM_OF_BATTLE was offered 5 times and taken 0 times over five A5 rounds and
+        // printed `off-route:strength-damage` with no draw/engine tag.
+        // CHECKED (R2): removing the added names from StrongDrawFirstCards turns this red,
+        // verbatim:
+        //   System.Exception: Community draft regression: DrumOfBattle draws a card and the
+        //   portrait must say so: Draw=0.
+        foreach (var (probe, name) in new (CardModel, string)[]
+                 {
+                     (quadCombat.CreateCard<DrumOfBattle>(leader), "DrumOfBattle"),
+                     (quadCombat.CreateCard<BurningPact>(leader), "BurningPact"),
+                     (quadCombat.CreateCard<DaggerThrow>(leader), "DaggerThrow"),
+                 })
+        {
+            var facts = CardProfile.Of(probe);
+            Check(facts.Draw > 0,
+                $"{name} draws a card and the portrait must say so: Draw={facts.Draw}.");
+            Check(facts.Roles.Contains("draw"),
+                $"{name} must carry the draw role so every deck-building entry can see it.");
+            Console.WriteLine($"PASS: {name} is priced as a draw card (Draw={facts.Draw}).");
+        }
+        // The other half of the classification: a CONDITIONAL draw must stay out, or the set
+        // becomes the same kind of lie it replaced.
+        Check(CardProfile.Of(quadCombat.CreateCard<Restlessness>(leader)).Draw == 0,
+            "RESTLESSNESS draws only when it is the ONLY card in hand; pricing it as a plain draw "
+            + "card is the over-correction this classification exists to avoid.");
+
         // Hard guards precede the Elo lookup and stay exact. The 0-100 score is
         // never consulted, so a card with a strong community score but no Elo
         // still falls back rather than being invented as zero.

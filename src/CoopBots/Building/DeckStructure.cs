@@ -50,7 +50,8 @@ internal static class DeckStructure
         int Size, int Attacks, int Blocks, int Aoes, int Draws, int Energies,
         int Powers, int Setup, int Immediate, int Expensive, int Cheap, int Unplayable,
         int Unknown, double AverageCost, IReadOnlyDictionary<string, int> IdCounts,
-        IReadOnlyDictionary<string, int> RoleCounts, int StableMaxEnergy);
+        IReadOnlyDictionary<string, int> RoleCounts, int StableMaxEnergy,
+        double BlockPerHand = 0, double BlockEfficiency = 0, double NetDraw = 0);
 
     /// <summary>
     /// One pass over the deck. Curses, statuses and unplayable cards are counted
@@ -67,6 +68,7 @@ internal static class DeckStructure
         int attacks = 0, blocks = 0, aoes = 0, draws = 0, energies = 0, powers = 0;
         int setup = 0, immediate = 0, expensive = 0, cheap = 0, unplayable = 0, unknown = 0;
         var totalCost = 0.0;
+        double totalBlock = 0, blockCost = 0, netDraw = 0;
 
         foreach (var card in deck)
         {
@@ -83,7 +85,13 @@ internal static class DeckStructure
             foreach (var role in facts.Roles) roles[role] = roles.GetValueOrDefault(role) + 1;
             if (facts.Roles.Contains("damage")) attacks++;
             if (facts.Roles.Contains("aoe")) aoes++;
-            if (facts.Roles.Contains("block")) blocks++;
+            if (facts.Roles.Contains("block"))
+            {
+                blocks++;
+                totalBlock += facts.Block;
+                blockCost += Math.Max(1, facts.Cost);
+            }
+            netDraw += CardProfile.NetDraw(card, facts);
             if (facts.Roles.Contains("draw")) draws++;
             if (facts.Roles.Contains("energy")) energies++;
             if (facts.Roles.Contains("power")) powers++;
@@ -97,7 +105,11 @@ internal static class DeckStructure
         var useful = Math.Max(1, deck.Count - unplayable - unknown);
         return new Summary(deck.Count, attacks, blocks, aoes, draws, energies, powers,
             setup, immediate, expensive, cheap, unplayable, unknown, totalCost / useful, ids, roles,
-            stableMaxEnergy);
+            stableMaxEnergy,
+            // Expected block in a five-card hand, discounted by the energy curve.
+            totalBlock / Math.Max(1, deck.Count) * HandSample
+                * Math.Min(1, Math.Max(1, stableMaxEnergy) / Math.Max(1, totalCost / useful * HandSample)),
+            totalBlock / Math.Max(1, blockCost), netDraw);
     }
 
     /// <summary>
@@ -118,6 +130,11 @@ internal static class DeckStructure
         if (deck.AverageCost <= supplyPerCard) return 0;
         return Math.Clamp((deck.AverageCost - supplyPerCard) / EnergyPressureScale, 0.0, 1.0);
     }
+
+    internal static double DefenceQualityGain(CardProfile.Facts facts, Summary deck)
+        => deck.Size < MinimumSize || deck.BlockPerHand >= 8 ? 0
+            : Math.Clamp((8 - deck.BlockPerHand)
+                * (facts.Block / Math.Max(1, facts.Cost) - deck.BlockEfficiency) / 5, 0, 4);
 
     internal static bool IsSetup(CardProfile.Facts facts)
         => facts.Vulnerable > 0 || facts.Weak > 0 || facts.StrengthDown > 0
@@ -140,6 +157,20 @@ internal static class DeckStructure
         if (facts.Unplayable || card.Type is CardType.Curse or CardType.Status) return 0;
 
         var adjust = 0.0;
+        // Our building heuristic: four starter Defends are not four strong blocks.
+        // Reward a quality upgrade when expected defence is thin; do not ask for
+        // more copies of the same weak block just to satisfy a count quota.
+        var defenceGain = DefenceQualityGain(facts, deck);
+        if (defenceGain >= 0.05)
+        {
+            adjust += defenceGain;
+            reasons.Add($"bottleneck:defence-quality+{defenceGain:F1}");
+        }
+        if (CardProfile.NetDraw(card, facts) > 0 && deck.NetDraw < 2)
+        {
+            adjust += 2;
+            reasons.Add("bottleneck:needs-hand-advantage");
+        }
         var pressure = EnergyPressure(deck);
         if (facts.Cost >= 2 && pressure >= 0.6)
         {

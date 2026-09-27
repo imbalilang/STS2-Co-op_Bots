@@ -114,6 +114,37 @@ public static class LobbyBotService
         return true;
     }
 
+    /// <summary>
+    /// Set an already-seated player's character. Needed for the HOST seat: the lobby creates
+    /// its entry in <c>AddLocalHostPlayer</c>, which takes no character, so without this the
+    /// host always plays whatever the lobby defaults to and a "mixed party" would silently be
+    /// "the default character plus three chosen ones" — a measurement that looks like the one
+    /// you asked for while being a different one.
+    /// </summary>
+    internal static bool SetCharacter(StartRunLobby lobby, ulong netId, CharacterModel character)
+    {
+        // THE LOBBY ENTRY IS A STRUCT, SO THE CHANGE HAS TO BE WRITTEN BACK. Reflecting a field
+        // write onto the boxed copy mutates the box and then throws it away — the list keeps the
+        // old value. The game's own character change does exactly this write-back
+        // (`StartRunLobby` finds the index, sets `Players[i].character`, then assigns
+        // `Players[i] = entry`). Without it the host seat silently kept the lobby default and
+        // NOTHING logged a failure, because the old code only checked that the entry was FOUND:
+        // measured 2026-09-27, `party=SILENT,SILENT,IRONCLAD,IRONCLAD` produced
+        // IRONCLAD,SILENT,IRONCLAD,IRONCLAD (hp=[80/80,70/70,80/80,80/80]) — one Silent instead
+        // of two. The all-Ironclad default this harness shipped with made that indistinguishable
+        // from success for every batch before it (R5b).
+        var players = Players(lobby);
+        for (var index = 0; index < players.Count; index++)
+        {
+            var entry = players[index];
+            if (entry is null || Id(entry) != netId) continue;
+            SetField(entry, "character", character);
+            players[index] = entry;
+            return true;
+        }
+        return false;
+    }
+
     public static bool RemoveLast(StartRunLobby lobby, out string error)
     {
         error = string.Empty;

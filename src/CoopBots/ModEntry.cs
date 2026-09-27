@@ -1,4 +1,4 @@
-﻿using System.Runtime.CompilerServices;
+using System.Runtime.CompilerServices;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Modding;
@@ -16,7 +16,7 @@ public static class ModEntry
     /// </summary>
     public static readonly string Version = ResolveVersion();
 
-    internal const string FallbackVersion = "0.39.0";
+    internal const string FallbackVersion = "0.39.1";
 
     private static string ResolveVersion()
     {

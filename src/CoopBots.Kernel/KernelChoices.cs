@@ -123,6 +123,25 @@ public sealed partial class KernelSession
             if (choiceOrdinals is null) return null;
             var spec = TurnStartChoiceSupport.BuildSpec(simulator, owner, request);
             var options = CardChoiceSupport.BuildChoices(spec, null, 8, 8).Take(8).ToArray();
+            // The upstream first representative can treat Wither's printed
+            // self-damage like attack value. Keep the same bounded choices,
+            // but make removing harmful hand cards the default representative.
+            // Recorded ordinals replay through this same deterministic order.
+            if (spec.SourcePile == PileType.Hand && spec.Effect is PlanChoiceEffect.Discard
+                or PlanChoiceEffect.DiscardAndDraw or PlanChoiceEffect.Exhaust)
+            {
+                double CleanupValue(PlanCardToken token)
+                {
+                    var selected = spec.Options.FirstOrDefault(c => CardChoiceSupport.ChoiceCardKey(c) == token.StateKey);
+                    if (selected is null) return 0;
+                    var c = selected.Preview;
+                    if (c.Type is not (CardType.Status or CardType.Curse)) return -.01;
+                    var damage = c.HasTurnEndInHandEffect && c.DynamicVars.TryGetValue("Damage", out var v)
+                        ? (double)v.BaseValue : 0;
+                    return 1 + damage;
+                }
+                options = options.OrderByDescending(option => option.Cards.Sum(CleanupValue)).ToArray();
+            }
             choiceCounts.Add(options.Length);
             var index = choicePosition < choiceOrdinals.Length ? choiceOrdinals[choicePosition] : 0;
             choicePosition++;

@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
@@ -29,7 +29,10 @@ public sealed partial class KernelSession
     private int SimulatedPotionSlot(PotionModel simulated)
     {
         var owner = simulated.Owner;
-        for (var slot = 0; slot < owner.Potions.Count(); slot++)
+        // Native Player.GetPotionSlotIndex scans the slot list, including holes.
+        // Counting bottles instead hid slot 2 after slot 0 was spent: V10 live
+        // predicted a death but could never model the remaining CureAll there.
+        for (var slot = 0; slot < owner.PotionSlots.Count; slot++)
             if (ReferenceEquals(Combat.GetPotionAtSlot(owner, slot), simulated)) return slot;
         return -1;
     }
@@ -132,6 +135,14 @@ public sealed partial class KernelSession
         }
         return null;
     }
+
+    // Hand exposes stable originals so Play can resolve identity across forks.
+    // Action keys must instead describe the branch's mutable preview: upgrades,
+    // cost changes and afflictions may have changed since that original was captured.
+    internal string CardStateKey(CardModel source)
+        => simulator.State.FindCard(source) is { } predicted
+            ? CardChoiceSupport.ChoiceCardKey(predicted)
+            : CardChoiceSupport.ChoiceCardKey(source);
 
     /// <summary>
     /// The same identity lookup against THIS branch's own simulated hand, for replay.
@@ -406,11 +417,18 @@ public sealed partial class KernelSession
     /// </para>
     /// </remarks>
     public bool HorizonClosed { get; private set; }
+    // Some attacks become group attacks only inside the predicted branch.
+    // Delegate to the same upstream target resolver used by native simulation.
+    internal TargetType CardTargetType(CardModel source)
+    {
+        var card = simulator.State.FindCard(source);
+        return card is null ? source.TargetType : simulator.GetTargetType(card);
+    }
     public IReadOnlyList<Creature?> Targets(CardModel source)
     {
         var card = simulator.State.FindCard(source);
         if (card is null) return [];
-        return card.Preview.TargetType switch
+        return simulator.GetTargetType(card) switch
         {
             TargetType.AnyEnemy => Enemies.Cast<Creature?>().ToArray(),
             TargetType.AnyPlayer => Combat.Players.Where(p => Hp(p.Creature) > 0).Select(p => (Creature?)p.Creature).ToArray(),
@@ -437,13 +455,36 @@ public sealed partial class KernelSession
     public int Block(Creature creature) => simulator.State.GetCreature(creature).Block;
     public int Energy(Player player) => simulator.State.GetPlayerCombatState(player).Energy;
     public IReadOnlyList<CardModel> Hand(Player player) => simulator.State.GetPlayerCombatState(player).Hand.Cards.Select(c => c.Original).ToArray();
+
+    // Before deploying a cached EndTurn, the live hand can contain an affordable
+    // attack absent from the prediction. Replan only for a resolved improvement;
+    // this must not force attacks into lethal thorns or a sleeping enemy.
+    public bool HasBeneficialAttack(Player player)
+    {
+        if (!CanFork || !CanAct(player)) return false;
+        var before = KernelTacticalPolicy.Value(this, Party);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var card in Hand(player))
+        {
+            if (card.Type != CardType.Attack || !CanPlay(card) || !seen.Add(CardStateKey(card))) continue;
+            foreach (var target in Targets(card))
+            {
+                var branch = CardBranches(card, target, maximumBranches: 1).FirstOrDefault(b => b.Boundary.Length == 0);
+                if (branch is not null && KernelTacticalPolicy.ActionValue(this, branch.State, Party, Party) > before + 0.01)
+                    return true;
+            }
+        }
+        return false;
+    }
     public IReadOnlyList<CardModel> Exhaust(Player player) => simulator.State.GetPlayerCombatState(player).ExhaustPile.Cards.Select(c => c.Original).ToArray();
     public IReadOnlyList<CardModel> Discard(Player player) => simulator.State.GetPlayerCombatState(player).DiscardPile.Cards.Select(c => c.Original).ToArray();
     public IReadOnlyList<CardModel> DrawPile(Player player) => simulator.State.GetPlayerCombatState(player).DrawPile.Cards.Select(c => c.Original).ToArray();
     public int OrbCount(Player player) => simulator.State.GetPlayerCombatState(player).OrbQueue.Orbs.Count;
     public bool HasOsty(Player player) => Combat.GetOsty(player) is not null;
+    public int HeldPotionCount(Player player) => Enumerable.Range(0, player.MaxPotionCount)
+        .Count(slot => Combat.GetPotionAtSlot(player, slot) is not null);
     public IReadOnlyList<PotionModel> UsablePotions(Player player) => player.Potions
-        .Where(p => !p.IsQueued && !p.HasBeenRemovedFromState && p.PassesCustomUsabilityCheck
+        .Where(p => Combat.FindPotion(p) is not null && !p.IsQueued && !p.HasBeenRemovedFromState && p.PassesCustomUsabilityCheck
             && p.Usage is PotionUsage.CombatOnly or PotionUsage.AnyTime)
         .ToArray();
     /// <summary>

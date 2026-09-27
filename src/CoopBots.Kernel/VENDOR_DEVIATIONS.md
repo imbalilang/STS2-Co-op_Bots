@@ -53,6 +53,18 @@ adapted = text.replace('CombatSolver.', 'CoopBots.Kernel.Vendor.').replace(
 
 ## 偏离清单
 
+### D5 — 暴怒复制与现有多人修复的重导入保持（2026-09-27）
+
+游戏 `Outrage.OnPlay` 为每个存活玩家（包括施法者）调用 `CreateCloneForPlayer`。
+模拟原先生成基础版，丢失升级和修饰；现改为从 `playedCard` 克隆，排除阵亡玩家，保留生成者与接收者语义。
+0.33.9 和 0.41 导入器均包含此补全。
+
+重导入检查同时发现 0.41 管线会重新引入 AllForOne 分支错位，并丢失已经存在的
+Concoct / Blaze / Coordinate / Fade 应用与临时属性派发。新增精确锚定的
+`preserve_verified_registry_fixes` 在位置补丁之后恢复这些既有修复；未改变其生产行为。
+完整生成的 `CardEffectSpecRegistry.cs` 与生产文件逐字符一致。证据与差量表见
+`work/strength-20260927-v3/implementation.md`。
+
 ### D1 — 多人适配整体移植到 0.41(2026-09-19)
 
 0.41 不只是加常量:它把若干机制换了形状,所以旧补丁不能原样套用。逐条核对后:

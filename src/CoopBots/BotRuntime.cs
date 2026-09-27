@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -832,7 +832,15 @@ public static class BotRuntime
                     Log.Info($"CoopBots route: refusing to travel to {skipped} — {why}; "
                         + "entering it throws and strands the run (vanilla, not route preference).");
                 var allBots = humanVotes.Count == 0 && bots.Count == state.Players.Count;
-                if (RoutePlanner.Plan(state, player, teamRoute: allBots) is not { Path.Count: > 1 } route)
+                // The ranking is a DIAGNOSTIC the router fills in AFTER it has decided: which
+                // nodes the team could have taken, and what each was worth in the DP's own
+                // units. It is the only way to tell "the elite was the only way forward" from
+                // "the elite won the comparison" — two 2026-09-26 runs died at an act-1 elite
+                // while the gate priced that elite at -45, and neither question was answerable
+                // from the log, which printed only the winning coordinate.
+                var ranking = new List<(MapPoint Child, double Total)>();
+                if (RoutePlanner.Plan(state, player, teamRoute: allBots, ranking: ranking)
+                    is not { Path.Count: > 1 } route)
                 {
                     // Name EVERY refused node, not just the start's children: the blocking one is
                     // usually deeper, and a silent children-log nearly cleared the exclusion that
@@ -869,6 +877,21 @@ public static class BotRuntime
                         ? state.Map.StartingMapPoint.coord
                         : route.Path[1].coord,
                 };
+                // One line per map step, from the first driven seat only: all driven seats
+                // compute the same all-bot route, so four lines would be one fact.
+                if (ReferenceEquals(player, bots[0]))
+                {
+                    var ranked = ranking.OrderByDescending(entry => entry.Total)
+                        .Select(entry => $"{entry.Child.PointType}{entry.Child.coord}"
+                            + (double.IsFinite(entry.Total) ? $"={entry.Total:F1}" : "=unreachable"));
+                    // The gate's own input as well: the elite/rest branches read the party's
+                    // WORST seat, so a reader has to see that number next to the values.
+                    var minHp = state.Players.Where(p => p.Creature.IsAlive)
+                        .Select(p => (double)p.Creature.CurrentHp / Math.Max(1, p.Creature.MaxHp))
+                        .DefaultIfEmpty(1).Min();
+                    Log.Info($"CoopBots route: chose {route.Path[1].PointType}{route.Path[1].coord} "
+                        + $"(minHp={minHp:P0}); candidates: " + string.Join(" ", ranked));
+                }
             }
             if (humanVote.Value.mapGenerationCount != manager.MapSelectionSynchronizer.MapGenerationCount)
             { ReportMapWait("vote-generation-race"); return false; }

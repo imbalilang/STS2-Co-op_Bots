@@ -43,8 +43,16 @@ internal static class RemovalPlan
             var pool = unprotected.Count > 0 ? unprotected : evaluated;
             // A stable original order for identical copies, with the card id as
             // the deterministic tie-break the rest of the deck tools use.
+            //
+            // AN ENCHANTMENT BREAKS THE TIE BEFORE POSITION DOES. Two otherwise equal copies
+            // must never have the enchanted one removed because it happened to sit earlier in
+            // the deck (community report 2026-09-23: a Replay Strike went before plain
+            // Strikes). This is the last line of defence; BuildValue.Remove should already
+            // score the enchanted copy lower, but a tie is exactly when the copy order must
+            // not decide.
             var chosen = pool
                 .OrderByDescending(entry => entry.Value)
+                .ThenBy(entry => entry.Card.Enchantment is not null ? 1 : 0)
                 .ThenBy(entry => entry.Card.Id.Entry, StringComparer.Ordinal)
                 .ThenBy(entry => remaining.IndexOf(entry.Card))
                 .First();

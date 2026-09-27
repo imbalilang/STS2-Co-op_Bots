@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -43,8 +43,11 @@ internal sealed class KernelCombatPlanner
     // turn is what a team does when it has run out of cards. Without this, the shortcut
     // skips the poll, the plan's EndTurn is never emitted, and the cursor never consumes
     // the boundary entry that turn was supposed to have produced.
-    internal bool HasPendingStep => ContinuationSource is { } script
-        && script.Index < script.Result.Actions.Count;
+    // Both planners own their pending steps. A5BASE202's boss log showed idle fallback
+    // ending a round, followed by that round's unconsumed EndTurn on the NEXT round.
+    // Checking only ContinuationSource hid the tournament line from BotRuntime.
+    internal bool HasPendingStep => HasTournamentScript || (ContinuationSource is { } script
+        && script.Index < script.Result.Actions.Count);
     // Invariant probes for the kernel regression. "A script exists" and "a script was
     // explicitly given up" are the two facts no live log could state directly: three
     // separate Reset() call sites in the runtime destroyed the script silently, and the
@@ -610,6 +613,7 @@ internal sealed class KernelCombatPlanner
     // host died earlier than the script's line, the old code silently skipped the dead seat's
     // steps and kept using a VICTORY record priced before the death, overriding fresh WIPEs.
     private IReadOnlyList<ulong[]>? tournamentScriptAliveStates;
+    private IReadOnlyList<Creature[]>? tournamentScriptEnemyStates;
 
     /// <summary>
     /// How much the tournament is allowed to spend, as a player-facing tier.
@@ -2518,6 +2522,7 @@ internal sealed class KernelCombatPlanner
 
     private TournamentPhase tournamentPhase;
     private TournamentRun? tournamentRun;
+    private KernelPotionPlanAudit? tournamentPotionAudit;
     private TournamentResult? tournamentFirstPass;
     private KernelSession? tournamentRoot;
     private IReadOnlyList<Player>? tournamentParty;
@@ -2531,6 +2536,7 @@ internal sealed class KernelCombatPlanner
     {
         tournamentPhase = TournamentPhase.Idle;
         tournamentRun = null;
+        tournamentPotionAudit = null;
         tournamentFirstPass = null;
         tournamentRoot = null;
         tournamentParty = null;
@@ -2544,6 +2550,8 @@ internal sealed class KernelCombatPlanner
     /// </summary>
     private bool HasTournamentScript =>
         tournamentScript is { Count: > 0 } && tournamentScriptIndex < tournamentScript.Count;
+    private int tournamentScriptRound;
+    private bool tournamentReplanNextRound;
 
     /// <summary>
     /// The boundary the stored-line feature was specified with: a fresh ending only displaces a
@@ -2561,16 +2569,35 @@ internal sealed class KernelCombatPlanner
     /// </summary>
     private void AdoptTournamentScript(TournamentResult result, CombatState combat)
     {
+        if (result.FirstAction?.Potion is { } openingBottle && result.Record is not { Victory: true, Verified: true }
+            && KernelPotionOpportunity.LastChance(KernelSession.Capture(combat), openingBottle.Owner, combat.Players.ToArray(), result.Record))
+        {
+            // Re-read an actual last-chance bottle so another lifesaving effect
+            // remains available. A healthy party's loss many rounds away is not
+            // an emergency: preserve its joint card/potion plan to avoid stacking
+            // a new stun on top of a temporary control bottle just used.
+            ClearTournamentScript("replan after emergency potion");
+            ReportSearchLine("emergency potion: resolve before planning the next action");
+            return;
+        }
         if (result.Script is { Count: > 1 } script
             && result.ScriptAliveStates is { Count: > 1 } aliveStates
             && aliveStates.Count == script.Count
+            // Both predictions or neither: a script adopted without its enemy prediction would
+            // replay past a kill that did not happen, which is the defect this array exists for.
+            && result.ScriptEnemyStates is { Count: > 1 } enemyStates
+            && enemyStates.Count == script.Count
             && result.Record is not null)
         {
             tournamentScript = script;
             tournamentScriptRecord = result.Record;
             tournamentScriptIndex = 1;
             tournamentScriptCombat = combat;
+            tournamentScriptRound = combat.RoundNumber;
+            tournamentReplanNextRound = result.JointNodes > 0
+                && result.Record is not { Victory: true, Verified: true };
             tournamentScriptAliveStates = aliveStates;
+            tournamentScriptEnemyStates = result.ScriptEnemyStates;
             ReportSearchLine($"tournament script cached: steps={script.Count} "
                 + $"ending={Describe(result.Record)}");
             return;
@@ -2587,6 +2614,7 @@ internal sealed class KernelCombatPlanner
         tournamentScriptIndex = 0;
         tournamentScriptCombat = null;
         tournamentScriptAliveStates = null;
+        tournamentScriptEnemyStates = null;
     }
 
     private static ulong[] LivingSeats(CombatState combat)
@@ -2595,6 +2623,69 @@ internal sealed class KernelCombatPlanner
 
     private static bool SameSeats(ulong[] a, ulong[] b)
         => a.Length == b.Length && a.SequenceEqual(b);
+
+    // The live counterpart of <c>KernelSession.Enemies</c>, which is what the roll-out snapshots:
+    // hittable AND alive. Both sides must use the same definition or the comparison would drop
+    // a script for a difference that is not one.
+    private static Creature[] LivingEnemies(CombatState combat)
+        => combat.HittableEnemies.Where(enemy => enemy.IsAlive).ToArray();
+
+    // WHAT THE DROP REASON MUST SAY (S7: instrument before changing a comparison).
+    // Counting the drops told us the check fires 20-34 times a run and that more than half
+    // land in the FIRST HALF of a script — i.e. the plan diverges right after it is made, not
+    // when it runs out at the end. Counting cannot tell WHY, and there are two very different
+    // repairs behind it:
+    //   * the simulator's damage model is off, so an enemy dies a step earlier or later than
+    //     predicted (the enemy is the same one, the TIMING differs), or
+    //   * the index/slot mapping is off, so the comparison is asking about the wrong step or
+    //     the wrong creature.
+    // Missing/extra NAMES separate those: a name that is missing now and present later is a
+    // timing error; a name that is neither side's is a mapping error. Prefix is unchanged so
+    // existing grep patterns keep matching; the parenthetical is new.
+    private string EnemySetDiff(IReadOnlyList<Creature[]>? enemyStates, CombatState combat)
+    {
+        var live = LivingEnemies(combat);
+        if (enemyStates is null || tournamentScriptIndex >= enemyStates.Count)
+            return "the live enemy set no longer matches the script step "
+                + $"(step {tournamentScriptIndex + 1}: no enemy prediction at this index; live={live.Length})";
+        var want = enemyStates[tournamentScriptIndex];
+        var missing = want.Where(e => !live.Contains(e, ReferenceEqualityComparer.Instance))
+            .Select(Name).ToArray();
+        var extra = live.Where(e => !want.Contains(e, ReferenceEqualityComparer.Instance))
+            .Select(Name).ToArray();
+        return "the live enemy set no longer matches the script step "
+            + $"(step {tournamentScriptIndex + 1}/{enemyStates.Count}: live={live.Length} expected={want.Length} "
+            + $"missing=[{string.Join(",", missing)}] extra=[{string.Join(",", extra)}])";
+    }
+
+    // The party-side counterpart. A death earlier or later than the script planned is the same
+    // distinction as above, and a netId that is on neither side means the slot mapping is wrong.
+    private string SeatSetDiff(IReadOnlyList<ulong[]>? aliveStates, CombatState combat)
+    {
+        var live = LivingSeats(combat);
+        if (aliveStates is null || tournamentScriptIndex >= aliveStates.Count)
+            return "the live living-seat set no longer matches the script step "
+                + $"(step {tournamentScriptIndex + 1}: no seat prediction at this index; live={live.Length})";
+        var want = aliveStates[tournamentScriptIndex];
+        return "the live living-seat set no longer matches the script step "
+            + $"(step {tournamentScriptIndex + 1}/{aliveStates.Count}: live={live.Length} expected={want.Length} "
+            + $"missing=[{string.Join(",", want.Except(live))}] extra=[{string.Join(",", live.Except(want))}])";
+    }
+
+    private static string Name(Creature creature) => creature.Monster?.Id.Entry ?? "?";
+
+    // Reference equality, not a slot number: inside one combat the live Creature objects are
+    // the keys the simulator resolves against, so identity is what "the same enemy" means on
+    // both sides of this comparison.
+    private static bool SameEnemies(Creature[] a, Creature[] b)
+        => a.Length == b.Length && a.All(enemy => b.Contains(enemy, ReferenceEqualityComparer.Instance));
+
+    /// <summary>
+    /// Whether the step's own enemy expectation still describes the live board. Named and
+    /// internal so RunContinuationInvariants can assert it directly; the emitter calls it.
+    /// </summary>
+    internal static bool EnemiesStillMatch(Creature[] expected, CombatState combat)
+        => SameEnemies(expected, LivingEnemies(combat));
 
     /// <summary>
     /// Emit the cached script's next step when it is still executable. A refusal drops the
@@ -2615,6 +2706,11 @@ internal sealed class KernelCombatPlanner
             ClearTournamentScript("the combat changed");
             return false;
         }
+        if (tournamentReplanNextRound && combat.RoundNumber != tournamentScriptRound)
+        {
+            ClearTournamentScript("new round: reconsider a non-winning continuation with joint search");
+            return false;
+        }
         // EACH SCRIPT STEP CARRIES ITS OWN LIVING-SEAT PREDICTION. A script is allowed to plan a
         // death: the next step may legitimately expect a seat to be gone. Continue only while the
         // live set matches that step's prediction; a death earlier/later than the script planned,
@@ -2623,7 +2719,20 @@ internal sealed class KernelCombatPlanner
             || tournamentScriptIndex >= aliveStates.Count
             || !SameSeats(aliveStates[tournamentScriptIndex], LivingSeats(combat)))
         {
-            ClearTournamentScript("the live living-seat set no longer matches the script step");
+            ClearTournamentScript(SeatSetDiff(tournamentScriptAliveStates, combat));
+            return false;
+        }
+        // THE SAME CHECK FOR THE OTHER SIDE OF THE BOARD. A script is allowed to plan a kill;
+        // if the enemy it planned to kill is still standing, every later step that aims at a
+        // DIFFERENT enemy is now aimed wrong. Only the party side was ever compared, so this
+        // went unnoticed live on 2026-09-26: a two-enemy Toadpole fight where the party spent
+        // three rounds on the healthy one and finished the near-dead one last, taking its
+        // damage the whole time. See RunContinuationInvariants for the assertion.
+        if (tournamentScriptEnemyStates is not { } enemyStates
+            || tournamentScriptIndex >= enemyStates.Count
+            || !EnemiesStillMatch(enemyStates[tournamentScriptIndex], combat))
+        {
+            ClearTournamentScript(EnemySetDiff(tournamentScriptEnemyStates, combat));
             return false;
         }
         if (tournamentScriptIndex >= script.Count)
@@ -2647,6 +2756,12 @@ internal sealed class KernelCombatPlanner
                 // valid stored lines, each drop followed by a full fresh tournament (both
                 // passes) whose only finding was the same WIPE — that churn is the stutter.
                 // The step is valid; only its submission is gated on the humans' end-turn.
+                return false;
+            }
+            if (next.Player.PlayerCombatState!.Hand.Cards.Any(c => c.Type == CardType.Attack && c.CanPlay())
+                && KernelSession.Capture(combat).HasBeneficialAttack(next.Player))
+            {
+                ClearTournamentScript("end-turn would leave a useful payable attack; replan from live hand");
                 return false;
             }
             ConfirmedEndTurn = next.Player;
@@ -2695,7 +2810,7 @@ internal sealed class KernelCombatPlanner
         }
         if (card is null || !card.CanPlayTargeting(next.Target))
         {
-            ClearTournamentScript("the planned card is no longer playable");
+            ClearTournamentScript($"the planned card is no longer playable: card={next.Card.Id.Entry} found={card is not null} energy={next.Player.PlayerCombatState?.Energy} target={next.Target?.CombatId} hand={string.Join(',', next.Player.PlayerCombatState?.Hand.Cards.Select(c => c.Id.Entry) ?? [])}");
             return false;
         }
         tournamentScriptIndex++;
@@ -2732,11 +2847,9 @@ internal sealed class KernelCombatPlanner
             tournamentRoot = root;
             tournamentActors = actors;
             tournamentParty = root.Party.Count > 0 ? root.Party : actors;
-            // ASK TWICE. First without potions: if the line already wins, there is nothing worth
-            // spending a cross-fight resource on. Only when it does not win is the question
-            // "would a potion change this?" even meaningful — and that is the case where it is
-            // worth paying for a second tournament. The potion pass is the same options with the
-            // switch flipped, built when that phase starts.
+            // Price bottles as cross-fight resources, but allow them to save HP in
+            // a costly victory as well as rescue a losing line. Second-pass work is
+            // skipped when there is no modeled bottle or no room to earn its price.
             tournamentOptions = new TournamentOptions(TournamentDriveTopK,
                 Rollout: new RolloutOptions(RolloutPolicyKind.Kill, Seed: combat.RoundNumber),
                 IncludePotions: false,
@@ -2745,15 +2858,37 @@ internal sealed class KernelCombatPlanner
                 // tournament per frame. All-bot tables are always allowed.
                 IncludeEndTurns: TournamentCanEndTurn(combat, humansFinished),
                 // The second pass is this with the potion switch flipped, so it inherits this too.
-                MaxDegreeOfParallelism: TournamentParallelism);
+                MaxDegreeOfParallelism: TournamentParallelism,
+                Objective: KernelPotionPolicy.Objective,
+                ContinuationActors: combat.Players.Where(p => actors.Contains(p) || AutoPilot.Drives(p.NetId)).ToArray(),
+                EnableJointSearch: true);
             tournamentPhase = TournamentPhase.NoPotions;
         }
         var options = tournamentPhase == TournamentPhase.NoPotions
             ? tournamentOptions!
-            : tournamentOptions! with { IncludePotions = true };
+            : tournamentOptions! with { IncludePotions = true, PotionsOnly = true };
         tournamentRun = new TournamentRun(tournamentRoot!, tournamentParty!, tournamentActors!,
             options, TournamentDriveBudgetMs);
         tournamentPasses++;
+        return true;
+    }
+
+    private bool TryPotionOpportunity(CombatState combat, IReadOnlyList<Player> actors,
+        TerminalRecord? forecast, IReadOnlyList<KernelTeamSearch.Action>? plan = null)
+    {
+        var party = combat.Players.ToArray();
+        if (!actors.Any(p => p.Potions.Any() && (KernelPotionOpportunity.HasFullBelt(p)
+            || KernelPotionOpportunity.PredictedDeath(p, party, forecast)))) return false;
+        var root = KernelSession.Capture(combat);
+        if (!root.CanFork) return false;
+        var choice = KernelPotionOpportunity.Choose(root, actors, party, forecast, plan);
+        if (choice is null) return false;
+        var potion = choice.Action.Potion!;
+        ClearTournamentScript($"potion opportunity: {choice.Reason}");
+        ConfirmedPotion = new PotionPlan(potion, choice.Action.Target, choice.Reason);
+        noActionStamp = "";
+        tournamentDriven++;
+        ReportSearchLine($"potion opportunity: {potion.Id.Entry} {choice.Reason}");
         return true;
     }
 
@@ -2770,6 +2905,10 @@ internal sealed class KernelCombatPlanner
                 ClearTournament();
                 tournamentPoint = point;
                 tournamentWatch = Stopwatch.StartNew();
+                if (TryPotionOpportunity(combat, actors,
+                    ReferenceEquals(tournamentScriptCombat, combat) ? tournamentScriptRecord : null,
+                    ReferenceEquals(tournamentScriptCombat, combat) ? tournamentScript?.Skip(tournamentScriptIndex).ToArray() : null))
+                    return FinishTournament(TournamentOutcome.Decided);
             }
 
             while (true)
@@ -2815,12 +2954,23 @@ internal sealed class KernelCombatPlanner
                 }
 
                 var result = tournamentRun.Result!;
+                if (tournamentPhase == TournamentPhase.Potions)
+                {
+                    tournamentPotionAudit ??= new KernelPotionPlanAudit(tournamentRoot!, tournamentParty!, result);
+                    if (!tournamentPotionAudit.Advance(TimeSpan.FromMilliseconds(TournamentSliceMs))) return TournamentOutcome.Pending;
+                    result = tournamentPotionAudit.Result!;
+                    if (tournamentPotionAudit.Removed)
+                        Log.Info("CoopBots potion: removed redundant opening bottle after replaying the same card plan without it");
+                }
+                Log.Info($"CoopBots joint search: phase={tournamentPhase} nodes={result.JointNodes} "
+                    + $"prefixes={result.JointPrefixes} maxActions={result.JointMaxActions} selected={result.JointSelected} "
+                    + $"potions={result.Record?.ResourcesConsumed ?? 0}");
                 if (tournamentPhase == TournamentPhase.NoPotions)
                 {
                     tournamentFirstPass = result;
-                    if (result.Record?.Victory != true)
+                    if (KernelPotionPolicy.WorthComparing(tournamentRoot!, tournamentActors!, tournamentParty!, result.Record))
                     {
-                        // Not a win without potions, so the second question is worth paying for.
+                        // Losing or costly victory: compare the resource-adjusted ending.
                         tournamentRun = null;
                         tournamentPhase = TournamentPhase.Potions;
                         continue;
@@ -2835,12 +2985,12 @@ internal sealed class KernelCombatPlanner
                     // ending under the `noPotion=` label — a diagnostic that reports the wrong
                     // value is worse than none, and this one nearly shipped with exactly that bug.
                     var firstPass = tournamentFirstPass!.Record;
-                    // A bottle is only worth spending when it turns a NON-WIN first pass
-                    // into a real victory. A first-pass null/cutoff must not make any
-                    // second-pass record "better": measured live 2026-09-22, `noPotion=none`
-                    // plus a SPEED_POTION cutoff at the end of the turn spent the bottle
-                    // after the last card, where temporary Dexterity could not do anything.
-                    var better = result.Record is { Victory: true };
+                    // When every route loses, try a bottle that improves combat
+                    // progress or has a useful resolved effect on an equal wipe.
+                    var immediateBenefit = firstPass is { Verified: true, Victory: false }
+                        ? KernelPotionPolicy.ImmediateBenefit(tournamentRoot!, tournamentParty!, result.FirstAction, result.Script)
+                        : 0;
+                    var better = KernelPotionPolicy.Improves(firstPass, result.Record, immediateBenefit);
                     // SAY WHAT THE SECOND PASS DID. Without this the log shows "no potion was
                     // used" and cannot distinguish "the potion pass did not run", "it ran and was
                     // no better", and "it ran, won, and the planner failed to act on it" —
@@ -2849,10 +2999,19 @@ internal sealed class KernelCombatPlanner
                     Log.Info($"CoopBots tournament: potion pass — "
                         + $"noPotion={Describe(firstPass)} withPotion={Describe(result.Record)} "
                         + $"took={better} druggedFirst={result.FirstAction?.Potion?.Id.Entry ?? "none"} "
-                        + $"hadPotions={(tournamentParty!.Any(p => tournamentRoot!.UsablePotions(p).Count > 0) ? "yes" : "no")}");
+                        + $"hadPotions={(tournamentParty!.Any(p => tournamentRoot!.UsablePotions(p).Count > 0) ? "yes" : "no")} "
+                        + $"immediateBenefit={immediateBenefit:F1} "
+                        + $"enemyHp={firstPass?.RemainingEnemyHp}->{result.Record?.RemainingEnemyHp} "
+                        + $"survival={firstPass?.RoundsSurvived}->{result.Record?.RoundsSurvived}");
                     if (!better) result = tournamentFirstPass!;
                 }
 
+                // A losing result must not bury every bottle behind its cached
+                // card sequence. Even a useful bottle that cannot win alone is
+                // deployed now; the next live capture can spend another.
+                if (result.FirstAction?.Potion is null
+                    && TryPotionOpportunity(combat, actors, result.Record, result.Script))
+                    return FinishTournament(TournamentOutcome.Decided);
                 var next = result.FirstAction;
                 if (next is null)
                 {
@@ -3122,6 +3281,3 @@ internal sealed class KernelCombatPlanner
     private static void ReportSearchLine(string message)
         => Log.Info("CoopBots kernel: " + message);
 }
-
-
-

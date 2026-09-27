@@ -1,112 +1,41 @@
 [h1]Co-op Bots / 联机机器人[/h1]
-[b]0.39.0：人机混合局也用锦标赛决策、剧本逐步执行不再卡；更会忍住不出牌。[/b]
+[b]0.39.1：改进协同出牌、药水使用与针对 Boss 的构筑。[/b]
 
-为多人房间加入 AI 队友，由房主统一调度。
+为《杀戮尖塔 2》官方多人房间加入 AI 队友，由房主统一调度。
 
 [h2]需要先订阅[/h2]
 [list]
-[*][b]RitsuLib[/b] 0.6.2 或更高（硬依赖，缺了无法加载）
-[*]所有真人必须使用[b]同一版本[/b]的 CoopBots
-[*]游戏版本 v0.111.0
+[*][b]RitsuLib[/b] 0.6.2 或更高：[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3747602295]创意工坊依赖[/url]
+[*]所有真人必须使用同一版本 CoopBots；目标游戏版本 v0.111.0。
 [/list]
 
-[h2]0.39.0 更新[/h2]
+[h2]0.39.1 更新（2026-09-28）[/h2]
 [list]
-[*][b]人机混合局与全 Bot 局用同一套续演锦标赛[/b]，找到的剧本逐步执行、不再每张牌重搜——修掉混合局每帧约 6 毫秒的持续占用；性能档位在任何有 Bot 的桌上都可调
-[*][b]「不打」成为选项[/b]：鬼火、低威胁尖啸会保留；一回合增益（调制 / Fade / Coordinate）先于队友的攻击打出，单回合药水只在还有匹配牌时喝
-[*][b]偷牌有代价[/b]；[b]路线认遗物与金币[/b]（遗物决定精英取舍、500+ 金币直奔商店、健康全 Bot 队伍主动打精英）
-[*][b]商店为核心牌多出价[/b]；宝箱奖励每个 Bot 都补发（SPOILS_MAP 能变现）；修复知识恶魔诅咒与奖励屏卡死
-[*]上一版（0.38.2）：战斗内不再卡动画、性能档位、商店只买永久提升
+[*]改进集中火力、跨席位易伤与增益顺序、先上毒再打中毒条件牌的判断。
+[*]计入下回合能量与抽牌，改进连续出牌与小刀目标；沙漏战斗不再额外扣除未来污染成本。
+[*]满栏药水按实际收益积极使用，濒死优先抢救；比较后续控制的边际收益，减少吹哨与控制药水的重复防护。
+[*]构筑考虑持续能力、循环与烧牌联动；已知沙漏 Boss 时提高有效弃牌、烧牌与定向烧牌升级的价值。
+[*]营火比较有效治疗与核心升级收益，改进天选芝士等事件判断；修复训练假人流程和 A10 双 Boss 后续路线。
+[*]本轮通过自动回归；按要求停止继续实机测试。尚未验证稳定通关 A10，不承诺胜率。
 [/list]
 [url=https://github.com/imbalilang/STS2-Co-op_Bots/blob/main/CHANGELOG.md]完整变更记录[/url]
 
-[h2]AI 强度[/h2]
+[h2]使用与协作[/h2]
 [list]
-[*][b]Flash[/b] 0.5 秒 / 张，预算 ×0.5
-[*][b]Pro[/b] 1.5 秒 / 张，预算 ×1.5
-[*][b]Cheated[/b] Pro 节奏，3 倍金币
-[*]三档同一套完整算法，只差节奏与预算
+[*]在官方多人大厅添加 Bot，可与真人混合游玩，也可把全部席位交给 AI 观战。
+[*]只有房主运行决策，客户端通过游戏动作同步；Bot 可以在真人回合中行动，并在真人结束后自行结束。
+[*]Flash：0.5 秒/张，预算 ×0.5；Pro：1.5 秒/张，预算 ×1.5；Cheated：Pro 节奏，3 倍金币。三档使用相同算法。
+[*]处理战斗、奖励、商店、事件、营火及路线；战斗以 CombatSolver 模拟与策略估值比较候选，找到的剧本逐步执行。
+[*]支持性能档位。多人联机请确认所有真人的 MOD 和依赖版本一致。
 [/list]
 
-[h2]特点[/h2]
-[list]
-[*]团队联合决策：共享易伤 / 虚弱、逐人承伤、格挡投射、斩杀呼叫
-[*]战斗搜索基于[b]真实模拟[/b]（CombatSolver 内核），不是启发式打分
-[*]构筑按离目标流派的距离决策：拿牌 / 商店 / 删牌共用同一目标函数，可跳过
-[*]战斗、奖励、商店、事件、营地、路线建议均由 AI 处理
-[/list]
+[h2]English[/h2]
+Adds configurable AI teammates to official multiplayer lobbies. The host runs decisions and synchronizes actions through the game. Human and bot seats can play together, or all seats can be handed to AI.
+[b]0.39.1[/b] improves coordinated play order, poison setup, next-turn resources, potion use, camp investment and event handling. Deck building now values discard, exhaust and targeted upgrades against a known Aeonglass boss. Defensive potions are evaluated alongside planned control effects. Automated regressions pass; further live runs were stopped at the owner's request. Reliable A10 completion has not been established.
+Requires RitsuLib 0.6.2+ and game v0.111.0. All humans need the same mod version. Flash / Pro / Cheated share the same algorithm; pacing, thinking budget and Cheated's 3x gold differ.
 
-[h2]说明[/h2]
-[list]
-[*]只有房主运行完整逻辑，客户端同步结果
-[*]AI 在真人回合内行动，真人均结束后自动收尾并一次性结束
-[*]固定名称的 AI 队友（Bot 1/2/3）
-[*]本版为隔离构建，并在真实客户端上做过多人联机验证（4 席 A10 全 Bot 到第二幕）；不宣称胜率提升
-[/list]
-
-[h2]第三方 / Third-party[/h2]
-免费、非商业作品。随包 [b]THIRD_PARTY_NOTICES.md[/b] 为下列授权的权威记录，必须随分发保留。
-[list]
-[*][b]Combat Solver[/b]（模拟核心 v0.33.9）：部分卡牌与遗物模拟改编自其 Engine / Prediction / Search 源码，以 [b]CoopBots.Kernel.Vendor[/b] 命名空间随 [b]CoopBots.Kernel.dll[/b] 发布；不含原模组启动、界面与自动化，也不加载其程序集。版权归 [b]Torch[/b] 及贡献者。
-[*][b]Random Foreseer[/b]：Combat Solver 内置战斗模拟使用并改造其部分实现，已获原作者许可。作者 / 版权：[b]hotwords123[/b]。
-[url=https://github.com/hotwords123/StS2.RandomForeseer]github.com/hotwords123/StS2.RandomForeseer[/url]
-[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3747531952]创意工坊页面[/url]
-[*][b]Spire Codex[/b]：构筑所用的流派聚类、卡牌关联与事件选项数据由其数据挖掘结果生成（快照 built_at=2026-08-22，游戏 v0.111.0），仅烘焙派生标识与统计量。
-[url=https://spire-codex.com]spire-codex.com[/url]
-许可 [b]PolyForm Noncommercial License 1.0.0[/b]（[url=https://polyformproject.org/licenses/noncommercial/1.0.0]polyformproject.org/licenses/noncommercial/1.0.0[/url]）。Required Notice: Copyright © 2025-present Peter Lord and Spire Codex contributors.
-[*][b]Slay the Spire 2[/b]：游戏及其数据版权归 [b]Mega Crit Games[/b]；本 Mod 不重新分发游戏资源。
-[/list]
-
-[citation]CoopBots 自身代码 MIT（见仓库 LICENSE）；Combat Solver、Random Foreseer 衍生部分与 Spire Codex 数据各适用其原有条款，完整记录见随包 THIRD_PARTY_NOTICES.md。[/citation]
-
-[hr][/hr]
-
-[h1]Co-op Bots (English)[/h1]
-Configurable AI teammates for the official multiplayer lobby. The host drives everything; bots play cards, pick rewards, shop and vote on the map.
-
-[h2]Requirements[/h2]
-[list]
-[*][b]RitsuLib[/b] 0.6.2+ — hard dependency; the mod cannot load without it.
-[*]Every human must run the [b]same version[/b] of CoopBots.
-[*]Game version v0.111.0.
-[/list]
-
-[h2]0.39.0 changes[/h2]
-[list]
-[*][b]Mixed human/bot tables use the same roll-out tournament[/b] as all-bot tables, and the stored script is followed step by step instead of re-searched on every card — the per-step re-search was ~6 ms of the main thread every frame; that mixed-table stutter is gone. Performance tiers work on any table with a bot.
-[*][b]Not playing is a real option[/b]: Wisp and a low-threat Piercing Wail are held; one-turn buffs are played before the allies they boost; temporary stat potions need matching cards left.
-[*][b]Theft has a price[/b]; [b]routes read relics and gold[/b] (relics steer elites, 500+ gold heads for the nearest shop, healthy all-bot teams take elites).
-[*][b]Shops pay a premium for core cards[/b]; every bot gets its chest reward (SPOILS_MAP cashes out); the Knowledge Demon curse and the reward-screen freeze are fixed.
-[/list]
-[url=https://github.com/imbalilang/STS2-Co-op_Bots/blob/main/CHANGELOG.md]Full changelog[/url]
-
-[h2]AI tiers[/h2]
-[list]
-[*][b]Flash[/b]: 0.5 s/card, budget x0.5
-[*][b]Pro[/b]: 1.5 s/card, budget x1.5
-[*][b]Cheated[/b]: Pro pacing, 3x gold
-[*]All three run the same complete algorithm; only pacing and budget differ.
-[/list]
-
-[h2]Features[/h2]
-[list]
-[*]Joint team decisions: shared Vulnerable / Weak, per-member incoming damage, block projection, kill callouts
-[*]Combat search on a [b]real simulation[/b] (CombatSolver kernel), not a heuristic score
-[*]Deck building by distance from the target build: rewards, shop and removals share one objective, skipping is real
-[*]Combat, rewards, shop, events, camp and route advice are all handled by the AI
-[/list]
-
-[h2]Notes[/h2]
-[list]
-[*]Only the host runs the full logic; clients sync the results.
-[*]Bots act during the human turn and finish on their own once every human has ended.
-[*]Bots have fixed names (Bot 1/2/3).
-[*]Isolated build, verified live in multiplayer on the real client; no win-rate claim.
-[/list]
-
-[h2]Third-party[/h2]
-Free, non-commercial mod. The bundled [b]THIRD_PARTY_NOTICES.md[/b] is the authoritative record and must be kept with any distribution. It covers [b]Combat Solver[/b] (simulation core v0.33.9, shipped as [b]CoopBots.Kernel.Vendor[/b]; copyright [b]Torch[/b] and contributors), [b]Random Foreseer[/b] ([b]hotwords123[/b]), [b]Spire Codex[/b] data, and [b]Slay the Spire 2[/b] ([b]Mega Crit Games[/b]; no game assets are redistributed).
-[url=https://github.com/hotwords123/StS2.RandomForeseer]github.com/hotwords123/StS2.RandomForeseer[/url] [url=https://spire-codex.com]spire-codex.com[/url]
-Spire Codex 数据依 [b]PolyForm Noncommercial License 1.0.0[/b]（[url=https://polyformproject.org/licenses/noncommercial/1.0.0]polyformproject.org/licenses/noncommercial/1.0.0[/url]）。Required Notice: Copyright © 2025-present Peter Lord and Spire Codex contributors.
-
-[citation]CoopBots' own code is MIT (see the repository LICENSE); Combat Solver and Random Foreseer derived portions, and the Spire Codex data, remain under their own terms; the full record is in the bundled THIRD_PARTY_NOTICES.md.[/citation]
+[h2]第三方与许可证 / Third-party[/h2]
+Free, non-commercial mod. CoopBots 自有代码采用 MIT；发布包内的 [b]THIRD_PARTY_NOTICES.md[/b] 是第三方声明的权威记录，分发时必须保留。
+本 MOD 包含 Combat Solver（Torch 及贡献者）的模拟内核，作为 CoopBots.Kernel.Vendor 分发；Random Foreseer（hotwords123）的派生部分；Spire Codex 数据。游戏版权归 Mega Crit Games，不分发游戏资源。各部分遵循各自的原有许可。
+[url=https://github.com/hotwords123/StS2.RandomForeseer]Random Foreseer[/url] · [url=https://spire-codex.com]Spire Codex[/url]
+Spire Codex 数据依 [b]PolyForm Noncommercial License 1.0.0[/b]（[url=https://polyformproject.org/licenses/noncommercial/1.0.0]许可全文[/url]）。Required Notice: Copyright © 2025-present Peter Lord and Spire Codex contributors.

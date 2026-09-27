@@ -1,5 +1,8 @@
 using CoopBots.Kernel.Vendor;
 using CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors;
+using CoopBots.Kernel.Vendor.Engine.InCombat.Simulation;
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -61,7 +64,9 @@ public sealed partial class KernelSession
             var read = false;
             try
             {
-                foreach (var hit in Combat.CurrentMonsterMove(enemy).AttackHits)
+                var move = Combat.CurrentMonsterMove(enemy);
+                read = true; // A modeled non-attack is authoritative, not a missing forecast.
+                foreach (var hit in move.AttackHits)
                 {
                     if (hit.BaseDamage <= 0) continue;
                     result.Add((enemy, hit.BaseDamage, 1));
@@ -82,6 +87,37 @@ public sealed partial class KernelSession
     }
 
     public int Power<T>(Creature target) where T : PowerModel => Combat.GetAmount<T>(target);
+
+    internal KernelSession WithoutEnemyVulnerable()
+    {
+        var copy = Fork();
+        foreach (var enemy in copy.Enemies) copy.Combat.SetAmount<VulnerablePower>(enemy, 0);
+        return copy;
+    }
+
+    internal int Stars(Player player) => simulator.State.GetPlayerCombatState(player).Stars;
+
+    internal (int Energy, int Stars) AttackCosts(CardModel source)
+    {
+        using var isolation = SimulationNotificationIsolation.Enter();
+        var card = simulator.State.FindCard(source)!;
+        var owner = simulator.State.GetPlayerCombatState(source.Owner);
+        return (card.GetEnergyCostWithModifiers(simulator, owner), card.GetStarCostWithModifiers(simulator, owner));
+    }
+
+    // A cheap ordering hint, not a substitute for resolving CardBranches. Read
+    // branch-local costs, variables and damage hooks (Strength, Weak, Vulnerable,
+    // Paper Phrog, etc.). Bespoke attacks without a Damage variable get no hint.
+    internal int AttackDamageHint(CardModel source, Creature target)
+    {
+        using var isolation = SimulationNotificationIsolation.Enter();
+        var card = simulator.State.FindCard(source);
+        if (card is null || card.Preview.Type != CardType.Attack) return 0;
+        var damage = card.Preview.DynamicVars.Values.OfType<DamageVar>().Sum(v => v.BaseValue);
+        if (damage <= 0) return 0;
+        return Math.Max(0, (int)HookMirrors.ModifyDamage(simulator, target, source.Owner.Creature,
+            damage, ValueProp.Move, card, null));
+    }
     /// <summary>The Knowledge Demon curse counter this branch has reached.</summary>
     public int KnowledgeDemonCurseCounter(Creature source) => Combat.GetKnowledgeDemonCurseCounter(source);
     /// <summary>
@@ -150,16 +186,30 @@ public sealed partial class KernelSession
     // This is the upstream sustained-power model, evaluated against each bot's
     // branch deck. Human hands are never strategically evaluated here.
     public double PersistentValue(Player player, int incoming, int hits)
+        => PersistentValue(player, incoming, hits, this);
+
+    // Hold the opportunity context fixed while comparing an action. Consuming
+    // a Shiv must not reduce the value of the same unchanged Afterimage twice:
+    // once as a spent card and again as a smaller hypothetical future engine.
+    internal double PersistentValue(Player player, int incoming, int hits, KernelSession reference)
     {
         using var isolation = SimulationNotificationIsolation.Enter();
+        // These are scheduled one-time resources, not permanent scaling.
+        // Use the same energy/card units as the tactical state value, discounted
+        // until the next round; the lifecycle consumes each effect exactly once.
+        var scheduled = Power<EnergyNextTurnPower>(player.Creature) * 3 * .9
+            + Power<DrawCardsNextTurnPower>(player.Creature) * .7 * .9;
         var powers = Combat.EffectivePowers().Where(p => p.Owner == player.Creature
+            && p is not EnergyNextTurnPower and not DrawCardsNextTurnPower
             && StrategicEffectMirrors.Contributes(p, player.Creature)).ToArray();
-        if (powers.Length == 0) return 0;
+        if (powers.Length == 0) return scheduled;
         var requirements = powers.Aggregate(StrategicEffectRequirements.None,
             (requirements, power) => requirements | StrategicEffectModel.Requirements(power));
-        var pcs = simulator.State.GetPlayerCombatState(player);
+        var pcs = reference.simulator.State.GetPlayerCombatState(player);
         var cards = pcs.DiscardPile.Cards.Concat(pcs.DrawPile.Cards).Concat(pcs.Hand.Cards).ToArray();
-        var context = StrategicEffectContext.Build(cards, Enemies.Sum(Hp), incoming, hits, requirements);
-        return powers.Sum(p => (double)StrategicEffectModel.Evaluate(p, context).RetentionValue);
+        var context = StrategicEffectContext.Build(cards, reference.Enemies.Sum(reference.Hp), incoming, hits, requirements);
+        return scheduled + powers.Sum(p => (double)StrategicEffectModel.Evaluate(p, context).RetentionValue);
     }
+
+    internal int CardsPlayedThisTurn(Player player) => Combat.GetCardsPlayedThisTurn(player.Creature);
 }

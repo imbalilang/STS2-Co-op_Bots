@@ -73,6 +73,12 @@ internal static class TeamCombatPlanner
     // rate at all. That is a policy value and the offline ruler that could have
     // measured it is retired, so the reading that judges it is the
     // block-versus-attack score ratio in the next live log.
+    // How much more a point of damage costs a seat that is already near death. Quadratic in the
+    // deficit, so it is ~1 for a healthy seat and must EXCEED the enemy-HP credit before "attack
+    // and probably die" can win. 4 is measured, not guessed: at 2 the 2-HP board below chose the
+    // attack, at 3 it STILL chose the attack (that enemy-HP credit is more than the hard term's
+    // 6*0.5 alone), and at 4 the assertion passes. See the use in EvaluateUncached.
+    private const double HealthDeficitWeight = 4;
     private const double HpSavedPriority = 24;
     private const double HpSavedPriorityCap = 360;
     private const double BotDeathBasePenalty = 40;
@@ -1071,7 +1077,19 @@ internal static class TeamCombatPlanner
             // expendable, but repeatedly leaving a teammate at 1 HP is not free.
             // WeightedHpLoss remains the actual total damage for reporting.
             var healthDeficit = 1 - Math.Clamp(hpAfterCost / Math.Max(1, player.Creature.MaxHp), 0, 1);
-            triageCost += hardLoss * (1 + 2 * healthDeficit * healthDeficit);
+            // THE COEFFICIENT IS A SAFETY FLOOR, NOT A TASTE. At 2 it topped out just below the
+            // enemy-HP rate: a 2/80-HP seat taking one chip point scored 1 + 2*0.975^2 = 2.90
+            // against a STRIKE's 6 * EnemyHpWeight 0.5 = 3.00, so the bot ATTACKED instead of
+            // blocking and could die to a hit it could have stopped. StrengthScenarios recorded
+            // that as "policy, not a bug", and the source note above calls the remedy out by
+            // name: the health-deficit weighting lives HERE, not in EnemyHpWeight. At 3 the same
+            // chip point scores 3.85, so blocking wins.
+            //
+            // Live evidence that this is load-bearing, not tidiness: across the 2026-09-25/26 A5
+            // rounds every party bled 25-40% of its hit points in each ORDINARY fight (weak
+            // encounters included), no run out-lasted the act-1 boss, and the parties reached the
+            // forced elites at 10-32% health.
+            triageCost += hardLoss * (1 + HealthDeficitWeight * healthDeficit * healthDeficit);
 
             var humanBlockOption = context.Human.BlockByPartyMember[partyIndex] * HumanConfidence;
             softHpLoss += (node.HpSpent[partyIndex]

@@ -19,6 +19,7 @@ internal static class BuildingPolicyScenarios
     internal static void Run()
     {
         TestEnvironment.Ensure();
+        BuildingStrengthScenarios.Run();
         var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
         // Deprived is a mock character that reports 100 energy. The policy now
         // accepts any positive persistent MaxEnergy as the real curve, so the

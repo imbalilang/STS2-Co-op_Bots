@@ -2878,6 +2878,64 @@ internal static class KernelEngineScenarios
                 + $"(10 on an 80-pool + 10 on a 40-pool costs {hpMetrics.HpLoss:F3}, not 20.000).");
         }
 
+        // (7) The script's world model covers the ENEMY side, not only the party. A line that
+        // plans a kill keeps its later steps aimed at the OTHER enemy; if that kill does not
+        // happen live, every later step is aimed wrong while the survivor keeps acting.
+        // Measured live 2026-09-26 (two Toadpoles): the party spent three rounds on the
+        // healthy one and finished the near-dead one last, taking its damage the whole time.
+        // Nothing noticed, because only the party side of the line was ever compared.
+        // CHECKED (R2): `EnemiesStillMatch` returning true unconditionally (the pre-fix
+        // behaviour — the enemy side was never compared) turns this red, verbatim:
+        //   System.Exception: a script whose planned kill did not happen must be dropped, not
+        //   replayed: its later steps aim at the other enemy while the survivor keeps acting.
+        {
+            var (bot, other, combat) = ContinuationBoard("CONTINUATION-ENEMY");
+            var second = combat.CreateCreature(
+                ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "inv2");
+            combat.AddCreature(second);
+            second.Monster!.SetUpForCombat();
+            second.SetMaxHpInternal(6); second.SetCurrentHpInternal(6);
+            second.Monster.SetMoveImmediate(
+                (MoveState)second.Monster.MoveStateMachine!.States["ATTACK"], true);
+
+            var live = combat.HittableEnemies.Where(e => e.IsAlive).ToArray();
+            if (live.Length != 2)
+                throw new Exception($"fixture: expected two living enemies, got {live.Length}.");
+
+            var planner = new KernelCombatPlanner();
+            var card = combat.CreateCard<StrikeIronclad>(bot);
+            bot.PlayerCombatState!.Hand.AddInternal(card);
+            var step = new KernelTeamSearch.Action(bot, card, live[0],
+                CardStateKey: "", CardStateOccurrence: 0);
+            var seats = new[] { new[] { bot.NetId, other.NetId }, new[] { bot.NetId, other.NetId } };
+            var actors = new List<Player> { bot, other };
+            var emitter = typeof(KernelCombatPlanner).GetMethod("TryEmitFromTournamentScript",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var scriptField = typeof(KernelCombatPlanner).GetField("tournamentScript",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+            bool Follow(Creature[] expected)
+            {
+                void Set(string name, object value) => typeof(KernelCombatPlanner)
+                    .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .SetValue(planner, value);
+                Set("tournamentScript", new List<KernelTeamSearch.Action> { step, step });
+                Set("tournamentScriptAliveStates", seats);
+                Set("tournamentScriptEnemyStates", new[] { expected, expected });
+                Set("tournamentScriptCombat", combat);
+                Set("tournamentScriptIndex", 1);
+                var args = new object?[] { combat, actors, false, null };
+                return (bool)emitter.Invoke(planner, args)! && scriptField.GetValue(planner) is not null;
+            }
+
+            if (!Follow(live))
+                throw new Exception("a script whose line still matches the live board must be followed.");
+            // The same board, but the line PLANNED this step with one enemy already dead.
+            if (Follow(new[] { live[0] }))
+                throw new Exception("a script whose planned kill did not happen must be dropped, "
+                    + "not replayed: its later steps aim at the other enemy while the survivor keeps acting.");
+            Console.WriteLine("PASS: a script is dropped when the enemy it planned to kill is still standing.");
+        }
 
     }
 

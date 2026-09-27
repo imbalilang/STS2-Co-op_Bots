@@ -29,7 +29,11 @@ public static class BotEventDriver
     {
         if (manager.ActionExecutor.CurrentlyRunningAction is not null || !manager.ActionQueueSet.IsEmpty)
             return;
-        var synchronizer = manager.EventSynchronizer;
+        TickEvents(manager.EventSynchronizer, state);
+    }
+
+    internal static void TickEvents(EventSynchronizer synchronizer, RunState state)
+    {
         if (synchronizer.Events.Count == 0)
             return;
 
@@ -47,6 +51,13 @@ public static class BotEventDriver
         {
             var eventModel = synchronizer.GetEventForPlayer(player);
             if (eventModel.IsFinished || eventModel.CurrentOptions.Count == 0)
+                continue;
+            // Shared votes are cleared and the synchronizer's page counter is
+            // advanced BEFORE the old option's animation/body finishes. A new
+            // vote is not a new page: wait for actual fresh option objects just
+            // as in solo events. BattlewornDummy otherwise chooses all three
+            // encounters while its local animation is still pending.
+            if (eventModel.CurrentOptions.Any(option => option.WasChosen || ChosenOptions.Contains(option)))
                 continue;
 
             // The card select inside an event (upgrade / remove / transform) goes
@@ -76,6 +87,7 @@ public static class BotEventDriver
                 if (synchronizer.GetPlayerVote(player) == (uint)optionIndex)
                     continue;
                 var page = (uint)PageIndex.GetValue(synchronizer)!;
+                LogChoice(player, eventModel, optionIndex);
                 VoteShared.Invoke(synchronizer, new object[] { player, (uint)optionIndex, page });
             }
             else
@@ -84,6 +96,7 @@ public static class BotEventDriver
                 if (!ShouldAnswer(eventModel, option, ChosenOptions))
                     continue;
                 ChosenOptions.Add(option);
+                LogChoice(player, eventModel, optionIndex);
                 ChooseSolo.Invoke(synchronizer, new object[] { player, optionIndex });
             }
         }
@@ -144,8 +157,12 @@ public static class BotEventDriver
             // text: a key like LOST_WISP...CLAIM never mentions the Decay curse
             // the option adds, and "gain" keys look identical whether they hand
             // over a relic or a single card.
-            if (option.Relic is { } relic)
+            foreach (var relic in GrantedRelics(option))
                 score += RelicValueSafe(relic, player) * 0.25;
+            // CLIMB's relic is supplied only as a hover tip, but so is its
+            // permanent health cost: reward recognition must not make it free.
+            if (eventModel is DrowningBeacon && option.TextKey.EndsWith("CLIMB", StringComparison.Ordinal))
+                score -= (double)eventModel.DynamicVars.HpLoss.BaseValue * 2.5;
             foreach (var tip in option.HoverTips)
             {
                 if (tip.CanonicalModel is not CardModel granted) continue;
@@ -162,6 +179,16 @@ public static class BotEventDriver
         }
         return usable.OrderByDescending(pair => Score(pair.option)).ThenBy(pair => pair.index).First().index;
     }
+
+    internal static IEnumerable<RelicModel> GrantedRelics(EventOption option)
+        => option.HoverTips.Select(t => t.CanonicalModel).OfType<RelicModel>()
+            .Concat(option.Relic is { } direct ? [direct] : [])
+            .DistinctBy(r => r.Id);
+
+    private static void LogChoice(Player player, EventModel model, int index)
+        => MegaCrit.Sts2.Core.Logging.Log.Info($"CoopBots event: bot={player.NetId} event={model.Id.Entry} "
+            + $"chose={model.CurrentOptions[index].TextKey} "
+            + (model is RoomFullOfCheese ? RoomFullOfCheeseHandler.Explain(player, model) : ""));
 
     // A relic we cannot evaluate must not swing an event decision.
     private static double RelicValueSafe(RelicModel relic, Player player)

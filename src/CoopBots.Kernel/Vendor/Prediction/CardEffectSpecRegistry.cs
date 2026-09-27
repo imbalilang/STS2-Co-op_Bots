@@ -1,4 +1,4 @@
-﻿using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Powers;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
@@ -274,11 +274,16 @@ internal static class CardEffectSpecRegistry
                 applied = true;
                 break;
             case Outrage:
-                // One copy per player, the caster included.
+                // Native Outrage clones the played instance for each living teammate.
+                // Preserve upgrades/modifiers; generating canonical base cards breaks
+                // both damage predictions and later deployment identity.
                 foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
                 {
-                    simulator.CreateAndAddGeneratedCardsToCombat<Outrage>(
-                        recipient, PileType.Discard, 1, card.Owner);
+                    if (!simulator.State.GetCreature(recipient.Creature).IsAlive)
+                        continue;
+                    simulator.AddGeneratedCardToCombat(
+                        playedCard.CreateCloneForPlayer(recipient), PileType.Discard,
+                        card.Owner, CardPilePosition.Bottom, CardGenerationResultKind.Fixed);
                     if (simulator.HasPendingChoice)
                         return true;
                 }

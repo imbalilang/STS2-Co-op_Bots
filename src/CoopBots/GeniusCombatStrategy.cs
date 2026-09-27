@@ -31,18 +31,45 @@ internal static class GeniusCombatStrategy
         "Eradicate", "Skewer", "Volley", "Whirlwind",
     };
 
-    private static readonly HashSet<string> ImmediateEnergyCards = new(StringComparer.Ordinal)
-    {
-        "Adrenaline", "Bloodletting", "DoubleEnergy", "Offering", "Scavenge", "Turbo",
-        "BelieveInYou", "EnergySurge", "Constellation",
-    };
-
     private static readonly HashSet<string> StrongDrawFirstCards = new(StringComparer.Ordinal)
     {
         "Acrobatics", "Adrenaline", "Backflip", "BattleTrance", "CompileDriver", "Coolheaded",
         "Finesse", "FlashOfSteel", "Ftl", "Glimmer", "MasterOfStrategy", "Offering", "Overclock",
         "Parse", "PommelStrike", "Reboot", "Scrawl", "ShrugItOff", "Skim", "SweepingBeam",
         "Constellation", "HuddleUp",
+        // ADDED 2026-09-27 (strength-review P0-2b). This set is hand-maintained, and a static
+        // scan of the card models found 29 classes with a `CardPileCmd.Draw` call that were
+        // missing from it — so a real draw was priced as "no function" in every deck-building
+        // decision. Live evidence: `DRUM_OF_BATTLE` was offered 5 times and taken 0 times over
+        // five A5 rounds and printed `off-route:strength-damage` with no draw/engine tag, and
+        // `BURNING_PACT` was taken once and still printed `legacy:no role`.
+        //
+        // The rule for this batch is mechanical, not a taste list: the card's `OnPlay` draws
+        // UNCONDITIONALLY and immediately, and the amount is readable (a `CardsVar`, or the
+        // fixed single-draw set below). Every entry was read in the decompiled model.
+        // Deliberately NOT added, each for a named reason:
+        //   Impatience   — draws only when the hand is empty
+        //   MadScience   — the draw sits in an ExecuteRider ("Wisdom"), not the base effect
+        //   Pillage      — loops only while the drawn card is an Attack
+        //   Restlessness — draws only when it is the ONLY card in hand
+        //   Slimed, DeprecatedCard — Status cards; the portrait refuses them before valuation
+        //   Modded       — mod placeholder
+        // This does NOT model conditional draws, discard/exhaust-cost draws or net energy; the
+        // review asks for those as separate terms, and a bigger whitelist is not that.
+        "BigBang", "BrightestFlame", "BurningPact", "DecisionsDecisions", "DrumOfBattle",
+        "Expertise", "Fetch", "Glow", "MinionStrike", "Neurosurge", "PhotonCut", "Prepared",
+        "Prophesize", "Reflex", "RocketPunch", "Scourge", "Scrape", "Soul", "SpoilsOfBattle",
+        "ThinkingAhead", "DaggerThrow", "EscapePlan",
+    };
+
+    /// <summary>
+    /// Draws exactly one card with no <c>CardsVar</c> to read the amount from, so the portrait
+    /// has to spell the number out. Read in the model: <c>DaggerThrow</c> draws 1 after its
+    /// attack, <c>EscapePlan</c> draws 1 as its first statement.
+    /// </summary>
+    private static readonly HashSet<string> FixedSingleDrawCards = new(StringComparer.Ordinal)
+    {
+        "DaggerThrow", "EscapePlan",
     };
 
     public static BotBrain.CombatMove? Choose(
@@ -517,9 +544,7 @@ internal static class GeniusCombatStrategy
 
         var perEnemy = id == "Cacophony" ? 0 : Math.Max(0, Math.Floor(damage)) * hitCount;
         var aoeMultiplier = card.TargetType == TargetType.AllEnemies ? Math.Max(1, enemyCount) : 1;
-        var immediateEnergy = ImmediateEnergyCards.Contains(id)
-            ? vars.Where(variable => variable.GetType().Name == "EnergyVar" && variable.Name != "ExtraCost").Sum(Preview)
-            : 0.0;
+        var immediateEnergy = CoopBots.Kernel.CardResourceTiming.Of(card, energy).EnergyNow;
 
         var vulnerable = PowerAmount(vars, "VulnerablePower");
         var weak = PowerAmount(vars, "WeakPower");
@@ -540,6 +565,12 @@ internal static class GeniusCombatStrategy
             weak = strengthDown;
         }
 
+        // How many cards a plain OnPlay draw actually moves. A `CardsVar` when the card carries
+        // one; the fixed single-draw set covers the two cards that draw 1 with no var to read.
+        var drawFromVar = vars.Where(variable => variable.GetType().Name == "CardsVar").Sum(Preview);
+        var drawAmount = drawFromVar > 0 ? drawFromVar
+            : FixedSingleDrawCards.Contains(id) ? 1.0 : 0.0;
+
         return new CardFacts(
             DamagePerEnemy: perEnemy,
             TotalDamage: perEnemy * aoeMultiplier,
@@ -548,7 +579,7 @@ internal static class GeniusCombatStrategy
             Draw: card.Type != CardType.Power && StrongDrawFirstCards.Contains(id)
                 && (!CombatResourceProjection.ModelsDraw(card) || !card.IsMutable || card.Owner is null
                     || !card.Owner.Creature.Powers.Any(power => power.GetType().Name == "NoDrawPower"))
-                ? vars.Where(variable => variable.GetType().Name == "CardsVar").Sum(Preview) : 0.0,
+                ? drawAmount : 0.0,
             ImmediateEnergy: immediateEnergy,
             HpLoss: vars.Where(variable => variable.GetType().Name == "HpLossVar").Sum(Preview),
             Vulnerable: vulnerable,

@@ -1,32 +1,81 @@
 using System.Reflection;
 using CoopBots.Building;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Entities.RestSite;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Rooms;
 
 namespace CoopBots;
 
-[HarmonyPatch(typeof(RestSiteSynchronizer), nameof(RestSiteSynchronizer.BeginRestSite))]
+[HarmonyPatch(typeof(RestSiteRoom), nameof(RestSiteRoom.EnterInternal))]
 internal static class BotRestSitePatch
 {
     private static readonly MethodInfo ChooseOption = AccessTools.Method(
         typeof(RestSiteSynchronizer),
         "ChooseOption",
         new[] { typeof(Player), typeof(int) });
+    private static readonly MethodInfo FinishLocalOption = AccessTools.Method(
+        typeof(NRestSiteRoom), "AfterSelectingOptionAsync", new[] { typeof(RestSiteOption) });
 
-    private static void Postfix(RestSiteSynchronizer __instance)
+    private static void Postfix(Task __result, IRunState? runState)
     {
-        var state = RunManager.Instance.DebugOnlyGetState();
-        if (state is null)
-            return;
-        // BeginRestSite fires once per camp; forget the previous camp's plans.
-        ResetPlanning();
-        foreach (var player in state.Players.Where(player => AutoPilot.Drives(player.NetId)))
-            _ = CompleteForBot(__instance, player);
+        if (runState is null) return;
+        _ = CompleteAfterEntry(__result, async () =>
+        {
+            if (!ReferenceEquals(runState, RunManager.Instance.DebugOnlyGetState())) return;
+            ResetPlanning();
+            await CompleteInOrder(InvestmentOrder(runState.Players.Where(player => AutoPilot.Drives(player.NetId))),
+                player => CompleteForBot(RunManager.Instance.RestSiteSynchronizer, player));
+        });
+    }
+
+    // BeginRestSite only creates options. EnterInternal then builds the room
+    // and awaits AfterRoomEntered (including EternalFeather's free healing).
+    // Merely using an async-method postfix is insufficient: await its Task.
+    internal static async Task CompleteAfterEntry(Task entry, Func<Task> decide)
+    {
+        try { await entry; await decide(); }
+        catch (Exception failure) { Log.Error($"CoopBots rest-site entry failed: {failure.GetBaseException()}"); }
+    }
+
+    // Each choice can await healing/target selection. The next seat must see
+    // its result, not plan against the same pre-heal snapshot. No reservations
+    // remain to double-count healing already reflected in CurrentHp.
+    internal static async Task CompleteInOrder(IEnumerable<Player> players, Func<Player, Task> complete)
+    {
+        foreach (var player in players) await complete(player);
+    }
+
+    // Spend the least valuable upgrade opportunity first. Its MEND can let an
+    // engine owner upgrade later, instead of that owner healing itself before
+    // any teammate gets a chance to help. Choices still await native effects.
+    internal static IEnumerable<Player> InvestmentOrder(IEnumerable<Player> players)
+        => players.OrderBy(p => p.Deck.Cards.Select(c => HumanCoopAdvisor.UpgradeValue(c, p))
+            .DefaultIfEmpty(0).Max()).ThenBy(p => p.NetId).ToArray();
+
+    // Mirror NRestSiteButton.SelectOption: disable, broadcast/choose, finish the
+    // local room UI on success, restore choices on failure. Choosing through the
+    // synchronizer alone does not enable map travel. Await the native UI task
+    // too so MiniatureTent's next choice cannot race its previous animation.
+    internal static async Task<bool> CompleteChoice(bool local, Func<Task<bool>> chooseLocal,
+        Func<Task<bool>> chooseRemote, Action disable, Func<Task> finish, Action restore)
+    {
+        if (!local) return await chooseRemote();
+        disable();
+        var success = false;
+        try
+        {
+            success = await chooseLocal();
+            if (success) await finish();
+            return success;
+        }
+        finally { if (!success) restore(); }
     }
 
     private static async Task CompleteForBot(RestSiteSynchronizer synchronizer, Player player)
@@ -46,11 +95,20 @@ internal static class BotRestSitePatch
                 // unchosen seat blocks the whole camp: RestSiteSynchronizer completes a
                 // rest site only once every player has no options left, so the run parked
                 // there permanently (observed as an elite camp that never advanced).
-                var preferred = Choose(player, options);
+                if (!MendRunnable(player) && !_mendRefusalLogged
+                    && options.Any(option => option.OptionId == "MEND"))
+                {
+                    _mendRefusalLogged = true;
+                    Log.Warn($"CoopBots rest-site: MEND is not offered to driven local seat "
+                        + $"{player.NetId} — its OnSelect drives the targeting UI, which a "
+                        + "handed-over seat has no way to answer.");
+                }
+                var plan = Choose(player, options);
                 var attempts = options
                     .Select((option, index) => (option, index))
                     .Where(pair => IsUsable(pair.option))
-                    .OrderByDescending(pair => pair.index == preferred)
+                    .Where(pair => pair.option.OptionId != "MEND" || MendRunnable(player))
+                    .OrderByDescending(pair => pair.index == plan.Index)
                     .ThenBy(pair => pair.index)
                     .ToList();
                 var advanced = false;
@@ -58,8 +116,21 @@ internal static class BotRestSitePatch
                 {
                     try
                     {
-                        var task = (Task<bool>)ChooseOption.Invoke(synchronizer, new object[] { player, index })!;
-                        if (await task) { advanced = true; break; }
+                        var local = LocalContext.IsMe(player);
+                        var room = local ? NRestSiteRoom.Instance : null;
+                        if (local && room is null)
+                            throw new InvalidOperationException("Local rest-site room is not available.");
+                        if (await CompleteChoice(local,
+                            () => synchronizer.ChooseLocalOption(index),
+                            () => (Task<bool>)ChooseOption.Invoke(synchronizer, new object[] { player, index })!,
+                            () => room!.DisableOptions(),
+                            () => (Task)FinishLocalOption.Invoke(room, new object[] { option })!,
+                            () => { if (Godot.GodotObject.IsInstanceValid(room)) room!.EnableOptions(); }))
+                        {
+                            if (local) Log.Info($"CoopBots camp: local completion finished option={option.OptionId}.");
+                            advanced = true;
+                            break;
+                        }
                     }
                     catch (Exception optionFailure)
                     {
@@ -77,52 +148,92 @@ internal static class BotRestSitePatch
         }
     }
 
-    // HP is not worth nothing above half. The old rule credited healing only up
-    // to 50% max HP, which made a wound that still left a bot above half score
-    // zero — and at the camp before the act boss that is exactly the case that
-    // matters. Three bots entered that fight at 43%, 60% and 61% and upgraded
-    // instead, because the formula could only ever say "0".
-    //
-    // The rate now runs from NeedAtFull at a full bar to NeedAtDeath at an empty
-    // one, so the same heal is worth three times as much on a dying bot as on a
-    // lightly wounded one, and the crossover against an upgrade lands near 65%
-    // max HP — the same "low HP" line the route planner already uses.
     private const double NeedAtFull = 1;
     private const double NeedAtDeath = 3;
-    // Deck-building is still greedy: an upgrade outranks ordinary HP, so an
-    // ordinary wound is left alone and the bot smiths instead.
     private const double HealPerHp = 0.4;
-    // An upgrade is worth spending a camp on once it measurably improves a
-    // card. Below this the card gains nothing the smith can realise.
     private const double WorthwhileUpgrade = 2.5;
-    // A human is a little more valuable to keep alive than a bot.
     private const double HumanHealWeight = 1.2;
-    // Each bot plans independently on the same thread. Remember the healing a
-    // previous bot already committed at this rest site so the party does not
-    // stack several mends into one target and overheal it to full.
-    private static readonly Dictionary<ulong, decimal> PlannedHeal = new();
-    internal static void ResetPlanning() => PlannedHeal.Clear();
+    private static bool _mendRefusalLogged;
 
-    private static int Choose(Player player, IReadOnlyList<RestSiteOption> options)
+    internal static void ResetPlanning()
     {
-        decimal EffectiveHp(Player candidate) => candidate.Creature.CurrentHp + PlannedHeal.GetValueOrDefault(candidate.NetId);
+        _mendRefusalLogged = false;
+    }
+
+    /// <summary>
+    /// Whether this seat can execute MEND at all.
+    ///
+    /// <para>
+    /// <c>MendRestSiteOption.OnSelect</c> has two branches. For <c>LocalContext.IsMe(owner)</c>
+    /// it drives the TARGETING UI — <c>NRestSiteRoom.Instance</c>, <c>NTargetManager.StartTargeting</c>
+    /// and an <c>await SelectionFinished()</c> that only a click resolves. For every other seat
+    /// it asks <c>PlayerChoiceSynchronizer.WaitForRemoteChoice</c>, and this mod already answers
+    /// that for a driven seat (<c>BotRemoteChoicePatch</c> → <c>BotRewardDriver.ChoiceForWait</c>,
+    /// which carries an explicit <c>MendRestSiteOption</c> case).
+    /// </para>
+    /// <para>
+    /// A driven LOCAL seat has neither: no human to click a target and no UI to click it in.
+    /// That is the live <c>rest-site option MEND refused for 1: Object reference not set</c>
+    /// (3 times over five A5 rounds, and the seat that wanted it was the 9/80 one before the
+    /// act-1 boss). Offering an option that cannot resolve is also how a camp parks forever —
+    /// the synchronizer only completes once every seat has no options left. Refusing it is an
+    /// executability refusal (R4), and it is logged by name.
+    /// </para>
+    /// </summary>
+    internal static bool MendRunnable(Player player)
+        => !(AutoPilot.Drives(player.NetId) && LocalContext.NetId == player.NetId);
+
+    // The same target policy is used by valuation and the actual remote choice.
+    // A lower HP percentage is not necessarily a better heal: RegalPillow,
+    // max HP, overflow, and a human teammate's weight all change its payoff.
+    internal static Player? BestMendTarget(Player owner)
+        => owner.RunState.Players
+            .Where(candidate => candidate.NetId != owner.NetId && candidate.Creature.IsAlive)
+            .OrderByDescending(candidate => MendValue(owner, candidate))
+            .ThenBy(candidate => candidate.NetId)
+            .FirstOrDefault();
+
+    private static double MendValue(Player owner, Player patient)
+        => HealValue(HealAmount(patient, self: false), patient.Creature.CurrentHp, patient.Creature.MaxHp,
+            HealPerHp * UpcomingRisk(owner) * (AutoPilot.Drives(patient.NetId) ? 1 : HumanHealWeight))
+            + SharedHealHookValue(patient);
+
+    // StoneHumidifier runs after either self-healing or receiving MEND. Its
+    // native MaxHpVar grants max HP and matching current HP (2 points per HP,
+    // the same growth unit used by ChosenCheese and camp Cook).
+    private static double SharedHealHookValue(Player player)
+        => player.Relics.Where(r => r.GetType().Name == "StoneHumidifier")
+            .Sum(r => (double)r.DynamicVars.MaxHp.BaseValue * 2);
+
+    // Only ExecuteRestSiteHeal offers these rewards. MEND calls the heal hook
+    // but does not offer heal rewards. Both Tea Sets trigger on room entry,
+    // so they add no marginal value to choosing HEAL over another camp action.
+    internal static double SelfHealRewardValue(Player player)
+        => (player.Relics.Any(r => r.GetType().Name == "DreamCatcher") ? 12 : 0)
+            + (player.Relics.Any(r => r.GetType().Name == "TinyMailbox") ? 12 : 0)
+            + SharedHealHookValue(player);
+
+    /// <summary>
+    /// Selected action and patient, retained together for diagnostics. Choices
+    /// execute sequentially and always read actual HP; no heal is reserved.
+    /// </summary>
+    private readonly record struct CampPlan(int Index, ulong Patient, decimal Heal);
+
+    private static CampPlan Choose(Player player, IReadOnlyList<RestSiteOption> options)
+    {
+        decimal EffectiveHp(Player candidate) => candidate.Creature.CurrentHp;
         // Mend must not even be OFFERED when it has no target: MendRestSiteOption.OnSelect()
         // dereferences one, and offering an option that cannot resolve is how a seat ended up
         // unchosen and stalled the whole camp. Resolved before `usable` so the filter sees it.
-        var mendTarget = player.RunState.Players
-            .Where(candidate => candidate.NetId != player.NetId && candidate.Creature.IsAlive)
-            .OrderBy(candidate => (double)EffectiveHp(candidate) / Math.Max(1, candidate.Creature.MaxHp))
-            .ThenBy(candidate => candidate.NetId)
-            .FirstOrDefault();
+        var mendTarget = BestMendTarget(player);
         var usable = options
             .Select((option, index) => (option, index))
             .Where(pair => IsUsable(pair.option))
-            .Where(pair => pair.option.OptionId != "MEND" || mendTarget is not null)
+            .Where(pair => pair.option.OptionId != "MEND" || (mendTarget is not null && MendRunnable(player)))
             .ToList();
         if (usable.Count == 0)
-            return 0;
+            return new CampPlan(0, 0, 0);
 
-        var hp = (double)player.Creature.CurrentHp / Math.Max(1, player.Creature.MaxHp);
         var act = player.RunState.CurrentActIndex;
         // The camp exists to get the team through whatever comes next, so the same
         // HP is worth more before an elite or the act boss than before a shop.
@@ -135,79 +246,66 @@ internal static class BotRestSitePatch
         // Score each card's upgrade once: the worthwhile gate and the best
         // upgrade are two reads of the same value, and rescoring clones twice per
         // camp was pure waste.
-        var upgrades = player.Deck.Cards.Select(card => HumanCoopAdvisor.UpgradeValue(card, player)).ToList();
-        var upgradeWorthwhile = upgrades.Any(value => value >= WorthwhileUpgrade);
+        var upgrades = player.Deck.Cards.Select(card => (Card: card, Value: BuildValue.UpgradeDelta(card, player)))
+            .OrderByDescending(entry => entry.Value.Total).ToList();
+        var upgradeWorthwhile = upgrades.Any(entry => entry.Value.Total >= WorthwhileUpgrade);
         var selfHeal = HealAmount(player, self: true);
         // Resting also pays out through these relics, so the heal option carries
         // their value too.
-        var restReward = player.Relics.Any(relic => relic.GetType().Name is "DreamCatcher" or "TinyMailbox") ? 12
-            : player.Relics.Any(relic => relic.GetType().Name is "VenerableTeaSet" or "FakeVenerableTeaSet") ? 8
-            : 0;
-        // Mend heals one other player: value it by the most injured teammate (after what
-        // earlier bots already committed), and weight a human's HP above a bot's.
+        var restReward = SelfHealRewardValue(player);
+        // Mend heals one other player: compare its best actual recovery after
+        // earlier choices settle, including modifiers and the human HP weight.
         // mendTarget was resolved above; MEND is already filtered out of `usable` when there
         // is nobody it could heal, so this reads only the "how much would it heal" part.
         var mendHeal = mendTarget is null ? 0 : HealAmount(mendTarget, self: false);
-        var mendWeight = mendTarget is not null && !AutoPilot.Drives(mendTarget.NetId)
-            ? HealPerHp * HumanHealWeight : HealPerHp;
-        // Mending hands the mender's own camp to someone else: one pick, and its
-        // deck does not grow. The one way to make it free is a MiniatureTent,
-        // whose owner keeps every option at the camp and can therefore smith
-        // *and* mend. Otherwise only a teammate who would not survive without it
-        // is worth the trade — and that rescue is a survival move, so it is not
-        // subject to the mender's own line.
-        var mendEmergency = mendTarget is not null
-            && (double)EffectiveHp(mendTarget) / Math.Max(1, mendTarget.Creature.MaxHp) <= MendEmergencyHp;
-        var mendAllowed = mendEmergency
-            || player.Relics.Any(relic => relic.GetType().Name == "MiniatureTent");
+        // The upgrade's opportunity cost is already in Score. A separate
+        // patient-HP cutoff hid useful MEND choices after an earlier teammate
+        // healed this seat, making it overfill itself instead of helping back.
+        // Compare every executable aid by the actual HP it would restore.
         // The best upgrade the deck can actually buy. Not a flat number: the smith
         // option has to be able to lose to a relic or to a real wound, and it has
         // to prefer a deck that holds a core card over one that only holds basics.
-        var bestUpgrade = upgrades.DefaultIfEmpty(0).Max();
+        var bestUpgrade = upgrades.Select(entry => entry.Value.Total).DefaultIfEmpty(0).Max();
+        var horizon = InvestmentHorizon(player);
 
-        // The line this camp uses: above it the camp goes to the deck, below it to
-        // survival. Acts 1-2 are the greedy ones — a weakened member can be carried
-        // through a small fight, so the party buys deck strength instead of HP. The
-        // last act is the reverse, and its final camp is the one camp nobody can be
-        // carried out of a boss fight on. The reviewed act-1 run took heal or mend
-        // at every one of its fifteen bot camp slots and then could not out-damage
-        // the act-1 boss; the human, who smithed every camp, was the only member
-        // whose deck grew.
-        var floor = SmithHpFloor(act, RunDepth.LastCampBeforeBoss(player));
-        var toDeck = hp >= floor;
-        // The losing side of the line is scaled down rather than cut off. A cliff
-        // would make the whole choice jump on a single point of HP, and tuning the
-        // two sides against each other could not hold the line at all: how much a
-        // heal is worth moves with the wound and how much an upgrade is worth moves
-        // with the deck, so any fixed pair of numbers lets one side drift across.
-        double Weight(bool survival) => survival == !toDeck ? 1.0 : OffSide;
-
+        // Compare effective healing with the actual upgrade on one scale.
+        // HP thresholds previously suppressed every upgrade to 22%, even when
+        // most of the rest would overflow. Risk already prices the next room.
         double Score(RestSiteOption option) => option.OptionId switch
         {
-            "HEAL" => (HealValue(selfHeal, EffectiveHp(player), player.Creature.MaxHp, HealPerHp * risk) + restReward)
-                * Weight(survival: true),
-            "MEND" => !mendAllowed || mendTarget is null ? 0
-                : HealValue(mendHeal, EffectiveHp(mendTarget), mendTarget.Creature.MaxHp, mendWeight * risk)
-                    * (mendEmergency ? 1.0 : Weight(survival: true)),
-            "SMITH" => !upgradeWorthwhile ? 2 : bestUpgrade * UpgradeScale * Weight(survival: false),
+            "HEAL" => HealValue(selfHeal, EffectiveHp(player), player.Creature.MaxHp, HealPerHp * risk) + restReward,
+            "MEND" => mendTarget is null ? 0
+                : MendValue(player, mendTarget),
+            "SMITH" => !upgradeWorthwhile ? 2 : bestUpgrade * horizon,
             // Dig: one relic now, worth less the fewer acts remain.
-            "DIG" => Math.Max(8, 30 - act * 5) * Weight(survival: false),
+            "DIG" => 5 + 3 * horizon,
             // Lift: permanent Strength that scales with the acts still ahead.
-            "LIFT" => (18 + Math.Max(0, 2 - act) * 9) * Weight(survival: false),
-            "HATCH" => 22 * Weight(survival: false),
-            "COOK" => CookValue(player) * Weight(survival: false),
-            "KINDLE" => 15 * Weight(survival: false),
-            "CLONE" => (player.Deck.Cards.Any(card => card.Enchantment is not null) ? 18 : 2) * Weight(survival: false),
-            _ => 6 * Weight(survival: false),
+            "LIFT" => Math.Max(18 + Math.Max(0, 2 - act) * 9, 8 * horizon),
+            "HATCH" => 22,
+            "COOK" => CookValue(player),
+            "KINDLE" => 15,
+            "CLONE" => (player.Deck.Cards.Any(card => card.Enchantment is not null) ? 18 : 2),
+            _ => 6,
         };
         var choice = usable.OrderByDescending(pair => Score(pair.option)).ThenBy(pair => pair.index).First();
-        // Reserve what this bot is about to heal so later bots at the same rest
-        // site see the target as already covered.
-        if (choice.option.OptionId == "MEND" && mendTarget is not null)
-            PlannedHeal[mendTarget.NetId] = PlannedHeal.GetValueOrDefault(mendTarget.NetId) + mendHeal;
-        else if (choice.option.OptionId == "HEAL")
-            PlannedHeal[player.NetId] = PlannedHeal.GetValueOrDefault(player.NetId) + selfHeal;
-        return choice.index;
+        Log.Info($"CoopBots camp: bot={player.NetId} hp={player.Creature.CurrentHp}/{player.Creature.MaxHp} "
+            + $"lastCamp={RunDepth.LastCampBeforeBoss(player)} chose={choice.option.OptionId} "
+            + $"heal={Math.Min(selfHeal, Math.Max(0, player.Creature.MaxHp - EffectiveHp(player))):F1}/{selfHeal:F1} "
+            + $"overflow={Math.Max(0, selfHeal - Math.Max(0, player.Creature.MaxHp - EffectiveHp(player))):F1} "
+            + $"restReward={restReward:F1} "
+            + $"investmentHorizon={horizon:F2} "
+            + (upgrades.Count == 0 ? "" : $"bestUpgrade={upgrades[0].Card.Id.Entry}:{bestUpgrade:F1}:{upgrades[0].Value.Reason} ")
+            + (mendTarget is null ? "" : $"mendTarget={mendTarget.NetId} "
+                + $"mendHp={mendTarget.Creature.CurrentHp}/{mendTarget.Creature.MaxHp} "
+                + $"mendHeal={Math.Min(mendHeal, Math.Max(0, mendTarget.Creature.MaxHp - EffectiveHp(mendTarget))):F1}/{mendHeal:F1} "
+                + $"mendOverflow={Math.Max(0, mendHeal - Math.Max(0, mendTarget.Creature.MaxHp - EffectiveHp(mendTarget))):F1} ")
+            + $"scores=[{string.Join(',', usable.Select(pair => $"{pair.option.OptionId}:{Score(pair.option):F1}"))}]");
+        return choice.option.OptionId switch
+        {
+            "MEND" when mendTarget is not null => new CampPlan(choice.index, mendTarget.NetId, mendHeal),
+            "HEAL" => new CampPlan(choice.index, player.NetId, selfHeal),
+            _ => new CampPlan(choice.index, 0, 0),
+        };
     }
 
     // How dangerous the room this camp is preparing for is. The heal value used
@@ -256,25 +354,31 @@ internal static class BotRestSitePatch
         return lastCampBeforeBoss ? Math.Max(risk, RiskFor(MapPointType.Boss, act)) : risk;
     }
 
-    // The HP a bot gives up on its own deck to keep. Above this line the camp
-    // goes to the deck, below it to survival. Acts 1-2 hold it low because a
-    // weakened member can be carried through a small fight and the deck that
-    // never grows is the one that cannot out-damage the act boss. The last act is
-    // the reverse, and its final camp is the one camp nobody can be carried out
-    // of a boss fight on.
-    internal static double SmithHpFloor(int act, bool lastCampBeforeBoss)
-        => act >= BotShopPlanner.FinalAct ? (lastCampBeforeBoss ? 0.85 : 0.55) : 0.25;
-
-    // The losing side of the line, scaled down rather than cut off.
-    private const double OffSide = 0.22;
     // An upgrade's own value, in the same unit as the heals it competes with. A
     // starter deck's best upgrade is a Strike at 3.6 and a Defend at 3.0, where a
     // real card runs 5-8, so the same scale that lets a core card take the camp
     // also lets it lose to a relic or to a real wound.
-    private const double UpgradeScale = 2.5;
-    // A teammate this close to death is worth the mender's camp even without a
-    // tent; anything healthier can be carried to the next camp.
-    private const double MendEmergencyHp = 0.25;
+    internal static double InvestmentHorizon(Player player)
+    {
+        double remaining;
+        try { remaining = RunDepth.RemainingCombats(player); }
+        catch { return 2.5; }
+        var weakest = player.RunState.Players.Where(p => p.Creature.IsAlive)
+            .Select(p => (double)p.Creature.CurrentHp / Math.Max(1, p.Creature.MaxHp)).DefaultIfEmpty(1).Min();
+        return DiscountedFights(remaining, weakest);
+    }
+
+    // Permanent improvements pay in multiple fights; healing pays once. Future
+    // fights are discounted more heavily while any teammate is close to death,
+    // then repriced after the team's first heal has actually landed.
+    internal static double DiscountedFights(double remaining, double weakestHpRatio)
+    {
+        var continuation = .45 + .4 * Math.Clamp(weakestHpRatio, 0, 1);
+        var count = Math.Clamp(remaining, 1, 12);
+        var whole = (int)count;
+        return Enumerable.Range(0, whole).Sum(i => Math.Pow(continuation, i))
+            + (count - whole) * Math.Pow(continuation, whole);
+    }
 
     // Kept free of the map so it can be pinned directly.
     // Later acts hit harder, so the same elite is worse in act 3 than in act 1.
@@ -301,7 +405,9 @@ internal static class BotRestSitePatch
         if (healed <= 0 || maxHp <= 0) return 0;
         var credited = Math.Min(healed, Math.Max(0, maxHp - currentHp));
         if (credited <= 0) return 0;
-        var ratio = Math.Clamp((double)(currentHp / maxHp), 0, 1);
+        // Integrate need over the HP actually restored. The last healed point
+        // is less urgent than the first; overflow contributes exactly zero.
+        var ratio = Math.Clamp((double)((currentHp + credited / 2) / maxHp), 0, 1);
         var need = NeedAtDeath - (NeedAtDeath - NeedAtFull) * ratio;
         return (double)credited * need * weight;
     }

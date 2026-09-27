@@ -13,6 +13,7 @@ internal static class RouteScenarios
 {
     internal static void Run()
     {
+        DoubleBossRoute();
         var start = new MapPoint(0, 0) { PointType = MapPointType.Monster };
         var elite = new MapPoint(0, 1) { PointType = MapPointType.Elite };
         var rest = new MapPoint(1, 1) { PointType = MapPointType.RestSite };
@@ -285,6 +286,33 @@ internal static class RouteScenarios
         var maturityHigh = RoutePlanner.DeckMaturity(deckBot);
         if (!(maturityHigh > maturityLow + 0.5))
             throw new Exception($"Deck maturity must react to deck size and powers: {maturityLow:F2} -> {maturityHigh:F2}");
+
+        // An act-1 elite with a not-yet-ready deck must LOSE to the normal fight it competes
+        // with. The slope alone never said so: the act-1 base of 28 plus the healthy/team
+        // bonuses exceeded the whole maturity swing, so an unready party at full health still
+        // read +19..+27 against a monster's +13, and the DP took the elite whenever it was
+        // on the way. The maturity values here are the ones the 2026-09-25 runs actually had
+        // (12-16 cards, 0-1 powers, ~3 upgrades => 0.2-0.4) on the floors where all three
+        // died at or immediately after an act-1 elite (work/live-a5/2026-09-25-baseline/).
+        // CHECKED (R2): `if (false && act <= 1 && maturity < EliteReadyMaturity)` turns this
+        // red, verbatim:
+        //   System.Exception: an unready deck must prefer the act-1 monster over the elite:
+        //   elite +21.0 vs monster +13.0 (maturity 0.20)
+        // NOTE the first draft of this assertion used maturity 0.00 and stayed GREEN under
+        // that mutation (+9 already lost to +13) — the mutation is what caught it.
+        foreach (var maturity in new[] { 0.2, 0.3, 0.4, 0.49 })
+        {
+            var unreadyElite = RoutePlanner.NodeValue(MapPointType.Elite, .9, 120, 0, 13, maturity, teamRoute: true);
+            var monster = RoutePlanner.NodeValue(MapPointType.Monster, .9, 120, 0, 13, maturity, teamRoute: true);
+            if (!(unreadyElite < monster))
+                throw new Exception($"an unready deck must prefer the act-1 monster over the elite: "
+                    + $"elite {unreadyElite:+0.0;-0.0} vs monster {monster:+0.0;-0.0} (maturity {maturity:F2})");
+            // It must stay ROUTABLE, not become unreachable: a map whose only way forward is
+            // the elite still has to produce a path. -45 keeps the shop's -60 contract.
+            if (!double.IsFinite(unreadyElite))
+                throw new Exception($"an unready elite must stay routable (maturity {maturity:F2}).");
+        }
+        Console.WriteLine("PASS: act-1 elites are refused while the deck is not yet ready.");
         Console.WriteLine("PASS: deck maturity reacts to size and scaling powers.");
 
         // A room the GAME cannot build must never be a route candidate.
@@ -351,5 +379,41 @@ internal static class RouteScenarios
             throw new Exception("the only route to the boss runs through a room the game cannot build, so there is no route — "
                 + $"got a {trapped.Path.Count}-node path instead. A finite \"very bad\" sentinel would route straight into it.");
         Console.WriteLine("PASS: unbuildable rooms are detoured around, and a map whose only path leads through one has no route.");
+    }
+    private static void DoubleBossRoute()
+    {
+        // R2, old production terminal (2026-09-27), exit 1:
+        // System.Exception: A10 route must include both bosses and continue after the first:
+        // before=2, between=1, after=0.
+        var player = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
+        var state = RunState.CreateForTest(new[] { player }, seed: "DOUBLE-BOSS-ROUTE");
+        var map = new DoubleBossMap();
+        state.Map = map;
+        state.AddVisitedMapCoord(map.StartingMapPoint.coord);
+        var before = RoutePlanner.Plan(state, player, teamRoute: true);
+        state.AddVisitedMapCoord(map.BossMapPoint.coord);
+        var between = RoutePlanner.Plan(state, player, teamRoute: true);
+        state.AddVisitedMapCoord(map.SecondBossMapPoint.coord);
+        var after = RoutePlanner.Plan(state, player, teamRoute: true);
+        if (before?.Path.Count != 3 || before.Path[1] != map.BossMapPoint
+            || before.Path[2] != map.SecondBossMapPoint
+            || between?.Path.Count != 2 || between.Path[1] != map.SecondBossMapPoint
+            || after?.Path.Count != 1 || after.Path[0] != map.SecondBossMapPoint)
+            throw new Exception($"A10 route must include both bosses and continue after the first: "
+                + $"before={before?.Path.Count ?? 0}, between={between?.Path.Count ?? 0}, after={after?.Path.Count ?? 0}.");
+        Console.WriteLine("PASS: A10 route reaches the second boss through the production RunState entry.");
+    }
+
+    private sealed class DoubleBossMap : ActMap
+    {
+        public override MapPoint StartingMapPoint { get; } = new(0, 0) { PointType = MapPointType.RestSite };
+        public override MapPoint BossMapPoint { get; } = new(0, 1) { PointType = MapPointType.Boss };
+        public override MapPoint SecondBossMapPoint { get; } = new(0, 2) { PointType = MapPointType.Boss };
+        protected override MapPoint?[,] Grid { get; } = new MapPoint?[1, 1];
+        internal DoubleBossMap()
+        {
+            StartingMapPoint.AddChildPoint(BossMapPoint);
+            BossMapPoint.AddChildPoint(SecondBossMapPoint);
+        }
     }
 }

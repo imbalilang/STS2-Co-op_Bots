@@ -103,10 +103,14 @@ internal static class RoutePlanner
         }
     }
 
-    internal static Route? Plan(RunState state, Player human, bool teamRoute = false)
+    internal static Route? Plan(RunState state, Player human, bool teamRoute = false,
+        List<(MapPoint Child, double Total)>? ranking = null)
     {
         var start = state.CurrentMapPoint ?? state.Map.StartingMapPoint;
-        var boss = state.Map.BossMapPoint;
+        // StandardActMap links BossMapPoint -> SecondBossMapPoint at A10+.
+        // Ending at the first boss produces a one-node path after that fight,
+        // so both the bot voter and the human route advisor stop advancing.
+        var boss = state.Map.SecondBossMapPoint ?? state.Map.BossMapPoint;
         if (start is null || boss is null) return null;
         var alive = state.Players.Where(p => p.Creature.IsAlive).ToArray();
         var health = alive
@@ -132,7 +136,7 @@ internal static class RoutePlanner
         // rides on machinery that already exists instead of a second filter in the search.
         Func<MapPointType, int, int, double> Value = (type, hpTier, goldTier) =>
             ValueForNode(type, hpTier, goldTier, act, deckSize, maturity, shoppers, teamRoute, relics);
-        return Plan(start, boss, Value, Tier(health, .4, .75), GoldTier(human.Gold));
+        return Plan(start, boss, Value, Tier(health, .4, .75), GoldTier(human.Gold), ranking: ranking);
     }
 
     /// <summary>
@@ -175,7 +179,8 @@ internal static class RoutePlanner
     /// team would have when reaching it, and visiting a room changes them.
     /// </summary>
     internal static Route? Plan(MapPoint start, MapPoint boss, Func<MapPointType, int, int, double> value,
-        int healthTier, int goldTier, int maxNodes = 512)
+        int healthTier, int goldTier, int maxNodes = 512,
+        List<(MapPoint Child, double Total)>? ranking = null)
     {
         var memo = new Dictionary<(MapPoint, int, int), (double Score, MapPoint? Next)>();
         var visiting = new HashSet<(MapPoint, int, int)>();
@@ -222,6 +227,21 @@ internal static class RoutePlanner
 
         var (total, _) = Best(start, healthTier, goldTier);
         if (!double.IsFinite(total)) return null;
+        // DIAGNOSTIC ONLY, and deliberately AFTER the decision is already made: every child's
+        // reached total, in the same units the DP compared them in. Without it a vote is
+        // invisible — the live log printed only the winning coordinate, which cannot tell
+        // "the elite was the only way forward" from "the elite outscored the alternative".
+        // Two 2026-09-26 runs died at an act-1 elite while the gate below says that elite was
+        // worth -45, and neither question could be answered from the log.
+        if (ranking is not null)
+        {
+            var (childHealth, childGold) = Advance(start.PointType, healthTier, goldTier);
+            foreach (var child in start.Children)
+            {
+                var (childScore, _) = Best(child, childHealth, childGold);
+                ranking.Add((child, double.IsFinite(childScore) ? Discount * childScore : double.NegativeInfinity));
+            }
+        }
         var path = new List<MapPoint> { start };
         var cursor = start;
         var hp = healthTier;
@@ -425,9 +445,34 @@ internal static class RoutePlanner
     // under-builds the exact deck the boss checks. Act 3 stays cautious unless the
     // deck is genuinely mature; the all-bot team route adds a small aggression
     // term because there is no human seat whose HP must be protected.
+    //
+    // "DECENT" IS A GATE, NOT A SLOPE. The route policy's own decent-deck line is 0.5
+    // — the maturity every act-1/2/3 branch of RouteScenarios pins — so an elite below
+    // it must LOSE to the normal fight it competes with, not merely be worth less.
+    // The slope alone could never say that: the act-1 base of 28 exceeded the whole
+        // maturity swing, so an unready act-1 elite stayed POSITIVE (+21 at maturity 0.2,
+        // +27 at 0.3) against a monster's +13, and the DP walked into it whenever the party
+        // happened to be at full health. The slope's own pivot stays at 0.55; this is a
+        // separate gate.
+    private const double EliteReadyMaturity = 0.5;
+
     private static double EliteValue(double health, int act, double maturity, bool teamRoute)
     {
         if (health < .7) return -45;
+        // A second absolute gate, for the same reason as the health one: an unready deck
+        // loses the elite's damage race, and the relic it would win does not pay for the
+        // run it ends.
+        //
+        // Measured 2026-09-25, 4 BOT / A5 / perf=ultra, three runs, 0 clears: every one
+        // died at or immediately after an act-1 elite. BYGONE_EFFIGY (row 8) left the party
+        // at 10/18/7/25 and the next normal fight finished it; TERROR_EEL (floor 14) and
+        // PHANTASMAL_GARDENERS (floor 8) wiped the party outright. The decks at those
+        // points were 12-16 cards with no scaling, i.e. maturity ~0.2-0.4 — below this
+        // gate, and above nothing the old slope could stop. See
+        // work/live-a5/2026-09-25-baseline/.
+        // Still -45 and not unreachable: a map whose only way forward is the elite must
+        // stay routable, which is the same contract the shop's -60 keeps.
+        if (act <= 1 && maturity < EliteReadyMaturity) return -45;
         var byAct = act <= 0 ? 28 : act == 1 ? 14 : -8;
         var deckAdjust = (Math.Clamp(maturity, 0, 1) - 0.55) * 60;
         var healthyBonus = health >= .85 ? 8 : 0;

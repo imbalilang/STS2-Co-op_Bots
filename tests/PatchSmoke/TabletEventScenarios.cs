@@ -17,6 +17,7 @@ internal static class TabletEventScenarios
 {
     internal static void Run()
     {
+        CheeseEventScenarios.Run();
         var choose = typeof(BotEventDriver).GetMethod("ChooseEventOption", BindingFlags.Static | BindingFlags.NonPublic)!;
         void Check(bool condition, string message)
         {

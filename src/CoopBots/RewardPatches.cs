@@ -135,11 +135,7 @@ internal static class BotRewardDriver
 
         if (declaringNames.Any(name => name.Contains("MendRestSiteOption", StringComparison.Ordinal)))
         {
-            var target = player.RunState.Players
-                .Where(candidate => candidate.NetId != player.NetId && candidate.Creature.IsAlive)
-                .OrderBy(candidate => (double)candidate.Creature.CurrentHp / Math.Max(1, candidate.Creature.MaxHp))
-                .ThenBy(candidate => candidate.NetId)
-                .FirstOrDefault();
+            var target = BotRestSitePatch.BestMendTarget(player);
             return PlayerChoiceResult.FromPlayerId(target?.NetId);
         }
 

@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using CoopBots.Kernel.Vendor.PowerSync;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
@@ -57,6 +57,11 @@ public sealed class KernelTeamSearch : IDisposable
         // Focused-regression old/new switch. Production keeps the backported
         // power-route protection on; tests flip it off on the same fixture.
         internal bool EnablePowerRoutes { get; init; } = true;
+        public bool IncludePotions { get; init; } = true;
+        public bool RequirePotionOpening { get; init; }
+        public bool CaptureReplayStates { get; init; } = true;
+        public bool Deduplicate { get; init; } = true;
+        public ObjectiveConfig? TerminalObjective { get; init; }
     }
     // ActionStates is the L1 sentinel: the branch's visible-state text AFTER each action
     // on the returned path, index-aligned with Actions. Deployment compares the live
@@ -103,6 +108,8 @@ public sealed class KernelTeamSearch : IDisposable
     // boundary rather than a route. Preferring "crossed a round" over "finished" is how
     // a search returns a plan that stops where the depth ran out.
     private Node? bestTerminal;
+    private List<Node> continuationFrontier = new();
+    public IReadOnlyList<IReadOnlyList<Action>> ContinuationPaths { get; private set; } = [];
     private int expanded;
     private int maxRoundsReached;
     private bool disposed;
@@ -227,9 +234,9 @@ public sealed class KernelTeamSearch : IDisposable
                 // CardOccurrence counts the same way, so the two agree on which physical
                 // card an occurrence names.
                 var seenCardStates = new Dictionary<string, int>(StringComparer.Ordinal);
-                foreach (var card in parent.State.Hand(actor))
+                foreach (var card in options.RequirePotionOpening && parent.Path.Length == 0 ? [] : parent.State.Hand(actor))
                 {
-                    var cardStateKey = Vendor.CardChoiceSupport.ChoiceCardKey(card);
+                    var cardStateKey = parent.State.CardStateKey(card);
                     var cardStateOccurrence = seenCardStates.GetValueOrDefault(cardStateKey);
                     seenCardStates[cardStateKey] = cardStateOccurrence + 1;
                     if (!parent.State.CanPlay(card)) continue;
@@ -271,19 +278,20 @@ public sealed class KernelTeamSearch : IDisposable
                             // terminals by Score instead is what let a line that ends the
                             // fight lose to a line that merely crossed a round.
                             if (child.HasTerminal && (bestTerminal is null
-                                || TerminalComparer.Compare(TerminalOf(node), TerminalOf(bestTerminal)) > 0))
+                                || TerminalComparer.Compare(TerminalOf(node), TerminalOf(bestTerminal), options.TerminalObjective) > 0))
                                 bestTerminal = node;
                         }
                         next.Add(node);
                         // Bound retained memory throughout expansion, not just at end of depth.
                         if (next.Count > options.Width * 4)
-                            next = TrimInterim(next, options.Width);
+                            next = options.Deduplicate ? TrimInterim(next, options.Width)
+                                : SelectOrdinaryFrontier(next.OrderByDescending(n => n.Score).ToList(), options.Width);
                         yield return true;
                     }
                 }
                 // Free potion actions. A potion that cannot be simulated in this
                 // branch is simply skipped (potions are optional, unlike cards).
-                foreach (var potion in parent.State.UsablePotions(actor))
+                foreach (var potion in options.IncludePotions ? parent.State.UsablePotions(actor) : [])
                 foreach (var target in parent.State.PotionTargets(potion))
                 {
                     if (expanded >= options.MaxNodes) yield break;
@@ -306,10 +314,11 @@ public sealed class KernelTeamSearch : IDisposable
                     if (child.HasWon && (bestResolved is null || node.Score > bestResolved.Score)) bestResolved = node;
                     next.Add(node);
                     if (next.Count > options.Width * 4)
-                        next = TrimInterim(next, options.Width);
+                        next = options.Deduplicate ? TrimInterim(next, options.Width)
+                                : SelectOrdinaryFrontier(next.OrderByDescending(n => n.Score).ToList(), options.Width);
                     yield return true;
                 }
-                if (options.IncludeEndTurns)
+                if (options.IncludeEndTurns && !(options.RequirePotionOpening && parent.Path.Length == 0))
                 {
                     if (expanded >= options.MaxNodes) yield break;
                     expanded++;
@@ -351,7 +360,9 @@ public sealed class KernelTeamSearch : IDisposable
             // skill/block, potion and end-turn line each before filling by score.
             // A pure top-score cut can otherwise exhaust the budget on variations
             // of one idea and never compare a defense or a settling line.
-            frontier = SelectFrontier(next, options.Width);
+            frontier = options.Deduplicate ? SelectFrontier(next, options.Width)
+                : SelectOrdinaryFrontier(next.OrderByDescending(n => n.Score).ToList(), options.Width);
+            continuationFrontier = frontier;
         }
         // WHY the horizon ended, which the caller needs and the stop reason used to
         // conflate: the loop exits either at the depth cap (more depth would explore
@@ -566,7 +577,8 @@ public sealed class KernelTeamSearch : IDisposable
     /// path for a number nothing reads.
     /// </summary>
     private TerminalRecord TerminalOf(Node node) =>
-        TerminalRecord.Capture(node.State, node.State.Party.Count > 0 ? node.State.Party : actors, terminal: true);
+        TerminalRecord.Capture(node.State, node.State.Party.Count > 0 ? node.State.Party : actors, terminal: true)
+            with { ResourcesConsumed = node.Path.Count(a => a.Potion is not null) };
 
     private void Complete(string reason)
     {
@@ -600,8 +612,16 @@ public sealed class KernelTeamSearch : IDisposable
         }
         else
         {
-            ActionStates = CaptureActionStates(replayRoot, best.Path, out var replayFailure);
-            ReplayFailure = replayFailure;
+            if (options.CaptureReplayStates)
+            {
+                ActionStates = CaptureActionStates(replayRoot, best.Path, out var replayFailure);
+                ReplayFailure = replayFailure;
+            }
+            ContinuationPaths = new[] { bestTerminal, bestHorizon, bestResolved, best }
+                .Where(n => n is not null).Cast<Node>().Concat(continuationFrontier.OrderByDescending(n => n.Score))
+                .Where(n => n.Path.Length > 0)
+                .DistinctBy(n => string.Join(";", n.Path.Select(a => $"{a.Player.NetId}:{a.CardStateKey}:{a.Potion?.Id.Entry}:{a.Target?.CombatId}:{a.EndTurn}:{string.Join(",", a.ChoiceOrdinals ?? [])}")))
+                .Take(8).Select(n => (IReadOnlyList<Action>)n.Path).ToArray();
         }
         CompletedResult = new(Array.AsReadOnly(best.Path), best.Score, expanded,
             new System.Collections.ObjectModel.ReadOnlyDictionary<string, int>(new Dictionary<string, int>(boundaries)), reason,

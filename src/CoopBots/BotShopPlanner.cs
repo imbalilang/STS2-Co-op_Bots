@@ -42,8 +42,11 @@ internal static class BotShopPlanner
     private static double CardGold(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
     {
         var deck = deckOverride ?? player.Deck.Cards.ToList();
-        var value = Building.BuildValue.Add(card, player, deckOverride).Total;
-        var premium = Archetypes.CorePremium(CardProfile.Of(card), card, deck, player, out _);
+        var terms = Building.BuildValue.AddDetailed(card, player, deckOverride);
+        var value = terms.Total;
+        // Hand experiments already price what this deck can use. Adding the old
+        // route premium on top would give the prior a second, unbounded vote.
+        var premium = terms.Contextual ? 0 : Archetypes.CorePremium(CardProfile.Of(card), card, deck, player, out _);
         if (premium > 0)
         {
             var copies = deck.Count(existing => existing.Id == card.Id);

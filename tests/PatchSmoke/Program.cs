@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using CoopBots;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Models.Cards;
@@ -8,6 +8,67 @@ try
 var harmony = new Harmony("cn.xiwa.sts2.coopbots.smoke");
 LobbyBotService.ValidateRuntimeSchema();
 harmony.PatchAll(typeof(ModEntry).Assembly);
+
+if (args.Contains("--shared-event-only"))
+{
+    TestEnvironment.Ensure(); SharedEventScenarios.Run(); return;
+}
+
+if (args.Contains("--team-order-only"))
+{
+    TestEnvironment.Ensure(); TeamOrderingScenarios.Run(); return;
+}
+
+if (args.Contains("--dynamic-target-only"))
+{
+    TestEnvironment.Ensure(); DynamicTargetScenarios.Run(); ShivOpportunityScenarios.Run(); AttritionSequenceScenarios.Run(); return;
+}
+
+if (args.Contains("--attrition-sequence-only"))
+{
+    TestEnvironment.Ensure(); AttritionSequenceScenarios.Run(); return;
+}
+
+if (args.Contains("--potion-overlap-only"))
+{
+    TestEnvironment.Ensure(); PotionOverlapScenarios.Run(); return;
+}
+
+if (args.Contains("--boss-draft-only"))
+{
+    TestEnvironment.Ensure(); BossDraftScenarios.Run(); return;
+}
+
+if (args.Contains("--attrition-only"))
+{
+    TestEnvironment.Ensure(); AttritionScenarios.Run(); SustainedBuildingScenarios.Run(); return;
+}
+
+if (args.Contains("--poison-potion-only"))
+{
+    TestEnvironment.Ensure(); PoisonPotionScenarios.Run(); return;
+}
+
+if (args.Contains("--draft-semantics-only"))
+{
+    TestEnvironment.Ensure(); DraftSemanticsScenarios.Run(); return;
+}
+
+if (args.Contains("--temporal-only"))
+{
+    TestEnvironment.Ensure(); TemporalResourceScenarios.Run(); return;
+}
+if (args.Contains("--cheese-only"))
+{
+    TestEnvironment.Ensure(); CheeseEventScenarios.Run(); return;
+}
+
+if (args.Contains("--camp-only"))
+{
+    TestEnvironment.Ensure();
+    RestSiteScenarios.Run();
+    return;
+}
 
 // Permanent deck-edit entry regressions only: drives BotBrain.SelectCards
 // against real game models without running the wider patch/combat suite. The
@@ -59,6 +120,18 @@ if (args.Contains("--team-economy-only"))
 }
 
 #if KERNEL_TESTS
+if (args.Contains("--strength-only") || args.Contains("--strength-probe"))
+{
+    TestEnvironment.Ensure();
+    new Harmony("coopbots.test.kernel.presentation.strength").Patch(
+        AccessTools.Method(typeof(MegaCrit.Sts2.Core.Localization.LocString), "GetFormattedText"),
+        prefix: new HarmonyMethod(typeof(KernelEngineScenarios), "FormatText"));
+    if (args.Contains("--strength-probe")) { KernelRolloutScenarios.StrengthProbe(); return; }
+    KernelRolloutScenarios.StrengthRegressions();
+    BuildingStrengthScenarios.Run();
+    return;
+}
+
 // Focused power-route backport gate: TestEnvironment installs the headless
 // model database/presentation stubs the full suite normally sets up in
 // CooperativeScenarios, then KernelEngineScenarios runs
@@ -123,7 +196,7 @@ var expected = new[]
     "PlatformUtil.GetPlayerNameRaw",
     "RewardsSet.Offer",
     "PlayerChoiceSynchronizer.WaitForRemoteChoice",
-    "RestSiteSynchronizer.BeginRestSite",
+    "RestSiteRoom.EnterInternal",
     "CombatStateSynchronizer.CheckSyncCompleted",
     "CombatManager.SetReadyToBeginEnemyTurn",
     "ActChangeSynchronizer.OnPlayerReady",
@@ -256,6 +329,17 @@ BuildValueScenarios.Run();
 BuildingPolicyScenarios.Run();
 CommunityDraftScenarios.Run();
 TeamEconomyScenarios.Run();
+DraftSemanticsScenarios.Run();
+PoisonPotionScenarios.Run();
+SharedEventScenarios.Run();
+TeamOrderingScenarios.Run();
+AttritionScenarios.Run();
+DynamicTargetScenarios.Run();
+ShivOpportunityScenarios.Run();
+AttritionSequenceScenarios.Run();
+PotionOverlapScenarios.Run();
+BossDraftScenarios.Run();
+SustainedBuildingScenarios.Run();
 Console.WriteLine($"PASS: {patched.Count} Harmony patches applied; bot IDs and Genius tactical probes verified.");
 foreach (var method in patched)
     Console.WriteLine($"  {method.DeclaringType?.FullName}.{method.Name}");

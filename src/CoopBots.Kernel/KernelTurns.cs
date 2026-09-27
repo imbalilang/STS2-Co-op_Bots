@@ -64,6 +64,26 @@ public sealed partial class KernelSession
         ready.Add(player.NetId);
         boundary = "";
         if (Combat.Players.Any(p => Hp(p.Creature) > 0 && !IsReady(p))) return true;
+        return ResolveReadySide(player, maxRounds, out boundary);
+    }
+
+    // Native CreatureCmd.Kill ends a dead player's turn. If the last unready
+    // actor dies to thorns/self-damage, nobody can explicitly EndTurn again.
+    // Settle the already-ready side without inventing a deployable extra action.
+    internal bool TryAdvanceReadySide(int maxRounds, out string boundary)
+    {
+        boundary = "";
+        if (EnemyPhaseCompleted || HasTerminal) return false;
+        var alive = Combat.Players.Where(p => Hp(p.Creature) > 0).ToArray();
+        if (alive.Length == 0 || alive.Any(p => !IsReady(p))) return false;
+        return ResolveReadySide(alive[0], maxRounds, out boundary);
+    }
+
+    private bool ResolveReadySide(Player player, int maxRounds, out string boundary)
+    {
+        using var isolation = SimulationNotificationIsolation.Enter();
+        roundBoundary = null;
+        if (failedBoundary is not null) { boundary = failedBoundary; return false; }
         failedBoundary = "incomplete-round";
         Player[] players;
         Combat.BeginActionChoices([]);
@@ -212,8 +232,17 @@ public sealed partial class KernelSession
                 if (Combat.HasPendingChoice) return false;
                 TurnStartRelicSupport.TriggerAfterEnergyResetLate(simulator, Combat, player);
                 if (Combat.HasPendingChoice) return false;
-                if (!Combat.TriggerSideTurnStart(simulator, CombatSide.Player, [player.Creature],
-                        Combat.GetPlayerTurnNumber(player) != 1, isExtraTurn: false)) return false;
+                // Match ContinuePlayerStart: hand draw consumes delayed draw
+                // before side-start expires DrawCardsNextTurnPower. Calling
+                // side-start here erased Predator/Glow/Plot's extra cards.
+                var sideStarted = false;
+                bool StartSide()
+                {
+                    sideStarted = true;
+                    return Combat.TriggerSideTurnStart(simulator, CombatSide.Player, [player.Creature],
+                        Combat.GetPlayerTurnNumber(player) != 1, isExtraTurn: false);
+                }
+                using var beforeChoice = choices.BeforeNextTake(StartSide);
                 if (Combat.PrepareBeforeHandDraw(simulator, player, choices)) return false;
                 var historyStart = simulator.History.Entries.Count;
                 var drawCount = PersistentPowerSupport.ConsumeModifiedHandDraw(Combat, player, CombatManager.baseHandDrawCount);
@@ -221,6 +250,8 @@ public sealed partial class KernelSession
                 if (Combat.HasPendingChoice) return false;
                 TriggeredPowerSupport.CompensateHistorySince(simulator, Combat, historyStart);
                 if (Combat.TriggerAfterPlayerTurnStart(simulator, player.Creature, choices)) return false;
+                if (!sideStarted && !StartSide()) return false;
+                beforeChoice.Dispose();
                 if (!SettleDeaths()) return false;
                 EnchantmentLifecycleSupport.TriggerAfterTurnStartOrbs(simulator, player);
                 if (Combat.TriggerAutoPrePlayEarly(simulator, player, Combat.GetPlayerTurnNumber(player),

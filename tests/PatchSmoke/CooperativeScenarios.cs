@@ -295,6 +295,7 @@ internal static class CooperativeScenarios
         MultiplayerCoverageAudit.Run();
         MultiplayerTriggerScenarios.Run();
         TabletEventScenarios.Run();
+        SlipperyBridgeScenarios.Run();
         ShopScenarios.Run();
         LastStandScenarios.Run();
         PotionValueScenarios.Run();

@@ -1,4 +1,4 @@
-﻿using CoopBots;
+using CoopBots;
 using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -25,10 +25,11 @@ using MegaCrit.Sts2.Core.Unlocks;
 internal static class KernelRolloutScenarios
 {
     private static readonly RolloutPolicyKind[] AllPolicies =
-        [RolloutPolicyKind.Kill, RolloutPolicyKind.Defend, RolloutPolicyKind.Growth];
+        [RolloutPolicyKind.Tactical, RolloutPolicyKind.Kill, RolloutPolicyKind.Defend, RolloutPolicyKind.Growth];
 
     internal static void Run()
     {
+        StrengthRegressions();
         TournamentDecisionReadsTheCurrentBoard();
         SlicingDoesNotChangeTheAnswer();
         ABudgetBindsInsideOneAdvance();
@@ -56,6 +57,318 @@ internal static class KernelRolloutScenarios
         TemporaryStatPotionNeedsMatchingCards();
         TheBoundaryNamesThePendingChoice();
         AnUnresolvedBoardDeclinesInsteadOfThrowing();
+        RecordedStatesAreTheBoardBeforeTheAction();
+    }
+
+    // R2 2026-09-27, exit 1 for each restored bug (work/strength-20260927-v1/r2-*.log):
+    // targets: opening search must consider the unshielded higher-HP target
+    // duplicates: identical Strikes must not consume separate opening candidates
+    // tactical: tactical rollout must attack the unshielded enemy, not printed-lethal into 100 block
+    // overblock: tactical rollout must attack when existing block already covers incoming damage
+    // potion-save: a bottle saving ten HP in a verified victory must be worth considering
+    // potion-waste: a bottle must not be spent on a tie or an unverified cutoff
+    // potion-admission: potion pass must run for a costly victory and skip a full-health victory
+    // potion-accounting: tournament endings must charge potion openings and keep card openings free
+    // intent: a simulated non-attack must not reuse the live root's attack intent
+    // potion-only: second pass must spend its budget on bottles instead of repeating card openings
+    // script-opening: cached script must include the Bash opening before the rollout suffix
+    // script-states: opening and suffix must have one before-action state per cached action
+    // script-suffix: cached index one must execute the first suffix action instead of skipping it
+    // R2 v2 continuation-roster: a bot already done this turn must remain controlled in future rollout turns
+    // R2 v2 continuation-consumer: the bot must actually play cards again after the simulated round boundary
+    internal static void StrengthRegressions()
+    {
+        CombatFeedbackScenarios.Run();
+        JointSearchScenarios.Run();
+        // R2 v4, old behavior exit 1 (work/strength-20260927-v4/r2-thorns.log):
+        // last actor dying to thorns must advance the surviving ready teammates into the next round
+        var (thornParty, thornCombat) = Board("LAST-ACTOR-THORNS");
+        foreach (var seat in thornParty)
+            foreach (var held in seat.PlayerCombatState!.Hand.Cards.ToArray())
+                seat.PlayerCombatState.Hand.RemoveInternal(held);
+        thornParty[^1].Creature.SetCurrentHpInternal(1);
+        thornParty[^1].PlayerCombatState!.Hand.AddInternal(thornCombat.CreateCard<Anger>(thornParty[^1]));
+        foreach (var foe in thornCombat.HittableEnemies)
+            ((MegaCrit.Sts2.Core.Models.Powers.ThornsPower)ModelDb.Power<MegaCrit.Sts2.Core.Models.Powers.ThornsPower>().ToMutable()).ApplyInternal(foe, 3, true);
+        var thornRoot = KernelSession.Capture(thornCombat);
+        var thornRun = KernelRollout.Run(thornRoot, thornParty, thornParty,
+            new RolloutOptions(RolloutPolicyKind.Kill, MaxSteps: 30));
+        Check(thornRun.RoundsAdvanced > 0 && thornRun.StopReason != "no-actor:all-ready",
+            "last actor dying to thorns must advance the surviving ready teammates into the next round");
+        Console.WriteLine("PASS: a last actor death does not strand every surviving seat as ready.");
+
+        // R2 v4, each action producer restored separately, exit 1:
+        // rollout card identity must use the current branch state: Kill / Tactical
+        // tournament opening identity must use the current branch state
+        // team search card identity must use the current branch state
+        // Evidence: work/strength-20260927-v4/r2-card-keys.json
+        var (keyParty, keyCombat) = Board("BRANCH-CARD-KEY");
+        foreach (var seat in keyParty)
+            foreach (var held in seat.PlayerCombatState!.Hand.Cards.ToArray())
+                seat.PlayerCombatState.Hand.RemoveInternal(held);
+        var keyCard = keyCombat.CreateCard<Anger>(keyParty[0]);
+        keyParty[0].PlayerCombatState!.Hand.AddInternal(keyCard);
+        var keyRoot = KernelSession.Capture(keyCombat);
+        var keyPredicted = keyRoot.Simulator.State.FindCard(keyCard)!;
+        keyRoot.Simulator.Upgrade(keyPredicted);
+        var expectedKey = CoopBots.Kernel.Vendor.CardChoiceSupport.ChoiceCardKey(keyPredicted);
+        foreach (var policy in AllPolicies)
+        {
+            var keyRun = KernelRollout.Run(keyRoot.Fork(), keyParty, keyParty,
+                new RolloutOptions(policy, MaxSteps: 1));
+            Check(keyRun.Actions[0].CardStateKey == expectedKey,
+                "rollout card identity must use the current branch state: " + policy);
+        }
+        var keyOpening = KernelTournament.FirstActions(keyRoot, [keyParty[0]], 10,
+            new TournamentOptions(IncludePotions: false, IncludeEndTurns: false));
+        Check(keyOpening.All(a => a.CardStateKey == expectedKey) && keyOpening.Count > 0,
+            "tournament opening identity must use the current branch state");
+        var keySearch = new KernelTeamSearch(keyRoot.Fork(), [keyParty[0]],
+            state => -state.Enemies.Sum(e => state.Hp(e)),
+            new KernelTeamSearch.Options(Depth: 1, MaxNodes: 20, IncludeEndTurns: false));
+        while (!keySearch.Advance(TimeSpan.FromSeconds(1), () => true)) { }
+        Check(keySearch.CompletedResult!.Actions[0].CardStateKey == expectedKey,
+            "team search card identity must use the current branch state");
+        Console.WriteLine("PASS: all action producers record branch card state after in-combat upgrades.");
+
+        // R2 v3 (exit 1 each, work/strength-20260927-v3/r2-outrage-*.log):
+        // Outrage must copy the played card's upgraded state instead of generating a base card
+        // Outrage copies must belong to each living recipient, including the caster
+        // Outrage must not generate copies for a dead teammate
+        var (copyParty, copyCombat) = Board("OUTRAGE-COPIES");
+        var outrage = copyCombat.CreateCard<Outrage>(copyParty[0]);
+        outrage.UpgradeInternal(); outrage.FinalizeUpgradeInternal();
+        copyParty[0].PlayerCombatState!.Hand.AddInternal(outrage);
+        copyParty[3].Creature.SetCurrentHpInternal(0);
+        var copyRoot = KernelSession.Capture(copyCombat);
+        Check(copyRoot.Play(outrage, copyCombat.HittableEnemies.First(), out var copyBoundary),
+            "upgraded Outrage fixture must play: " + copyBoundary);
+        var cloneForAlly = copyRoot.Discard(copyParty[1]).Single(c => c is Outrage);
+        var liveClone = outrage.CreateCloneForPlayer(copyParty[1]);
+        Check(CoopBots.Kernel.Vendor.CardChoiceSupport.ChoiceCardKey(cloneForAlly)
+            == CoopBots.Kernel.Vendor.CardChoiceSupport.ChoiceCardKey(liveClone),
+            "Outrage must copy the played card's upgraded state instead of generating a base card");
+        Check(cloneForAlly.Owner == copyParty[1] && copyRoot.Discard(copyParty[0]).Count(c => c is Outrage) == 2,
+            "Outrage copies must belong to each living recipient, including the caster");
+        Check(copyRoot.Simulator.History.OfType<CoopBots.Kernel.Vendor.Engine.InCombat.Simulation.CombatPredictionCardGeneratedEntry>().Count() == 3,
+            "Outrage must not generate copies for a dead teammate");
+        Console.WriteLine("PASS: Outrage clones match live upgraded cards and exclude dead recipients.");
+
+        var (openingParty, openingCombat) = Board("OPENING-SCRIPT-ALIGNMENT");
+        var opener = openingParty[0];
+        foreach (var card in opener.PlayerCombatState!.Hand.Cards.ToArray())
+            opener.PlayerCombatState.Hand.RemoveInternal(card);
+        opener.PlayerCombatState.Hand.AddInternal(openingCombat.CreateCard<Bash>(opener));
+        var openingRoot = KernelSession.Capture(openingCombat);
+        var opening = KernelTournament.Run(openingRoot, openingParty, openingParty,
+            new TournamentOptions(TopK: 1, IncludePotions: false, UsePolicyPortfolio: false), 30000);
+        Check(opening.FirstAction?.Card is Bash && opening.Script?[0].Card is Bash,
+            "cached script must include the Bash opening before the rollout suffix");
+        Check(opening.Script!.Count == opening.ScriptAliveStates!.Count
+            && opening.Script.Count == opening.ScriptEnemyStates!.Count,
+            "opening and suffix must have one before-action state per cached action");
+        var expectedSuffix = KernelRollout.Run(openingRoot.CardBranches(opening.FirstAction!.Card!,
+                opening.FirstAction.Target, maximumBranches: 1).First().State,
+            openingParty, openingParty);
+        Check(opening.Script.Count == expectedSuffix.Actions.Count + 1
+            && SameAction(opening.Script[1], expectedSuffix.Actions[0]),
+            "cached index one must execute the first suffix action instead of skipping it");
+        Console.WriteLine("PASS: opening action and rollout suffix are cached without skipping a step.");
+
+        // R2 (exit 1, r2-idle-end.log): empty hands must not bypass the tournament's pending end-turn step
+        // R2 idle-reset (exit 1): a runtime reset must preserve pending tournament ownership
+        // R2 idle-consume (exit 1): polling the empty hand must consume its end-turn exactly once
+        // Runtime must poll the stored end-turn even when every hand is empty.
+        var (idleParty, idleCombat) = Board("TOURNAMENT-IDLE-END");
+        foreach (var seat in idleParty)
+            foreach (var card in seat.PlayerCombatState!.Hand.Cards.ToArray())
+                seat.PlayerCombatState.Hand.RemoveInternal(card);
+        var idlePlanner = new KernelCombatPlanner();
+        var idleType = typeof(KernelCombatPlanner);
+        idleType.GetField("tournamentScript", Flags)!.SetValue(idlePlanner,
+            new[] { new KernelTeamSearch.Action(idleParty[0], null, null, EndTurn: true) });
+        idleType.GetField("tournamentScriptCombat", Flags)!.SetValue(idlePlanner, idleCombat);
+        idleType.GetField("tournamentScriptAliveStates", Flags)!.SetValue(idlePlanner,
+            new[] { idleParty.Select(p => p.NetId).OrderBy(id => id).ToArray() });
+        idleType.GetField("tournamentScriptEnemyStates", Flags)!.SetValue(idlePlanner,
+            new[] { idleCombat.HittableEnemies.Where(e => e.IsAlive).ToArray() });
+        Check(!(KernelCombatPlanner.NoAvailableCombatAction(idleParty) && !idlePlanner.HasPendingStep),
+            "empty hands must not bypass the tournament's pending end-turn step");
+        idlePlanner.Reset(); // The runtime also resets working state during enemy animations.
+        Check(idlePlanner.HasPendingStep, "a runtime reset must preserve pending tournament ownership");
+        var previousTournament = KernelCombatPlanner.TournamentOverride;
+        try
+        {
+            KernelCombatPlanner.TournamentOverride = true;
+            var idleStatus = idlePlanner.Poll(idleCombat, idleParty, 1, null, true, BotDifficulty.Pro, out var idleMove);
+            Check(idleStatus == KernelCombatPlanner.Status.Ready && idleMove is null
+                && idlePlanner.ConfirmedEndTurn == idleParty[0] && !idlePlanner.HasPendingStep,
+                "polling the empty hand must consume its end-turn exactly once");
+        }
+        finally { KernelCombatPlanner.TournamentOverride = previousTournament; }
+        Console.WriteLine("PASS: empty hands consume the tournament end-turn before the live round advances.");
+
+        var (returningParty, returningCombat) = Board("RETURNING-BOT");
+        // Global ordering can finish the original 80-HP board in round two
+        // before this seat is needed. Keep enemies alive long enough to test
+        // continuation ownership, independently of which seat now goes first.
+        foreach (var enemy in returningCombat.Enemies)
+        { enemy.SetMaxHpInternal(200); enemy.SetCurrentHpInternal(200); }
+        var eligible = returningParty.Skip(1).ToArray();
+        var planner = new KernelCombatPlanner();
+        var begin = typeof(KernelCombatPlanner).GetMethod("BeginTournamentPhase",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        Check((bool)begin.Invoke(planner, new object[] { returningCombat, eligible, true })!,
+            "returning-bot fixture must open a production tournament");
+        var productionOptions = (TournamentOptions)typeof(KernelCombatPlanner)
+            .GetField("tournamentOptions", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(planner)!;
+        Check(productionOptions.ContinuationActors?.Contains(returningParty[0]) == true,
+            "a bot already done this turn must remain controlled in future rollout turns");
+        var returningRoot = KernelSession.Capture(returningCombat);
+        Check(returningRoot.EndTurn(returningParty[0], 10, out _), "fixture must end one bot's current turn");
+        var returningResult = KernelTournament.Run(returningRoot, returningParty, eligible,
+            productionOptions with { TopK = 1, UsePolicyPortfolio = false, MaxDegreeOfParallelism = 1 }, 30000);
+        Check(returningResult.Script!.Any(a => a.Player == returningParty[0] && a.Card is not null),
+            "the bot must actually play cards again after the simulated round boundary");
+        Console.WriteLine("PASS: current eligibility does not turn ended bots into passive humans for later rounds.");
+
+        var (party, combat) = Board("TACTICAL-SHIELD");
+        var enemies = combat.Enemies.ToArray();
+        enemies[0].SetCurrentHpInternal(4);
+        enemies[0].GainBlockInternal(100);
+        enemies[1].SetCurrentHpInternal(12);
+        var root = KernelSession.Capture(combat);
+        var choices = KernelTournament.FirstActions(root, [party[0]], 20,
+            new TournamentOptions(IncludePotions: false));
+        Check(choices.Any(c => ReferenceEquals(c.Target, enemies[1])),
+            "opening search must consider the unshielded higher-HP target");
+        Check(choices.Count == 2, "identical Strikes must not consume separate opening candidates");
+        var outcome = KernelRollout.Run(root.Fork(), party, party,
+            new RolloutOptions(RolloutPolicyKind.Tactical, MaxSteps: 1));
+        Check(ReferenceEquals(outcome.Actions[0].Target, enemies[1]),
+            "tactical rollout must attack the unshielded enemy, not printed-lethal into 100 block");
+        Console.WriteLine("PASS: target coverage, duplicate pruning and resolved-damage targeting.");
+
+        var (defenders, defense) = Board("TACTICAL-OVERBLOCK");
+        var actor = defenders[0];
+        foreach (var card in actor.PlayerCombatState!.Hand.Cards.ToArray()) actor.PlayerCombatState.Hand.RemoveInternal(card);
+        actor.PlayerCombatState.Hand.AddInternal(defense.CreateCard<DefendIronclad>(actor));
+        actor.PlayerCombatState.Hand.AddInternal(defense.CreateCard<StrikeIronclad>(actor));
+        actor.Creature.GainBlockInternal(100);
+        var defended = KernelRollout.Run(KernelSession.Capture(defense), defenders, defenders,
+            new RolloutOptions(RolloutPolicyKind.Tactical, MaxSteps: 1));
+        Check(defended.Actions[0].Card is StrikeIronclad,
+            "tactical rollout must attack when existing block already covers incoming damage");
+        Console.WriteLine("PASS: tactical rollout does not spend its first energy on redundant defence.");
+        var baseline = new TerminalRecord(true, EvidenceKind.VerifiedTerminal, "", [30, 30, 30, 30], 0, 0);
+        var saving = baseline with { PostCombatHp = new[] { 40, 30, 30, 30 }, ResourcesConsumed = 1 };
+        var waste = baseline with { ResourcesConsumed = 1 };
+        Check(KernelPotionPolicy.Improves(baseline, saving),
+            "a bottle saving ten HP in a verified victory must be worth considering");
+        Check(!KernelPotionPolicy.Improves(baseline, waste)
+            && !KernelPotionPolicy.Improves(baseline, saving with { Victory = false, Kind = EvidenceKind.EstimatedCutoff }),
+            "a bottle must not be spent on a tie or an unverified cutoff");
+        Console.WriteLine("PASS: potions can buy HP in victories without being spent on ties or cutoffs.");
+        party[0].AddPotionInternal(ModelDb.Potion<FirePotion>().ToMutable(), silent: true);
+        var stocked = KernelSession.Capture(combat);
+        Check(KernelPotionPolicy.WorthComparing(stocked, party, party, baseline)
+            && !KernelPotionPolicy.WorthComparing(stocked, party, party,
+                baseline with { PostCombatHp = new[] { 80, 80, 80, 80 } }),
+            "potion pass must run for a costly victory and skip a full-health victory");
+        var bottleChoices = KernelTournament.FirstActions(stocked, party, 20,
+            new TournamentOptions(IncludePotions: true, PotionsOnly: true));
+        Check(bottleChoices.Count > 0 && bottleChoices.All(a => a.Potion is not null),
+            "second pass must spend its budget on bottles instead of repeating card openings");
+        var potionResult = KernelTournament.Run(stocked, party, party,
+            new TournamentOptions(TopK: 20, IncludePotions: true, UsePolicyPortfolio: false,
+                Rollout: new RolloutOptions(MaxSteps: 1)), 30000);
+        Check(potionResult.Considered.Any(r => r.ResourcesConsumed == 1)
+            && potionResult.Considered.Any(r => r.ResourcesConsumed == 0),
+            "tournament endings must charge potion openings and keep card openings free");
+        Console.WriteLine("PASS: potion pass admission and actual tournament resource accounting.");
+
+        var branch = root.Fork();
+        var simulatedCombat = typeof(KernelSession).GetProperty("Combat",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(branch)!;
+        var forceMove = simulatedCombat.GetType().GetMethod("ForceMonsterMove",
+            new[] { typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature), typeof(MoveState) })!;
+        foreach (var enemy in enemies)
+            forceMove.Invoke(simulatedCombat, new object[] { enemy,
+                new MoveState("TEST_BUFF", _ => Task.CompletedTask, new BuffIntent()) });
+        Check(branch.CurrentAttacks().Count == 0,
+            "a simulated non-attack must not reuse the live root's attack intent");
+        Console.WriteLine("PASS: non-attack branches do not inherit stale live damage forecasts.");
+
+
+    }
+
+    internal static void StrengthProbe()
+    {
+        for (var sample = 0; sample < 4; sample++)
+        {
+            var (party, combat) = Board($"STRENGTH-COST-{sample}");
+            foreach (var player in party)
+            {
+                player.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<DefendIronclad>(player));
+                player.PlayerCombatState.Hand.AddInternal(combat.CreateCard<Bash>(player));
+                player.PlayerCombatState.Hand.AddInternal(combat.CreateCard<ShrugItOff>(player));
+                foreach (var card in player.PlayerCombatState.DrawPile.Cards.ToArray())
+                    player.PlayerCombatState.DrawPile.RemoveInternal(card);
+                for (var i = 0; i < 15; i++)
+                    player.PlayerCombatState.DrawPile.AddInternal(i % 3 == 0
+                        ? combat.CreateCard<DefendIronclad>(player) : combat.CreateCard<StrikeIronclad>(player));
+            }
+            foreach (var enemy in combat.Enemies)
+            {
+                enemy.SetMaxHpInternal(100); enemy.SetCurrentHpInternal(100);
+                ModelDb.Power<MegaCrit.Sts2.Core.Models.Powers.StrengthPower>().ToMutable()
+                    .ApplyInternal(enemy, 7, true);
+            }
+            var root = KernelSession.Capture(combat);
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var allocated = GC.GetTotalAllocatedBytes(false);
+            var result = KernelTournament.Run(root, party, party,
+                new TournamentOptions(TopK: 20, IncludePotions: false,
+                    MaxDegreeOfParallelism: Math.Clamp(Environment.ProcessorCount - 2, 1, 16)), 3200);
+            Console.WriteLine($"STRENGTH PROBE sample={sample} warmup={sample == 0} "
+                + $"ms={watch.Elapsed.TotalMilliseconds:F1} allocMB={(GC.GetTotalAllocatedBytes(false) - allocated) / 1048576.0:F1} "
+                + $"rollouts={result.Rollouts} stop={result.StopReason} victory={result.Record?.Victory} "
+                + $"hp={string.Join('/', result.Record?.PostCombatHp ?? [])}");
+        }
+    }
+
+    /// <summary>
+    /// A rollout records the board BEFORE each action, and the script cache depends on it: it
+    /// compares that entry against the LIVE board, which is the state after the previous step.
+    /// Recording AFTER the action put the comparison one step too far ahead, so live always
+    /// looked like it had an EXTRA enemy. Measured live 2026-09-27 with the diff instrumentation:
+    /// 13/13 mismatches in one round were `missing=[] extra=[X]`, and the enemy-set check fired
+    /// 20-34 times a run with more than half of them in the first half of a script — the
+    /// tournament dropped and re-searched its plan after almost every kill.
+    ///
+    /// CHECKED (R2): moving the two snapshot calls back below `session = resolved.State`
+    /// (and restoring the EndTurn branch's post-call snapshots) turns this red, verbatim:
+    ///   System.Exception: the step that wins the fight is the killing blow, so the board
+    ///   recorded for it must still show a living enemy, got 0.
+    /// </summary>
+    private static void RecordedStatesAreTheBoardBeforeTheAction()
+    {
+        var (party, combat) = Board("ROLLOUT-STATE-TIMING");
+        var root = KernelSession.Capture(combat);
+        var rootEnemies = root.Enemies.Count;
+        var outcome = KernelRollout.Run(root.Fork(), party, party,
+            new RolloutOptions(RolloutPolicyKind.Kill, MaxRounds: 30, Seed: 3));
+        Check(outcome.Actions.Count > 0, "the probe needs a rollout with at least one action.");
+        Check(outcome.EnemyStates.Count == outcome.Actions.Count,
+            "the enemy-state array must stay index-aligned with the actions.");
+        // The step that ends a won fight is the killing blow, so the board recorded FOR it must
+        // still show the enemy it killed. Recording after the action leaves that entry empty.
+        Check(!outcome.Victory || outcome.EnemyStates[^1].Length > 0,
+            "the step that wins the fight is the killing blow, so the board recorded for it must "
+            + $"still show a living enemy, got {outcome.EnemyStates[^1].Length}.");
+        Console.WriteLine("PASS: a rollout records the board before each action, which is exactly "
+            + "what the script cache compares the live board against.");
     }
 
     // R2 2026-09-21: cached rootSession ?? Capture -> exit 1:
@@ -299,7 +612,7 @@ internal static class KernelRolloutScenarios
         Console.WriteLine($"PORTFOLIO PROBE: single-policy HP={string.Join(",", evaluated.Select(r => r.PostCombatHp.Sum()))}; portfolio HP={result.Record!.PostCombatHp.Sum()}; ms={timer.Elapsed.TotalMilliseconds:F1}; rollouts={result.Rollouts}");
         Check(TerminalComparer.Compare(result.Record!, best) == 0,
             "portfolio must match the best independently evaluated policy from the same opening");
-        Check(result.Rollouts == 3, "portfolio must count all three actual rollouts");
+        Check(result.Rollouts == AllPolicies.Length, "portfolio must count every actual rollout");
         Console.WriteLine("PASS: portfolio evaluates independent policy states and counts every rollout.");
     }
 
@@ -728,6 +1041,7 @@ internal static class KernelRolloutScenarios
         plannerType.GetField("tournamentScriptCombat", Flags)!.SetValue(planner, combat);
         plannerType.GetField("tournamentScriptIndex", Flags)!.SetValue(planner, step);
         plannerType.GetField("tournamentScriptAliveStates", Flags)!.SetValue(planner, result.ScriptAliveStates);
+        plannerType.GetField("tournamentScriptEnemyStates", Flags)!.SetValue(planner, result.ScriptEnemyStates);
         var emit = plannerType.GetMethod("TryEmitFromTournamentScript", Flags)!;
         // Match TryEmitFromTournamentScript(combat, actors, humansFinished, out decision).
         // This fixture is all-bot, so end-turn steps are allowed.
@@ -775,6 +1089,11 @@ internal static class KernelRolloutScenarios
             .Select(player => player.NetId).OrderBy(id => id).ToArray();
         plannerType.GetField("tournamentScriptAliveStates", Flags)!.SetValue(planner,
             new[] { aliveAtOpening, aliveAtOpening });
+        // The enemy half of the same prediction: the script is only replayable while the board
+        // still has the enemies its line expected (see RunContinuationInvariants, invariant 7).
+        var enemiesAtOpening = combat.HittableEnemies.Where(e => e.IsAlive).ToArray();
+        plannerType.GetField("tournamentScriptEnemyStates", Flags)!.SetValue(planner,
+            new[] { enemiesAtOpening, enemiesAtOpening });
 
         var decided = DriveTournament(planner, combat, party, out var decision, "script-wiring-point");
         Check(decided && decision is not null,
@@ -826,6 +1145,8 @@ internal static class KernelRolloutScenarios
         var alive = combat.Players.Where(player => player.Creature.IsAlive)
             .Select(player => player.NetId).OrderBy(id => id).ToArray();
         plannerType.GetField("tournamentScriptAliveStates", Flags)!.SetValue(planner, new[] { alive });
+        plannerType.GetField("tournamentScriptEnemyStates", Flags)!.SetValue(planner,
+            new[] { combat.HittableEnemies.Where(e => e.IsAlive).ToArray() });
 
         var method = plannerType.GetMethod("TryTournamentDecision", Flags)!;
         var args = new object?[] { combat, party, false, "mixed-end-turn-point", null };
@@ -870,6 +1191,9 @@ internal static class KernelRolloutScenarios
             .Select(player => player.NetId).OrderBy(id => id).ToArray();
         plannerType.GetField("tournamentScriptAliveStates", Flags)!.SetValue(planner,
             new[] { aliveAtAdoption, aliveAtAdoption });
+        var enemiesAtAdoption = combat.HittableEnemies.Where(e => e.IsAlive).ToArray();
+        plannerType.GetField("tournamentScriptEnemyStates", Flags)!.SetValue(planner,
+            new[] { enemiesAtAdoption, enemiesAtAdoption });
 
         // Kill a seat that the script was priced with. The next step belongs to ANOTHER seat,
         // so only the living-seat check can catch this; the old skip loop would have played it.
@@ -913,6 +1237,9 @@ internal static class KernelRolloutScenarios
         // Step 0 expected the whole party; step 1 expected the first seat to be gone.
         plannerType.GetField("tournamentScriptAliveStates", Flags)!.SetValue(planner,
             new[] { allAlive, withoutFirst });
+        var enemiesThroughout = combat.HittableEnemies.Where(e => e.IsAlive).ToArray();
+        plannerType.GetField("tournamentScriptEnemyStates", Flags)!.SetValue(planner,
+            new[] { enemiesThroughout, enemiesThroughout });
 
         party[0].Creature.SetCurrentHpInternal(0);
         Check(!party[0].Creature.IsAlive, "the fixture must actually kill the first seat.");

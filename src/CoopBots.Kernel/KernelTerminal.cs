@@ -67,7 +67,13 @@ public sealed record TerminalRecord(
     // 2026-09-22 live report was exactly that — the bot blocked the steal, survived, and lost
     // a key card. The simulator already counts this in SimulatedCombatState.Theft; the
     // terminal record just has to carry it so the tournament can compare it.
-    int OutstandingStolenResource = 0)
+    int OutstandingStolenResource = 0,
+    // Distinguish losing/cutoff routes instead of tying every wipe at zero HP.
+    // Victories still use surviving seats and resources; these only break
+    // non-victory ties before valuing consumables that cannot survive a wipe.
+    int RemainingEnemies = 0,
+    int RemainingEnemyHp = 0,
+    int RoundsSurvived = 0)
 {
     public bool Verified => Kind == EvidenceKind.VerifiedTerminal;
 
@@ -103,7 +109,10 @@ public sealed record TerminalRecord(
             PostCombatHp: hp,
             IrreversibleLoss: terminal ? dead : 0,
             ResourcesConsumed: 0,
-            OutstandingStolenResource: session.OutstandingStolenResource);
+            OutstandingStolenResource: session.OutstandingStolenResource,
+            RemainingEnemies: session.Enemies.Count,
+            RemainingEnemyHp: session.Enemies.Sum(e => session.Hp(e)),
+            RoundsSurvived: session.RoundsAdvanced);
     }
 }
 
@@ -163,6 +172,16 @@ public static class TerminalComparer
         var loss = b.IrreversibleLoss.CompareTo(a.IrreversibleLoss);
         if (loss != 0) return loss;
 
+        if (!a.Victory || !a.Verified)
+        {
+            var enemies = b.RemainingEnemies.CompareTo(a.RemainingEnemies);
+            if (enemies != 0) return enemies;
+            var enemyHp = b.RemainingEnemyHp.CompareTo(a.RemainingEnemyHp);
+            if (enemyHp != 0) return enemyHp;
+            var rounds = a.RoundsSurvived.CompareTo(b.RoundsSurvived);
+            if (rounds != 0) return rounds;
+        }
+
         // 3. Fewer unrecovered stolen cards/gold is better. A thief that escapes is a
         //    permanent deck/gold loss, not a hit point; the live report was a bot that
         //    out-blocked the theft and lost a key card while ending at high HP.
@@ -204,6 +223,9 @@ public static class TerminalComparer
             var shortfall = floor - hp;
             total -= c.ReservePenalty * shortfall * shortfall / Math.Max(1, floor);
         }
-        return total - record.ResourcesConsumed * c.ConsumableUnitCost;
+        // There is no next fight in a verified wipe. Saving the bottle cannot
+        // outrank an otherwise equal attempt to escape that losing prediction.
+        var bottleCost = record is { Verified: true, Victory: false } ? 0 : c.ConsumableUnitCost;
+        return total - record.ResourcesConsumed * bottleCost;
     }
 }

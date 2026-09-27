@@ -1,4 +1,6 @@
+using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Events;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Events;
 
@@ -38,6 +40,8 @@ internal static class EventHandlers
         ["MORPHIC_GROVE"] = new MorphicGroveHandler(),
         ["ABYSSAL_BATHS"] = new AbyssalBathsHandler(),
         ["COLOSSAL_FLOWER"] = new ColossalFlowerHandler(),
+        ["SLIPPERY_BRIDGE"] = new SlipperyBridgeHandler(),
+        ["ROOM_FULL_OF_CHEESE"] = new RoomFullOfCheeseHandler(),
     };
 
     /// <summary>Registered handlers, for the drift check against the baked ids.</summary>
@@ -267,5 +271,104 @@ internal sealed class ColossalFlowerHandler : IEventSpecialHandler
         if (dive < 0) return null;
         var floor = Math.Max(1, player.Creature.MaxHp * 0.4);
         return player.Creature.CurrentHp >= floor ? dive : prize >= 0 ? prize : null;
+    }
+}
+
+/// <summary>
+/// Slippery Bridge removes one card from the deck. Its first pick is always a
+/// non-Basic card (the event draws from exactly that pool), and it offers two
+/// ways to answer: OVERCOME removes the card it picked, while HOLD_ON deals
+/// 3, then 4, then 5 ... unblockable, unpowered damage and rerolls onto
+/// another card.
+///
+/// Neither option id carries any wording, so the generic scorer prices both at
+/// 5.0, and the index tie-break then takes whichever is listed first — which is
+/// always OVERCOME. That is what happened to all four seats of the 2026-09-25
+/// A5 run, and the pick is never filler: the event goes out of its way to hand
+/// you a card you chose. The party lost TACTICIAN, MOLTEN_FIST, FLAME_BARRIER
+/// and BULLET_TIME, each of them picked one to six floors earlier, and reached
+/// the act-1 boss on 11/12/13/15-card decks with three upgrades between them.
+///
+/// The card OVERCOME would take is the model behind its own hover tip, so this
+/// needs no private event state: hold on while that card is one the deck wants
+/// to keep, and let go as soon as the reroll lands on filler.
+/// </summary>
+internal sealed class SlipperyBridgeHandler : IEventSpecialHandler
+{
+    // A hold has to leave this share of Max HP behind. The hit grows with every
+    // hold, so this is also what stops the loop on a deck whose rerolls keep
+    // landing on cards worth keeping rather than cycling back to a Basic.
+    // Same floor as AbyssalBathsHandler, for the same reason.
+    private const double HoldOnHealthFloor = 0.35;
+
+    public IReadOnlyList<string> OptionIds =>
+        ["OVERCOME", "HOLD_ON_0", "HOLD_ON_1", "HOLD_ON_2", "HOLD_ON_3", "HOLD_ON_4",
+         "HOLD_ON_5", "HOLD_ON_6", "HOLD_ON_LOOP"];
+
+    public int? Choose(Player player, EventModel eventModel)
+    {
+        if (eventModel is not SlipperyBridge) return null;
+        var overcome = EventHandlers.IndexOf(eventModel, "OVERCOME");
+        if (overcome < 0) return null;
+
+        // Without the card the option would take there is nothing to weigh. An
+        // unfamiliar shape defers to the generic scorer rather than stalling.
+        if (AtRisk(eventModel.CurrentOptions[overcome]) is not { } atRisk) return null;
+
+        // Taking filler is the point of the event: a Strike or a Defend is
+        // replaceable, and a curse or status is dead weight. The event cannot
+        // offer an Eternal one, so anything it does offer is safe to give up.
+        if (IsFiller(atRisk)) return overcome;
+
+        var holdOn = HoldOnIndex(eventModel);
+        if (holdOn < 0) return overcome;
+        var option = eventModel.CurrentOptions[holdOn];
+        // The hit is unblockable and unpowered, and it grows with every hold:
+        // never trade the player's life for a card.
+        if (option.WillKillPlayer?.Invoke(player) == true) return overcome;
+        var cost = HoldOnCost(eventModel);
+        if (cost <= 0 || player.Creature.CurrentHp - cost < player.Creature.MaxHp * HoldOnHealthFloor)
+            return overcome;
+        return holdOn;
+    }
+
+    /// <summary>
+    /// The cards a removal can only improve.
+    /// </summary>
+    internal static bool IsFiller(CardModel card)
+        => card.Rarity == CardRarity.Basic
+            || card.Type is CardType.Curse or CardType.Status;
+
+    // The option the event rebuilds after each hold still carries the card it
+    // would remove as a hover tip — that is the game's own statement of what is
+    // at stake, and it needs no private field to read.
+    private static CardModel? AtRisk(EventOption overcome)
+    {
+        foreach (var tip in overcome.HoverTips)
+            if (tip.CanonicalModel is CardModel card) return card;
+        return null;
+    }
+
+    // A hold always rebuilds the page ("pages.HOLD_ON_n.options.HOLD_ON_m"), so
+    // the id is matched rather than an index that shifts with the hold count.
+    private static int HoldOnIndex(EventModel eventModel)
+    {
+        for (var index = 0; index < eventModel.CurrentOptions.Count; index++)
+        {
+            var option = eventModel.CurrentOptions[index];
+            if (!option.IsLocked && !option.WasChosen
+                && option.TextKey.Contains("options.HOLD_ON_", StringComparison.Ordinal))
+                return index;
+        }
+        return -1;
+    }
+
+    // The event publishes the next hold's damage into "HpLoss" before it builds
+    // the page, so this is the hit the player is about to take — not a guess at
+    // the 3 + holds formula, which would drift if the event ever changed it.
+    private static int HoldOnCost(EventModel eventModel)
+    {
+        try { return eventModel.DynamicVars["HpLoss"].IntValue; }
+        catch { return 0; }
     }
 }

@@ -67,6 +67,12 @@ internal static class DeckMechanisms
         bool candidateInDeck = false)
     {
         var entry = card.Id.Entry;
+        if (facts.Effects.ConditionalPoison > 0)
+        {
+            var sources = deck.RoleCounts.GetValueOrDefault("poison-source");
+            return new(sources > 0 ? Support.Supported : Support.Unsupported,
+                sources > 0 ? "mech-supported:poison" : "mech-unsupported:poison", "poison", sources, true);
+        }
 
         // Rupture is both a Strength producer and a self-damage payoff, and the
         // explicit HP-loss dependency wins: Strength only arrives when the deck

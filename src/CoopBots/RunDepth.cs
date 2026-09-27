@@ -22,6 +22,35 @@ internal static class RunDepth
     // cannot make this walk unbounded.
     private const int MaxNodes = 256;
 
+    // A horizon estimate, not a promise that all these fights will be taken.
+    // On the visible map take a path, not the sum of mutually exclusive branches.
+    // Ungenerated acts use half their ordinary rooms plus their boss; unknown
+    // rooms have 0.2 expected combats. No map generation or live RNG is used.
+    internal static double RemainingCombats(Player player)
+    {
+        var state = player.RunState;
+        double FutureAct(int index) => Math.Max(0, state.Acts[index].GetNumberOfRooms(state.Players.Count > 1) - 1) * .5
+            + 1 + (index == state.Acts.Count - 1 && state.AscensionLevel >= 10 ? 1 : 0);
+        var future = Enumerable.Range(state.CurrentActIndex + 1,
+            Math.Max(0, state.Acts.Count - state.CurrentActIndex - 1)).Sum(FutureAct);
+        var memo = new Dictionary<MapPoint, double>();
+        var visiting = new HashSet<MapPoint>();
+        double Path(MapPoint point)
+        {
+            if (memo.TryGetValue(point, out var value)) return value;
+            if (memo.Count + visiting.Count >= MaxNodes || !visiting.Add(point)) return 0;
+            var fight = point.PointType is MapPointType.Monster or MapPointType.Elite or MapPointType.Boss ? 1
+                : point.PointType == MapPointType.Unknown ? .2 : 0;
+            var tail = point.Children.Select(Path).DefaultIfEmpty(0).Average();
+            visiting.Remove(point);
+            return memo[point] = fight + tail;
+        }
+        var from = state.CurrentMapPoint;
+        var current = from is not null ? from.Children.Select(Path).DefaultIfEmpty(0).Average()
+            : Math.Max(0, state.Act.GetNumberOfRooms(state.Players.Count > 1) - state.ActFloor - 1) * .5 + 1;
+        return current + future;
+    }
+
     internal static int Act(Player player)
     {
         try { return player.RunState.CurrentActIndex; }

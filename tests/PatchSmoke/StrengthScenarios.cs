@@ -46,19 +46,22 @@ internal static class StrengthScenarios
             enemy.SetCurrentHpInternal(100);
             enemy.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(incoming)), true);
         }
-        Reset(1); var strike = Hand<StrikeIronclad>(); Hand<DefendIronclad>();
+        Reset(1); var strike = Hand<StrikeIronclad>(); var defendAtTwo = Hand<DefendIronclad>();
         Check(Move(Plan()!).Card == strike, "At healthy HP, accept one damage to deal six instead of blocking one.");
         bot.Creature.SetCurrentHpInternal(2);
-        // Policy, not a bug: the same 2026-09-19 doubling of EnemyHpWeight
-        // (TeamCombatPlanner.cs:35-46) that flipped the Beacon board above also flips
-        // this one. At 0.25 a 2-HP bot blocked the chip damage; at 0.5 six damage
-        // (3.0) outbids the triage cost of one point taken at 2 HP. The source note
-        // predicts exactly this failure mode and names the intended remedy: the
-        // health-deficit weighting belongs in TriageCost, which is where a real fix
-        // would go. Until then the assertion records what ships, because a safety
-        // preference that is only asserted is not a safety property.
-        Check(Move(Plan()!).Card is StrikeIronclad,
-            $"At EnemyHpWeight=0.5 a 2-HP bot trades a chip-damage save for 6 damage; got {Move(Plan()!).Card.GetType().Name}.");
+        // THE SAFETY PROPERTY, not a record of what shipped. This used to assert Strike, with the
+        // note "a safety preference that is only asserted is not a safety property". The source
+        // note on EnemyHpWeight names the remedy and this is it: the health-deficit weighting
+        // lives in TriageCost, and its coefficient must clear the enemy-HP credit — 1 + 4*0.975^2
+        // = 4.80 for one chip point. A 2-HP bot must not trade its life for six damage.
+        // The value is MEASURED against this assertion: 3 was tried first and still chose the
+        // attack, so the enemy-HP credit is more than the hard term's 6*0.5 = 3.00 alone.
+        // CHECKED (R2): setting HealthDeficitWeight back to 2 turns this red, verbatim:
+        //   System.Exception: At 2 HP a bot must block the chip damage it can stop rather than
+        //   trade six damage for its life; got StrikeIronclad.
+        Check(Move(Plan()!).Card == defendAtTwo,
+            "At 2 HP a bot must block the chip damage it can stop rather than trade six damage "
+            + $"for its life; got {Move(Plan()!).Card.GetType().Name}.");
         Reset(8); Hand<StrikeIronclad>(); var defend = Hand<DefendIronclad>();
         Check(Move(Plan()!).Card == defend, "Five useful block should still beat six ordinary damage under pressure.");
         Reset(5); bot.Creature.SetCurrentHpInternal(5); Hand<StrikeIronclad>(); defend = Hand<DefendIronclad>();

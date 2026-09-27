@@ -1,3 +1,4 @@
+using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Models;
@@ -5,10 +6,9 @@ using MegaCrit.Sts2.Core.Models;
 namespace CoopBots.Building;
 
 /// <summary>
-/// Structural, data-derived view of one card: what it actually does and which
-/// deck roles it fills. Everything here comes from the card's own model (its
-/// dynamic variables and keywords) rather than from an authored tier table, so
-/// modded and rebalanced cards classify the same way as shipped ones.
+/// Structural view of one card's model values and deck roles. Effect timing
+/// comes from the audited OnPlay mapping in CardResourceTiming; an amount's
+/// dynamic-variable type alone cannot tell when the resource arrives.
 ///
 /// Upgrade decisions use an isolated clone run through the game's own upgrade
 /// path, so cost reductions and target/keyword changes are real differences
@@ -37,11 +37,27 @@ internal static class CardProfile
         double Damage, double Block, double Draw, double Energy,
         double Vulnerable, double Weak, double StrengthDown, double Poison, double Doom,
         double Scaling, double HpLoss, int Cost, int Hits, bool IsAoe, bool IsPower, bool Unplayable,
-        IReadOnlySet<string> Roles);
+        IReadOnlySet<string> Roles)
+    {
+        internal double NextTurnEnergy { get; init; }
+        internal double NextTurnDraw { get; init; }
+        internal bool DrawForTeam { get; init; }
+        internal DraftCardEffects.Effects Effects { get; init; }
+    }
 
     internal static Facts Of(CardModel card, int energy = 3, int enemies = 1)
     {
         var analyzed = GeniusCombatStrategy.Analyze(card, null, energy, enemies);
+        // A card can be executed more than once per play ("Replay"): an intrinsic
+        // BaseReplayCount, or an enchantment like Glam / Spiral. GetEnchantedReplayCount is
+        // the game's own answer for the extra executions, and it is the ONLY place the
+        // enchantment is visible: Replay is a play-count hook, not a DynamicVar, so
+        // GeniusCombatStrategy.Analyze cannot see it. CardProfile is the structural "what
+        // does this card do" view used by reward, shop and removal, so the extra executions
+        // belong here. No-op for every card without replay.
+        var plays = 1 + Math.Max(0, card.GetEnchantedReplayCount());
+        var resources = CoopBots.Kernel.CardResourceTiming.Of(card, energy);
+        var effects = DraftCardEffects.Of(card);
         var roles = new HashSet<string>(StringComparer.Ordinal);
         if (analyzed.TotalDamage > 0)
         {
@@ -49,8 +65,8 @@ internal static class CardProfile
             if (card.TargetType == TargetType.AllEnemies) roles.Add("aoe");
         }
         if (analyzed.Block > 0) roles.Add("block");
-        if (analyzed.Draw > 0) roles.Add("draw");
-        if (analyzed.ImmediateEnergy > 0) roles.Add("energy");
+        if (analyzed.Draw > 0 || resources.DrawNextTurn > 0) roles.Add("draw");
+        if (analyzed.ImmediateEnergy > 0 || resources.EnergyNextTurn > 0) roles.Add("energy");
         if (analyzed.Vulnerable > 0) roles.Add("vulnerable");
         if (analyzed.Weak > 0) roles.Add("weak");
         if (analyzed.StrengthDown > 0) roles.Add("strengthdown");
@@ -97,13 +113,43 @@ internal static class CardProfile
         if (card.Tags.Contains(CardTag.Minion)) roles.Add("minion");
         if (card.Tags.Contains(CardTag.OstyAttack)) roles.Add("osty");
 
+        if (effects.StrengthPerTurn > 0) { roles.Add("strength"); roles.Add("scaling"); }
+        if (effects.TemporaryStrength > 0 || effects.TemporaryDexterity > 0) roles.Remove("scaling");
+        if (effects.ExhaustDraw > 0) roles.Add("draw");
+        if (effects.ExhaustBlock > 0) roles.Add("block");
+        if (effects.FreeExhaustSkills) roles.Add("energy");
+        if (CardPoisonEffects.CanSeedPoison(card)) roles.Add("poison-source");
+        if (effects.ConditionalPoison > 0) { roles.Remove("poison"); roles.Add("poison-payoff"); }
         return new Facts(
-            analyzed.TotalDamage, analyzed.Block, analyzed.Draw, analyzed.ImmediateEnergy,
-            analyzed.Vulnerable, analyzed.Weak, analyzed.StrengthDown, analyzed.Poison, analyzed.Doom,
-            analyzed.Strength + analyzed.Dexterity + analyzed.Focus, analyzed.HpLoss,
-            analyzed.EnergyCost, analyzed.Hits,
+            (effects.ExhaustRequired > 0 ? 0 : analyzed.TotalDamage) * plays, analyzed.Block * plays, analyzed.Draw * plays,
+            analyzed.ImmediateEnergy * plays,
+            analyzed.Vulnerable * plays, analyzed.Weak * plays, analyzed.StrengthDown * plays,
+            (effects.ConditionalPoison > 0 ? 0 : analyzed.Poison) * plays, analyzed.Doom * plays,
+            Math.Max(0, analyzed.Strength + analyzed.Dexterity + analyzed.Focus
+                - effects.TemporaryStrength - effects.TemporaryDexterity) * plays, analyzed.HpLoss * plays,
+            analyzed.EnergyCost, (int)(analyzed.Hits * plays),
             card.TargetType == TargetType.AllEnemies, card.Type == CardType.Power, unplayable,
-            roles);
+            roles)
+        {
+            NextTurnEnergy = resources.EnergyNextTurn * plays,
+            NextTurnDraw = resources.DrawNextTurn * plays,
+            DrawForTeam = resources.DrawForTeam,
+            Effects = effects,
+        };
+    }
+
+    // Permanent deck construction needs hand advantage, not just gross cards drawn.
+    // Upstream OnPlay: Prepared discards Cards, Acrobatics/DaggerThrow discard one,
+    // BurningPact exhausts one. Keep gross draw for cycling and discard synergies.
+    internal static double NetDraw(CardModel card, Facts facts)
+    {
+        var handPayment = card.GetType().Name switch
+        {
+            "Prepared" => facts.Draw,
+            "Acrobatics" or "DaggerThrow" or "BurningPact" => 1,
+            _ => 0,
+        };
+        return Math.Max(0, facts.Draw - 1 - handPayment);
     }
 
     /// <summary>
