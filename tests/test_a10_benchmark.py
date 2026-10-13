@@ -268,24 +268,41 @@ class BenchmarkTests(unittest.TestCase):
         self.assertTrue(flag.exists())
 
     def test_additive_launcher_hook_runs_after_copy_before_steam(self):
-        directory = self.root / "derivation"
-        directory.mkdir()
-        derived = a10.instrument_launcher(self.plan, self.plan["arms"]["baseline"], directory)
-        text = derived.read_text(encoding="utf-8-sig")
-        copied = text.index("已部署 $($files.Count) 个文件")
-        observed = text.index("A10 benchmark additive pre-Steam physical identity check")
-        steam = text.index('Start-Process "steam://rungameid/2868840"')
-        self.assertLess(copied, observed)
-        self.assertLess(observed, steam, "BEFORE_STEAM: physical identity must be checked before native launch")
-        d = a10.read_json(directory / "launcher-derivation.json")
-        self.assertEqual(d["original_sha256"], self.plan["launcher"]["sha256"])
-        without = text
-        for item in reversed(d["replacements"]):
-            self.assertEqual(without.count(item["after"]), 1)
-            without = without.replace(item["after"], item["before"], 1)
-        self.assertEqual(without, Path(self.plan["launcher"]["path"]).read_bytes().decode("utf-8-sig"))
-        for name in a10.FILES + a10.ROUTES:
-            self.assertIn(name, "\n".join(d["injected_lines"]))
+        # R2 2026-10-13, private physical a10 source copy: removing the
+        # derivative writer's newline="" gave exit 1 for both LF/CRLF:
+        # AssertionError: 0 != 1 : LAUNCHER_REPLACEMENT_BYTES: injected replacements must survive physical newline preservation
+        # Exact source restoration returned focused exit 0; full evidence is
+        # local work/github-open-source-20261013/pipeline/ci-crlf/proof.json.
+        source_path = Path(self.plan["launcher"]["path"])
+        original_source = source_path.read_bytes()
+        normalized_source = original_source.decode("utf-8-sig").replace("\r\n", "\n")
+        for label, newline in (("lf", "\n"), ("crlf", "\r\n")):
+            with self.subTest(newline=label):
+                launcher = self.root / ("source-launcher-" + label + ".ps1")
+                launcher.write_bytes(normalized_source.replace("\n", newline).encode("utf-8-sig"))
+                plan = {**self.plan, "launcher": {"path": str(launcher), "sha256": a10.file_hash(launcher)}}
+                directory = self.root / ("derivation-" + label)
+                directory.mkdir()
+                derived = a10.instrument_launcher(plan, plan["arms"]["baseline"], directory)
+                text = derived.read_bytes().decode("utf-8-sig")
+                copied = text.index("已部署 $($files.Count) 个文件")
+                observed = text.index("A10 benchmark additive pre-Steam physical identity check")
+                steam = text.index('Start-Process "steam://rungameid/2868840"')
+                self.assertLess(copied, observed)
+                self.assertLess(observed, steam, "BEFORE_STEAM: physical identity must be checked before native launch")
+                d = a10.read_json(directory / "launcher-derivation.json")
+                self.assertEqual(d["original_sha256"], plan["launcher"]["sha256"])
+                without = text
+                for item in reversed(d["replacements"]):
+                    self.assertEqual(without.count(item["after"]), 1,
+                                     "LAUNCHER_REPLACEMENT_BYTES: injected replacements must survive physical newline preservation")
+                    without = without.replace(item["after"], item["before"], 1)
+                self.assertEqual(without, launcher.read_bytes().decode("utf-8-sig"),
+                                 "LAUNCHER_NEWLINES: reversible replacements must preserve physical LF and CRLF source")
+                self.assertEqual(a10.file_hash(launcher), plan["launcher"]["sha256"])
+                for name in a10.FILES + a10.ROUTES:
+                    self.assertIn(name, "\n".join(d["injected_lines"]))
+        self.assertEqual(source_path.read_bytes(), original_source)
 
     def test_owned_pid_normal_close_without_force_fallback(self):
         directory = self.root / "normal-close"

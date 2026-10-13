@@ -47,7 +47,9 @@ jobs:
             Write-Output $stdout
             Write-Output $stderr
             if ($process.ExitCode -ne 0) {
-              $message = "Exit code: $($process.ExitCode)`nSTDOUT:`n$stdout`nSTDERR:`n$stderr"
+              $stderrTail = $stderr.Substring([Math]::Max(0, $stderr.Length - 2800))
+              $stdoutTail = $stdout.Substring([Math]::Max(0, $stdout.Length - 1000))
+              $message = "Exit code: $($process.ExitCode)`nSTDERR tail (max 2800 chars):`n$stderrTail`nSTDOUT tail (max 1000 chars):`n$stdoutTail"
               $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
               Write-Output "::error title=Python pipeline contracts ($pattern)::$message"
               if ($failedExitCode -eq 0) { $failedExitCode = $process.ExitCode }
