@@ -15,6 +15,7 @@ internal sealed partial class SimulatedCombatState :
     internal int LastActionChoicesConsumed { get; private set; }
 
     public PlanChoiceTiming ActiveActionChoiceTiming => _activeActionChoiceTiming;
+    internal bool HasActiveActionChoices => _activeActionChoices is not null;
 
     public TurnStartChoiceCursor BeginActionChoices(IReadOnlyList<PlanCardChoice>? choices)
         => BeginActionChoices(new TurnStartChoiceCursor(choices));
@@ -122,7 +123,8 @@ internal sealed partial class SimulatedCombatState :
             spec.MinCount,
             spec,
             contextIdOverride ?? spec.ContextId,
-            Timing: _activeActionChoiceTiming);
+            Timing: _activeActionChoiceTiming,
+            MenuSource: playedCard.Preview.Id.Entry);
         if (!choices.TryTake(request, out PlanCardChoice? choice))
         {
             if (!HasPendingChoice)
@@ -183,7 +185,8 @@ internal sealed partial class SimulatedCombatState :
             requiredEmptyChoice.SourcePile,
             0,
             emptySpec,
-            Timing: _activeActionChoiceTiming);
+            Timing: _activeActionChoiceTiming,
+            MenuSource: card.Preview.Id.Entry);
         if (!choices.TryTake(request, out PlanCardChoice? plannedChoice))
         {
             if (!HasPendingChoice)
@@ -220,7 +223,25 @@ internal sealed partial class SimulatedCombatState :
         }
 
         if (CardChoiceSupport.BuildRequiredEmptyChoice(card.Preview) is { } emptyChoice)
-            CardChoiceSupport.Apply(simulator, this, card, emptyChoice, processedEnemyDeaths);
+        {
+            // An implicit empty native menu still occupies a choice slot. In a
+            // nested autoplay, omitting it shifts every subsequent menu token.
+            CardChoiceSpec emptySpec = new(
+                emptyChoice.Effect,
+                emptyChoice.SourcePile,
+                0,
+                0,
+                [],
+                [],
+                ReplacementValue: 0d);
+            return ResolveActionCardChoice(
+                simulator,
+                card,
+                sourceId,
+                emptySpec,
+                processedEnemyDeaths,
+                contextId);
+        }
         else
             CardChoiceSupport.ApplyNoChoiceEffects(simulator, this, card);
         return !HasPendingChoice;

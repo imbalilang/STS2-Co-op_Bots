@@ -1,5 +1,6 @@
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Models;
+using CoopBots.Kernel;
 
 namespace CoopBots.Kernel.Vendor.Engine.Common;
 
@@ -88,6 +89,7 @@ internal sealed class SimCardPile
 
     internal SimCardPile Fork(PredictionForkContext context)
     {
+        using var allocation = AllocationProbe.Measure(AllocationProbe.Phase.PileFork);
         List<PredictedCard> cards = new(_cards.Count);
         foreach (PredictedCard card in _cards)
             cards.Add(card.Fork(context));

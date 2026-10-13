@@ -1,0 +1,30 @@
+{
+  "Search/SimulatedCombatState.CardLifecycle.cs": {
+    "base_sha256": "27c845ae555cfc022930a0ca9770e5c9a4683c6e386a937a1af9383d04b1acbc",
+    "adapted_sha256": "37e960ecd30bafd938799b42cd7fe87dc74e413bde8e85b6fb4bb5758ad34618",
+    "changes": [
+      {
+        "old": "        power._target = owner;\n",
+        "new": "        // Native PowerCmd.Apply assigns Owner/Applier, but ordinary instances\n        // have no distinct Target. Target is populated only by ApplyTargeted.\n        power._target = null;\n"
+      },
+      {
+        "old": "        power._amount = amount;\n",
+        "new": "        power._amount = amount;\n        if (power is GuardedPower && applier?.Player is { } guardedApplier)\n            ((MegaCrit.Sts2.Core.Localization.DynamicVars.StringVar)power.DynamicVars[\"Applier\"]).StringValue = _playerNames[guardedApplier];\n"
+      }
+    ]
+  },
+  "Search/SimulatedCombatState.cs": {
+    "base_sha256": "a1d2b21d1b6c61cc916b6d3b34df448e84150458eeebea7949a078db80f82ffa",
+    "adapted_sha256": "86fc2a2ebf587b54bd7296727933ff2e24723216ff9b68388084ba73c17e3f70",
+    "changes": [
+      {
+        "old": "        bool instanced = incoming.InstanceType == MegaCrit.Sts2.Core.Entities.Powers.PowerInstanceType.Instanced;\n        if (instanced || GetAmount<T>(target) == 0)\n            beforeApplied?.Invoke(amount);\n",
+        "new": "        bool instanced = incoming.InstanceType == MegaCrit.Sts2.Core.Entities.Powers.PowerInstanceType.Instanced;\n        bool firstApplication = instanced || GetAmount<T>(target) == 0;\n        // Native PowerCmd.Apply scales only a newly acquired enemy power.\n        // An existing instance goes through ModifyAmount with the unscaled offset.\n        if (firstApplication && Players.Count > 1 && target.Side == CombatSide.Enemy\n            && incoming.ShouldScaleInMultiplayer)\n            amount = ScaleFirstEnemyPowerAmount(incoming, target, amount, applier);\n        // Native Plating.AfterApplied records the multiplayer decrement even\n        // when its amount uses Plating's distinct (2 * party - 1) scaling.\n        if (firstApplication && target.Side == CombatSide.Enemy && incoming is PlatingPower)\n            incoming.DynamicVars[\"Decrement\"].BaseValue = Players.Count;\n        if (firstApplication)\n            beforeApplied?.Invoke(amount);\n"
+      },
+      {
+        "old": "    public void ApplyPower(Type powerType, Creature target, int amount, Creature? applier = null)\n",
+        "new": "    private static readonly ConcurrentDictionary<Type, bool> UsesDefaultPowerScaling = new();\n\n    private int ScaleFirstEnemyPowerAmount(PowerModel power, Creature target, int amount, Creature? applier)\n    {\n        // The native default reads RunState.CurrentActIndex. Its live run may\n        // have advanced after root capture, so use the captured act for that\n        // default. Native overrides (Artifact/Plating/Skittish/Slippery) read\n        // their supplied combat's party size and preserve their distinct rules.\n        bool usesDefault = UsesDefaultPowerScaling.GetOrAdd(power.GetType(), static type =>\n            type.GetMethod(nameof(PowerModel.GetScaledAmountForMultiplayer))!.DeclaringType == typeof(PowerModel));\n        decimal scaled = usesDefault\n            ? amount * Players.Count * MultiplayerScalingModel.GetMultiplayerScaling(Encounter, _currentActIndex)\n            : power.GetScaledAmountForMultiplayer(this, applier, amount, target, CurrentPowerCardSource);\n        return (int)scaled;\n    }\n\n    public void ApplyPower(Type powerType, Creature target, int amount, Creature? applier = null)\n"
+      }
+    ]
+  }
+}

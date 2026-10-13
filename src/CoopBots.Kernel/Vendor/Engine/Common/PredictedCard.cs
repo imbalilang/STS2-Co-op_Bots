@@ -1,5 +1,6 @@
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
+using CoopBots.Kernel;
 
 namespace CoopBots.Kernel.Vendor.Engine.Common;
 
@@ -98,15 +99,21 @@ internal sealed class PredictedCard : IComparable<PredictedCard>
             CardModel? preview = _previewStorage.Preview;
             if (preview is null)
             {
-                preview = PredictionUtils.CloneCardStateForSimulation(_previewStorage.Original);
-                _previewStorage = new PreviewStorage(_previewStorage.Original, preview);
+                using (AllocationProbe.Measure(AllocationProbe.Phase.PreviewInitialDetach))
+                {
+                    preview = PredictionUtils.CloneCardStateForSimulation(_previewStorage.Original);
+                    _previewStorage = new PreviewStorage(_previewStorage.Original, preview);
+                }
                 if (!_observeEveryPreviewMutation)
                     NotifyHookListenerStructureChanged();
             }
             else if (_previewStorage.Shared)
             {
-                preview = PredictionUtils.CloneCardStateForSimulation(preview);
-                _previewStorage = new PreviewStorage(_previewStorage.Original, preview);
+                using (AllocationProbe.Measure(AllocationProbe.Phase.PreviewSharedDetach))
+                {
+                    preview = PredictionUtils.CloneCardStateForSimulation(preview);
+                    _previewStorage = new PreviewStorage(_previewStorage.Original, preview);
+                }
                 if (!_observeEveryPreviewMutation)
                     NotifyHookListenerStructureChanged();
             }
@@ -162,6 +169,7 @@ internal sealed class PredictedCard : IComparable<PredictedCard>
 
     internal PredictedCard Fork(PredictionForkContext context)
     {
+        using var allocation = AllocationProbe.Measure(AllocationProbe.Phase.CardFork);
         PreviewStorage forkStorage;
         if (_isolateAttachedModelsOnFork)
         {

@@ -44,7 +44,10 @@ public sealed class KernelTeamSearch : IDisposable
     public sealed record Action(Player Player, CardModel? Card, Creature? Target, PotionModel? Potion = null,
         IReadOnlyList<KernelChoice>? Choices = null, bool EndTurn = false,
         IReadOnlyList<int>? ChoiceOrdinals = null,
-        string CardStateKey = "", int CardStateOccurrence = 0);
+        string CardStateKey = "", int CardStateOccurrence = 0)
+    {
+        public KernelTurnStartChoiceContract? TurnStartChoices { get; init; }
+    }
     // StopOnFirstTerminal: end the search the moment ANY line that ends the fight (a
     // victory OR a party wipe) is in hand, instead of spending the rest of the budget
     // ranking terminal lines against each other. The five-minute OPENING search leaves
@@ -61,6 +64,7 @@ public sealed class KernelTeamSearch : IDisposable
         public bool RequirePotionOpening { get; init; }
         public bool CaptureReplayStates { get; init; } = true;
         public bool Deduplicate { get; init; } = true;
+        public bool PreserveSetupRoutes { get; init; }
         public ObjectiveConfig? TerminalObjective { get; init; }
     }
     // ActionStates is the L1 sentinel: the branch's visible-state text AFTER each action
@@ -109,6 +113,7 @@ public sealed class KernelTeamSearch : IDisposable
     // a search returns a plan that stops where the depth ran out.
     private Node? bestTerminal;
     private List<Node> continuationFrontier = new();
+    private List<Node> settledContinuations = new();
     public IReadOnlyList<IReadOnlyList<Action>> ContinuationPaths { get; private set; } = [];
     private int expanded;
     private int maxRoundsReached;
@@ -259,7 +264,8 @@ public sealed class KernelTeamSearch : IDisposable
                         }
                         var action = new Action(actor, card, target, Choices: branch.Choices,
                             ChoiceOrdinals: branch.ChoiceOrdinals,
-                            CardStateKey: cardStateKey, CardStateOccurrence: cardStateOccurrence);
+                            CardStateKey: cardStateKey, CardStateOccurrence: cardStateOccurrence)
+                            { TurnStartChoices = branch.TurnStartChoices };
                         var power = protect
                             ? KernelPowerRouter.Advance(parent.Power, parent.State, child, action, actors)
                             : KernelPowerLedger.Empty;
@@ -269,6 +275,7 @@ public sealed class KernelTeamSearch : IDisposable
                         if (node.Score > best.Score) best = node;
                         if (child.HasWon || child.EnemyPhaseCompleted)
                         {
+                            KeepSettledContinuation(node);
                             if (bestResolved is null || node.Score > bestResolved.Score) bestResolved = node;
                             // TERMINALS ARE RANKED BY THE OBJECTIVE, NOT BY THE HEURISTIC.
                             // The plan keeps two pools apart (§06): a verified ending goes in
@@ -285,25 +292,38 @@ public sealed class KernelTeamSearch : IDisposable
                         // Bound retained memory throughout expansion, not just at end of depth.
                         if (next.Count > options.Width * 4)
                             next = options.Deduplicate ? TrimInterim(next, options.Width)
-                                : SelectOrdinaryFrontier(next.OrderByDescending(n => n.Score).ToList(), options.Width);
+                                : SelectUnmergedFrontier(next, options.Width);
                         yield return true;
                     }
                 }
                 // Free potion actions. A potion that cannot be simulated in this
                 // branch is simply skipped (potions are optional, unlike cards).
-                foreach (var potion in options.IncludePotions ? parent.State.UsablePotions(actor) : [])
+                //
+                // SAME LIST AS THE TOURNAMENT'S OWN CANDIDATES. `KernelTournament.FirstActions`
+                // already refuses anything `CanModelPotion` rejects (a CHOOSER potion's offer is
+                // rolled but never applied), but this enumerator did not — so the joint search's
+                // `RequirePotionOpening` phase could open on a bottle whose effect the kernel
+                // cannot simulate and produce ZERO paths. Live 2026-10-05 act-3 boss: three
+                // consecutive potion passes logged `paths=0/N … druggedFirst=none` while the
+                // party held SKILL/COLORLESS/POWER potions and died with them unspent. Filtering
+                // here makes "is there a potion opening" mean the same thing on both sides.
+                foreach (var potion in (options.IncludePotions ? parent.State.UsablePotions(actor) : [])
+                    .Where(KernelSession.CanModelPotion))
                 foreach (var target in parent.State.PotionTargets(potion))
+                foreach (var opened in parent.State.PotionBranches(potion, target, controlledActors: actors))
                 {
                     if (expanded >= options.MaxNodes) yield break;
                     expanded++;
-                    var child = parent.State.Fork();
-                    if (!child.UsePotion(potion, target, out _))
+                    var child = opened.State;
+                    if (opened.Boundary.Length > 0)
                     {
                         yield return true;
                         continue;
                     }
                     TrackRounds(child);
-                    var potionAction = new Action(actor, null, target, potion);
+                    var potionAction = new Action(actor, null, target, potion,
+                        Choices: opened.Choices, ChoiceOrdinals: opened.ChoiceOrdinals)
+                        { TurnStartChoices = child.LastTurnStartChoices };
                     var potionPower = protect
                         ? KernelPowerRouter.Advance(parent.Power, parent.State, child, potionAction, actors)
                         : KernelPowerLedger.Empty;
@@ -312,10 +332,11 @@ public sealed class KernelTeamSearch : IDisposable
                         parent.Boundaries, RiskDetail(child, parent));
                     if (node.Score > best.Score) best = node;
                     if (child.HasWon && (bestResolved is null || node.Score > bestResolved.Score)) bestResolved = node;
+                    if (child.HasWon) KeepSettledContinuation(node);
                     next.Add(node);
                     if (next.Count > options.Width * 4)
                         next = options.Deduplicate ? TrimInterim(next, options.Width)
-                                : SelectOrdinaryFrontier(next.OrderByDescending(n => n.Score).ToList(), options.Width);
+                                : SelectUnmergedFrontier(next, options.Width);
                     yield return true;
                 }
                 if (options.IncludeEndTurns && !(options.RequirePotionOpening && parent.Path.Length == 0))
@@ -323,10 +344,9 @@ public sealed class KernelTeamSearch : IDisposable
                     if (expanded >= options.MaxNodes) yield break;
                     expanded++;
                     var child = parent.State.Fork();
-                    if (child.EndTurn(actor, options.MaxRounds, out var boundary))
+                    if (child.EndTurn(actor, options.MaxRounds, out var boundary, out var endAction))
                     {
                         TrackRounds(child);
-                        var endAction = new Action(actor, null, null, EndTurn: true);
                         var endPower = protect
                             ? KernelPowerRouter.Advance(parent.Power, parent.State, child, endAction, actors)
                             : KernelPowerLedger.Empty;
@@ -345,6 +365,7 @@ public sealed class KernelTeamSearch : IDisposable
                             && (bestHorizon is null || node.Score > bestHorizon.Score)) bestHorizon = node;
                         if (child.EnemyPhaseCompleted)
                         {
+                            KeepSettledContinuation(node);
                             if (bestResolved is null || node.Score > bestResolved.Score) bestResolved = node;
                         }
                         else
@@ -361,7 +382,7 @@ public sealed class KernelTeamSearch : IDisposable
             // A pure top-score cut can otherwise exhaust the budget on variations
             // of one idea and never compare a defense or a settling line.
             frontier = options.Deduplicate ? SelectFrontier(next, options.Width)
-                : SelectOrdinaryFrontier(next.OrderByDescending(n => n.Score).ToList(), options.Width);
+                : SelectUnmergedFrontier(next, options.Width);
             continuationFrontier = frontier;
         }
         // WHY the horizon ended, which the caller needs and the stop reason used to
@@ -376,9 +397,114 @@ public sealed class KernelTeamSearch : IDisposable
     // power line before it can pay off. When nothing carries a commitment the
     // original score-only trim is kept so no-power behaviour is unchanged.
     private static List<Node> TrimInterim(List<Node> candidates, int width)
-        => candidates.Any(n => !n.Power.IsEmpty)
+    {
+        var trimmed = candidates.Any(n => !n.Power.IsEmpty)
             ? SelectFrontier(candidates, width)
             : candidates.OrderByDescending(n => n.Score).Take(width).ToList();
+        ProtectPriorityAddLine(trimmed, candidates, width);
+        return trimmed;
+    }
+
+    // 2026-10-05 女王爪牙标注（owner：允许 Bot 先打爪牙）：
+    // 爪牙不是胜利条件，所以它不参与主评分竞争；但「先打爪牙」这条策略必须在每次
+    // 裁剪里占一个保留位，否则它连一个动作都活不过 beam，终局比较永远看不到它
+    // （改前：火炬头聚合体对 KernelTacticalPolicy 完全不可见，11 回合无人打它）。
+    // 保留推进最深的一条：爪牙剩血最少优先（已击杀=0），同深度再比分数。
+    private static bool TargetsPriorityAdd(Node node)
+        => node.Path.Any(a => KernelPriorityAdds.IsPriorityAdd(a.Target));
+
+    private static void ProtectPriorityAddLine(List<Node> kept, IEnumerable<Node> candidates, int width)
+    {
+        var candidate = candidates.Where(TargetsPriorityAdd)
+            .Where(n => !kept.Contains(n))
+            .OrderBy(n => KernelPriorityAdds.RemainingAddHp(n.State))
+            .ThenByDescending(n => n.Score)
+            .FirstOrDefault();
+        if (candidate is null) return;
+        kept.Add(candidate);
+        if (kept.Count <= width) return;
+        var worst = kept.Where(n => !ReferenceEquals(n, candidate))
+            .OrderBy(n => n.Score).FirstOrDefault();
+        if (worst is not null) kept.Remove(worst);
+    }
+
+    private void KeepSettledContinuation(Node node)
+    {
+        if (!options.PreserveSetupRoutes) return;
+        // Ended player phases leave the expandable frontier. Retaining only
+        // bestHorizon silently lost every other investment at that boundary,
+        // even if all earlier beam trims protected it correctly.
+        settledContinuations.Add(node);
+        if (settledContinuations.Count > options.Width * 2)
+            settledContinuations = SelectUnmergedFrontier(settledContinuations, options.Width);
+    }
+
+    // Upstream protects power commitments in its beam. Our joint turn search
+    // also preserves poison/debuff/draw/cleanup setup (owner's 2026-09-28 plan),
+    // within the SAME width and without merging incomplete state keys.
+    private List<Node> SelectUnmergedFrontier(List<Node> candidates, int width)
+    {
+        var ranked = candidates.OrderByDescending(n => n.Score).ToList();
+        if (!options.PreserveSetupRoutes)
+        {
+            var ordinary = SelectOrdinaryFrontier(ranked, width);
+            ProtectPriorityAddLine(ordinary, ranked, width);
+            return ordinary;
+        }
+        var preferred = ranked.Any(n => !n.Power.IsEmpty)
+            ? SelectProtectedFrontier(ranked, width) : SelectOrdinaryFrontier(ranked, width);
+        var chosen = ranked.Take(1).ToList(); // Always retain the best immediate line.
+        foreach (var measure in new Func<Node, double>[] {
+            n => actors.Sum(p => n.State.Hp(p.Creature) <= 0 ? -10000 : n.State.Hp(p.Creature) - n.State.Threat(p).HpLoss * 2),
+            n => actors.Sum(p => n.State.PersistentValue(p, 0, 0) + n.State.Block(p.Creature)),
+        })
+        {
+            if (chosen.Count >= width) break;
+            var candidate = ranked.OrderByDescending(measure).FirstOrDefault();
+            if (candidate is not null && !chosen.Contains(candidate)) chosen.Add(candidate);
+        }
+        // Preserve distinct native power investments, including cards absent
+        // from the upstream commitment catalog. One "power" category loses
+        // Rupture as soon as a different engine has a better immediate score.
+        var engines = ranked.SelectMany(n => n.Path.Where(a => a.Card?.Type == CardType.Power))
+            .Select(a => (a.Player, a.CardStateKey)).Distinct();
+        foreach (var engine in engines)
+        {
+            if (chosen.Count >= Math.Max(1, width / 2)) break;
+            if (chosen.Any(n => n.Path.Any(a => (a.Player, a.CardStateKey) == engine))) continue;
+            var node = ranked.First(n => n.Path.Any(a => (a.Player, a.CardStateKey) == engine));
+            chosen.Add(node);
+        }
+        foreach (var kind in new[] { "power", "poison", "vulnerable", "draw", "cleanup" })
+        {
+            if (chosen.Count >= Math.Max(1, width / 2)) break;
+            var pick = ranked.FirstOrDefault(n => !chosen.Contains(n) && n.Path.Any(a => SetupKind(a) == kind));
+            if (pick is not null) chosen.Add(pick);
+        }
+        // 女王爪牙的「先打」线单独保位（不占上面任何 setup 种类的名额）。
+        ProtectPriorityAddLine(chosen, ranked, width);
+        foreach (var node in preferred.Concat(ranked))
+        {
+            if (chosen.Count >= width) break;
+            if (!chosen.Contains(node)) chosen.Add(node);
+        }
+        return chosen.OrderByDescending(n => n.Score).ToList();
+    }
+
+    private static string SetupKind(Action action)
+    {
+        var card = action.Card;
+        if (card is null) return "";
+        if (card.Type == MegaCrit.Sts2.Core.Entities.Cards.CardType.Power) return "power";
+        if (CardPoisonEffects.CanSeedPoison(card)) return "poison";
+        if (card.DynamicVars.ContainsKey("VulnerablePower")) return "vulnerable";
+        if (card.GetType().Name is "SecondWind" or "TrueGrit" or "BurningPact" or "Cinder"
+            or "FiendFire" or "Prepared" or "CalculatedGamble" or "Survivor" or "Purity") return "cleanup";
+        if (card.GetType().Name is "Acrobatics" or "Backflip" or "PommelStrike" or "ShrugItOff"
+            or "Offering" or "Adrenaline" or "BattleTrance" or "EscapePlan"
+            || CardResourceTiming.Of(card, 3).DrawNextTurn > 0) return "draw";
+        return "";
+    }
 
     // Drop equivalent states, then keep one line per action category before
     // filling by score. Dedup includes commitment owner+family history so route
@@ -617,11 +743,17 @@ public sealed class KernelTeamSearch : IDisposable
                 ActionStates = CaptureActionStates(replayRoot, best.Path, out var replayFailure);
                 ReplayFailure = replayFailure;
             }
-            ContinuationPaths = new[] { bestTerminal, bestHorizon, bestResolved, best }
-                .Where(n => n is not null).Cast<Node>().Concat(continuationFrontier.OrderByDescending(n => n.Score))
+            var candidates = new[] { bestTerminal, bestHorizon, bestResolved, best }
+                .Where(n => n is not null).Cast<Node>().Concat(settledContinuations)
+                .Concat(continuationFrontier.OrderByDescending(n => n.Score))
                 .Where(n => n.Path.Length > 0)
-                .DistinctBy(n => string.Join(";", n.Path.Select(a => $"{a.Player.NetId}:{a.CardStateKey}:{a.Potion?.Id.Entry}:{a.Target?.CombatId}:{a.EndTurn}:{string.Join(",", a.ChoiceOrdinals ?? [])}")))
-                .Take(8).Select(n => (IReadOnlyList<Action>)n.Path).ToArray();
+                .DistinctBy(n => string.Join(";", n.Path.Select(a => $"{a.Player.NetId}:{a.CardStateKey}:{a.CardStateOccurrence}:{a.Potion?.Id.Entry}:{a.Target?.CombatId}:{a.EndTurn}:{string.Join(",", a.ChoiceOrdinals ?? [])}:turnStart={System.Text.Json.JsonSerializer.Serialize(a.TurnStartChoices)}"))).ToList();
+            // Apply retention to the final pool too. Prepending unrelated best
+            // nodes and then taking eight could discard the protected setup.
+            var retained = options.PreserveSetupRoutes ? SelectUnmergedFrontier(candidates, 8) : candidates.Take(8).ToList();
+            if (options.PreserveSetupRoutes && bestTerminal is not null && !retained.Contains(bestTerminal))
+                retained = new[] { bestTerminal }.Concat(retained).Take(8).ToList();
+            ContinuationPaths = retained.Select(n => (IReadOnlyList<Action>)n.Path).ToArray();
         }
         CompletedResult = new(Array.AsReadOnly(best.Path), best.Score, expanded,
             new System.Collections.ObjectModel.ReadOnlyDictionary<string, int>(new Dictionary<string, int>(boundaries)), reason,
@@ -642,10 +774,10 @@ public sealed class KernelTeamSearch : IDisposable
     /// plan must refuse cross-step reuse rather than pass a check it never took.
     /// </remarks>
     private IReadOnlyList<(string Before, string After)> CaptureActionStates(
-        KernelSession root, IReadOnlyList<Action> path, out string failure)
+        KernelSession root, Action[] path, out string failure)
     {
         failure = "";
-        if (path.Count == 0) return [];
+        if (path.Length == 0) return [];
         // One (Before, After) pair per step, both the WHOLE TABLE's text (see
         // KernelSession.PartyStateText). Deployment needs both ends of a step — to tell
         // "this step has not resolved yet" apart from "this step resolved somewhere else"
@@ -656,19 +788,19 @@ public sealed class KernelTeamSearch : IDisposable
         // consumer of a state text to re-derive whose view it was holding. The boundary
         // text did not, and compared two different seats' views on every crossing.
         // Making the text table-wide means no caller has a viewpoint to get wrong.
-        var states = new (string Before, string After)[path.Count];
+        var states = new (string Before, string After)[path.Length];
         try
         {
             var session = root.Fork();
-            for (var index = 0; index < path.Count; index++)
+            for (var index = 0; index < path.Length; index++)
             {
                 var action = path[index];
                 var before = session.PartyStateText();
-                if (!session.ReplayPlanned(action, options.MaxRounds, out var replayBoundary))
+                if (!session.ReplayPlanned(action, options.MaxRounds, out var replayBoundary, out var resolvedAction))
                 {
                     // Say WHICH step and WHY. Without this the sentinel reports
                     // "states=0" and every possible cause looks identical.
-                    failure = $"step {index}/{path.Count} "
+                    failure = $"step {index}/{path.Length} "
                         + $"({action.Card?.Id.Entry ?? action.Potion?.Id.Entry ?? "end-turn"}): {replayBoundary}";
                     // Return the VERIFIED PREFIX, not nothing. Deployment already handles a
                     // short sentinel: it checks the states it has and skips the rest with a
@@ -678,6 +810,7 @@ public sealed class KernelTeamSearch : IDisposable
                     // verification for the 38 steps before it that were fine.
                     return states[..index];
                 }
+                path[index] = resolvedAction;
                 states[index] = (before, session.PartyStateText());
             }
         }

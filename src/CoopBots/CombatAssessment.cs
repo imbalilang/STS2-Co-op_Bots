@@ -28,6 +28,37 @@ internal static class CombatAssessment
     internal static double Incoming(Creature recipient) => recipient.CombatState?.Enemies
         .Where(e => e.IsAlive).Sum(e => FromEnemy(e, recipient)) ?? 0;
 
+    /// <summary>How many separate enemy attack instances are coming this enemy phase.</summary>
+    internal static double IncomingHits(Creature recipient)
+    {
+        if (recipient.CombatState is not { } combat) return 0;
+        try
+        {
+            return combat.Enemies.Where(e => e.IsAlive).Sum(e =>
+            {
+                try
+                {
+                    return e.Monster?.NextMove.Intents.OfType<AttackIntent>()
+                        .Sum(intent => (double)intent.Repeats) ?? 0;
+                }
+                catch { return 0; }
+            });
+        }
+        catch { return 0; }
+    }
+
+    /// <summary>Strength the current enemy board already carries into this phase.</summary>
+    internal static double IncomingStrength(Creature recipient)
+    {
+        if (recipient.CombatState is not { } combat) return 0;
+        try
+        {
+            return combat.Enemies.Where(e => e.IsAlive)
+                .Sum(e => e.Powers.OfType<StrengthPower>().Sum(p => (double)p.Amount));
+        }
+        catch { return 0; }
+    }
+
     internal static double FromEnemy(Creature enemy, Creature recipient)
         => ProjectIncoming(enemy, recipient, false);
 

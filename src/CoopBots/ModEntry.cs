@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Modding;
@@ -47,6 +47,11 @@ public static class ModEntry
             LobbyBotService.ValidateRuntimeSchema();
             var harmony = new Harmony("cn.xiwa.sts2.coopbots");
             harmony.PatchAll(typeof(ModEntry).Assembly);
+            var parserMethod = SmartFormatParserConcurrencyPatch.TargetMethod();
+            Log.Info($"CoopBots SmartFormat parser guard: target={parserMethod.DeclaringType!.FullName}.{parserMethod.Name} "
+                + $"assembly={parserMethod.Module.Assembly.GetName().Version} mvid={parserMethod.Module.ModuleVersionId}");
+            Log.Info($"CoopBots native lifetime: scoped node-pool signal cleanup enabled; "
+                + $"mvid={typeof(ModEntry).Module.ModuleVersionId}");
             // 无人值守实机测试的开局入口。没设哨兵文件时 Attach 立刻返回，正式包零行为。
             // 放在 PatchAll 之后：它只挂一个 Godot 定时器，不依赖任何补丁。
             LiveTestMenuTicker.Attach();

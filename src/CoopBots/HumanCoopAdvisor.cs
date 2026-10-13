@@ -167,7 +167,10 @@ internal static class HumanCoopAdvisor
 
     // The one reason that means "nothing here modelled this", as opposed to a
     // modelled zero. Shared with the shop so it can tell the two apart.
-    internal const string UnpricedRelicReason = "尚无可靠的专属估值，请比较遗物描述与构筑";
+    internal const string UnpricedRelicReason = "未建模遗物：采用较低正收益先验，尚未计算专属机制";
+    // Native has no relic utility. Owner 2026-10-04 requires low positive
+    // value for missing mechanisms; known downside models keep their score.
+    internal const double UnpricedRelicPrior = 15;
 
     /// <summary>
     /// Whether the value chain had a real opinion on this relic. A relic that
@@ -181,6 +184,21 @@ internal static class HumanCoopAdvisor
 
     internal static (double Score, string Reason) RelicValue(RelicModel relic, Player player)
     {
+        // RoyalPoison damages its OWNER for 4 unblockable, unpowered at the start of
+        // every combat's first turn (RoyalPoison.AfterPlayerTurnStart). At the
+        // unpriced zero it is an invisible trap: measured live 2026-10-01,
+        // ROUND_TEA_PARTY offered it ("gain {Relic}, heal all HP") against "lose 11
+        // and gain a RANDOM relic" — both options priced at the bare 5.0, so the tie
+        // fell to page order and all four seats took the poison. The relic is FIXED,
+        // not random: EnjoyTea runs RelicCmd.Obtain<RoyalPoison>. Charge it over the
+        // fights actually left, in the same health-point unit HealValue credits.
+        if (relic.GetType().Name == "RoyalPoison")
+        {
+            var fights = RunDepth.RemainingCombats(player);
+            var damage = relic.DynamicVars.TryGetValue("Damage", out var poisonDamage)
+                ? (double)poisonDamage.BaseValue : 4;
+            return (-fights * damage, $"预计剩余约{fights:F1}战；每战第1回合自伤{damage}");
+        }
         if (relic.GetType().Name == "ChosenCheese")
         {
             var fights = RunDepth.RemainingCombats(player);
@@ -188,6 +206,33 @@ internal static class HumanCoopAdvisor
             // Permanent capacity plus the healing awarded by GainMaxHp. Both
             // shrink with the remaining horizon, in the same health-point unit.
             return (fights * amount * 2, $"预计剩余约{fights:F1}战；每战+{amount}生命上限并恢复等量生命");
+        }
+        // Pael's Tooth takes five UPGRADABLE cards out of the deck and hands each one back
+        // UPGRADED after a later combat. That is an upgrade of five cards, not a removal of
+        // five, so it is priced like the camp smith — the same UpgradeValue the smith and
+        // the pickup screen use. Its pickup prediction is empty (nothing models the
+        // selection), so before this it read the unpriced zero and the PAEL option was
+        // decided by page order. Reported live 2026-09-30: the screen had spent the relic on
+        // five Strikes and Defends.
+        if (relic.GetType().Name == "PaelsTooth")
+        {
+            var count = relic.DynamicVars.TryGetValue("Cards", out var cardsVar) && cardsVar.IntValue > 0
+                ? cardsVar.IntValue
+                : 5;
+            var top = player.Deck.Cards.Where(card => card.IsUpgradable)
+                .Select(card => (Card: card, Value: UpgradeValue(card, player)))
+                .OrderByDescending(entry => entry.Value)
+                .ThenBy(entry => entry.Card.Id.Entry, StringComparer.Ordinal)
+                .Take(count)
+                .ToList();
+            if (top.Count == 0)
+                return (0, "牌组里没有可升级的牌，拿了也没东西可强化");
+            // The cards leave the deck until they come back, one per combat, so the value is
+            // realised across the next few fights rather than immediately. Not discounted
+            // here: it is a timing cost, and the upgrade itself is the whole point.
+            return (top.Sum(entry => entry.Value),
+                $"等价强化 {top.Count} 张（{string.Join(",", top.Select(entry => entry.Card.Id.Entry))}），"
+                + "每场战斗结束回来一张");
         }
         var party = player.RunState.Players;
         var attacks = party.Sum(p => p.Deck.Cards.Count(c => c.Type == CardType.Attack));
@@ -245,10 +290,10 @@ internal static class HumanCoopAdvisor
         // that is a roll — so ask the ported Random Foreseer predictor what this
         // one will actually do for THIS deck. Without this the chest assignment
         // had nothing to compare and every such relic scored zero.
-        var predicted = PredictedEffectValue(relic, player, depth: 0);
-        return predicted > 0.5
+        var predicted = PredictedEffectValue(relic, player, depth: 0, out var modeled);
+        return predicted > 0.5 || modeled
             ? (predicted, $"预测拾取效果：{predicted:F0}")
-            : (0, UnpricedRelicReason);
+            : (UnpricedRelicPrior, UnpricedRelicReason);
     }
 
     // Relics whose pickup is a random upgrade of cards already in the deck. Their
@@ -259,10 +304,29 @@ internal static class HumanCoopAdvisor
 
     // What the relic will do beyond its printed text, in the same score unit as
     // the hand-written entries above.
-    private static double PredictedEffectValue(RelicModel relic, Player player, int depth)
+    private static double PredictedEffectValue(RelicModel relic, Player player, int depth, out bool modeled)
     {
+        // A modeled empty upgrade (e.g. no Attacks for Whetstone) is evidence
+        // of zero value, not missing coverage. Do not replace it with the prior.
+        modeled = UpgradeRelics.Contains(relic.GetType().Name);
         var effect = OutOfCombatPredictions.RelicPickup(player, relic);
         if (effect.IsEmpty) return 0;
+        modeled |= !effect.Bundles.Any(bundle => bundle.Kind == OutOfCombatPredictions.BundleKind.Transform);
+        // Sea Glass (OROBAS) is not a 1-of-N offer. The grid lets you take ANY NUMBER of the
+        // cards shown, so the relic is worth the sum of the ones this deck would actually
+        // take — the very same greedy answer `BotBrain` gives the screen. The generic bundle
+        // rule below prices every offer as Max(bundle), which is right for a card reward and
+        // understates this one: measured 2026-09-30 it read 58.24 on a starter Ironclad,
+        // which is only the best card of each of the three bundled rarities, while the
+        // screen is one grid of 15. Sharing BuildValue.GreedyPick keeps the price and the
+        // behaviour from drifting apart.
+        if (relic.GetType().Name == "SeaGlass")
+        {
+            var offered = effect.Bundles.SelectMany(bundle => bundle.Cards).ToList();
+            if (offered.Count == 0) return 0;
+            var (picked, ranked) = Building.BuildValue.GreedyPick(player, offered, min: 0, max: offered.Count);
+            return ranked.Take(picked.Count).Sum(entry => entry.Value);
+        }
         if (UpgradeRelics.Contains(relic.GetType().Name))
         {
             var upgraded = 0.0;

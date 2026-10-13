@@ -29,7 +29,11 @@ internal static class KernelEngineScenarios
             prefix: new HarmonyLib.HarmonyMethod(typeof(KernelEngineScenarios), nameof(FormatText)));
         KernelPowerRouteScenarios.Run();
         KernelRoundScenarios.Run();
+        KernelConsistencyScenarios.Run();
+        KernelTouchPotionScenarios.Run();
         RunContinuationInvariants();
+        StampFieldsArePositionallyStable();
+        RampartGrantsOncePerPlayerTurnNotOncePerSeat();
         KnowledgeDemonCurseAdvancesOnceForTheWholeMove();
         var human = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
         var a = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
@@ -176,6 +180,7 @@ internal static class KernelEngineScenarios
         AuditPotionCoverage();
         AuditPotionMirrorsDoSomething();
         AuditTeamPotionMirrors();
+        AuditBossOpeningPotionWaste();
         AuditProactivePotion();
         AuditJointPotionSequence();
         AuditPotionOnlyWhenCardsCannotFinisher();
@@ -186,6 +191,7 @@ internal static class KernelEngineScenarios
         AuditBotStampIgnoresHumanEndTurn();
         AuditBossReactiveMechanics();
         AuditScalingThreatFocus();
+        AuditQueenPriorityAdd();
         AuditCrossTurn();
         AuditMultiplayerBlockScaling();
         HumanFinisherScenarios.Run();
@@ -732,11 +738,15 @@ internal static class KernelEngineScenarios
         // guard used to cover only the four, which is how DROPLET_OF_PRECOGNITION reached a live
         // plan and cost a script (SLIMES_NORMAL, 2026-09-20).
         foreach (var chooser in new[] { "AttackPotion", "SkillPotion", "PowerPotion", "ColorlessPotion",
-            "Ashwater", "DropletOfPrecognition", "GamblersBrew", "LiquidMemories", "TouchOfInsanity" })
+            "Ashwater", "DropletOfPrecognition", "GamblersBrew", "LiquidMemories" })
             if (!missing.Contains(chooser))
                 throw new Exception($"{chooser} is a CHOOSER potion whose mirror never applies the pick "
                     + "(AddsToHand: false); it must report unmodelable so the search treats it as a boundary "
                     + "instead of planning across a board that is wrong by one card.");
+        // Touch is separately supported through an explicit recipient/menu/action
+        // contract. All eight other chooser bottles remain refused above.
+        if (missing.Contains("TouchOfInsanity"))
+            throw new Exception("TouchOfInsanity must be modelable through its explicit choice adapter.");
         // ...and the exclusion has to stay narrow: an ordinary potion must remain modelable.
         foreach (var plain in new[] { "BlockPotion", "EnergyPotion", "FirePotion" })
             if (missing.Contains(plain))
@@ -845,8 +855,15 @@ internal static class KernelEngineScenarios
             foreach (var target in root.PotionTargets(potion))
             {
                 var branch = root.Fork();
-                if (!branch.UsePotion(potion, target, out var boundary))
+                var boundary = "";
+                var resolved = KernelSession.RequiresPotionChoiceContract(potion)
+                    ? root.PotionBranches(potion, target, controlledActors: [bot]).FirstOrDefault(b => b.Boundary.Length == 0)
+                    : null;
+                var used = resolved is not null || !KernelSession.RequiresPotionChoiceContract(potion)
+                    && branch.UsePotion(potion, target, out boundary);
+                if (!used)
                 { outcome = "refused:" + boundary; continue; }
+                if (resolved is not null) branch = resolved.State;
                 outcome = branch.StateText(bot) == before ? "NO CHANGE"
                     : $"changed ({(boundary.Length == 0 ? "ok" : boundary)})";
                 break;
@@ -915,6 +932,149 @@ internal static class KernelEngineScenarios
 
     // A buff potion that turns a non-lethal turn into a confirmed kill must be
     // detected by simulating the potion, not guessed from live state.
+    // owner 2026-10-05 追加：Boss 开局倒瓶不许浪费。
+    // (a) 手牌 10 张还喝加牌药/抽牌药 = 白喝 → 留瓶；
+    // (b) 能量花不完仍喝能量药 = 白喝 → 有需要的队友就给队友，没有就留瓶；
+    // (c) 能量真的不够花时，能量药仍然要喝（防止矫枉过正）。
+    // R2：把 KernelPotionOpportunity.BossOpeningTarget 顶部改成旧的
+    // "targets.FirstOrDefault(t => t == owner.Creature) ?? targets[0]"，(a)/(b) 必须变红。
+    private static void AuditBossOpeningPotionWaste()
+    {
+        (KernelSession Root, Player Bot, Player Mate) Build(int botHand, int botEnergy, string scenario, PotionModel potion)
+        {
+            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 7));
+            var mate = Player.CreateForNewRun<Deprived>(UnlockState.all, (ulong)701);
+            var party = new[] { bot, mate };
+            var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "POTION-WASTE-" + scenario));
+            foreach (var p in party)
+            {
+                p.ResetCombatState(); combat.AddPlayer(p);
+                p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80);
+                p.PlayerCombatState!.Phase = PlayerTurnPhase.Play;
+            }
+            bot.PlayerCombatState!.GainEnergy(botEnergy);
+            for (var i = 0; i < botHand; i++)
+                bot.PlayerCombatState.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
+            // 队友 0 能量 + 3 张 1 费牌：能量缺口 3。
+            for (var i = 0; i < 3; i++)
+                mate.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(mate));
+            // 抽牌药需要一个非空抽牌堆，否则"空抽牌堆"本身就足以跳过；两边都放。
+            for (var i = 0; i < 3; i++)
+            {
+                bot.PlayerCombatState.DrawPile.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
+                mate.PlayerCombatState!.DrawPile.AddInternal(combat.CreateCard<StrikeIronclad>(mate));
+            }
+            bot.AddPotionInternal(potion, silent: true);
+            return (KernelSession.Capture(combat), bot, mate);
+        }
+
+        // (a) 加牌药 + 自己满手：有手牌有空的队友就给队友（不浪费），只能自己用就留瓶。
+        var chooser = Build(botHand: 10, botEnergy: 3, scenario: "chooser",
+            ModelDb.Potion<SkillPotion>().ToMutable());
+        var chooserCanTargetMate = chooser.Root.PotionTargets(chooser.Bot.Potions.First())
+            .Any(t => ReferenceEquals(t, chooser.Mate.Creature));
+        var chooserChoice = KernelPotionOpportunity.Choose(chooser.Root, [chooser.Bot], [chooser.Bot, chooser.Mate],
+            null, null, unmodeledOnly: false, bossOpening: true);
+        if (chooserCanTargetMate)
+        {
+            if (chooserChoice is null || !ReferenceEquals(chooserChoice.Action.Target, chooser.Mate.Creature))
+                throw new Exception("A card-generating potion must go to a teammate with hand space, not into a full hand.");
+        }
+        else if (chooserChoice is not null)
+        {
+            throw new Exception("A self-only card-generating potion must not be drunk into a full hand.");
+        }
+
+        // (a2) 抽牌药 + 自己满手：同样给手牌有空的队友，给不了就留瓶。
+        var swift = Build(botHand: 10, botEnergy: 3, scenario: "swift",
+            ModelDb.Potion<SwiftPotion>().ToMutable());
+        var swiftCanTargetMate = swift.Root.PotionTargets(swift.Bot.Potions.First())
+            .Any(t => ReferenceEquals(t, swift.Mate.Creature));
+        var swiftChoice = KernelPotionOpportunity.Choose(swift.Root, [swift.Bot], [swift.Bot, swift.Mate],
+            null, null, unmodeledOnly: false, bossOpening: true);
+        if (swiftCanTargetMate)
+        {
+            if (swiftChoice is null || !ReferenceEquals(swiftChoice.Action.Target, swift.Mate.Creature))
+                throw new Exception("A draw potion must go to a teammate with hand space, not into a full hand.");
+        }
+        else if (swiftChoice is not null)
+        {
+            throw new Exception("A self-only draw potion must not be drunk into a full hand.");
+        }
+
+        // (b) 能量药 + 自己花不完 + 队友缺 3：给队友（若原生允许目标队友），否则留瓶。
+        var energy = Build(botHand: 1, botEnergy: 3, scenario: "energy",
+            ModelDb.Potion<EnergyPotion>().ToMutable());
+        var energyPotion = energy.Bot.Potions.First();
+        var canTargetMate = energy.Root.PotionTargets(energyPotion).Any(t => ReferenceEquals(t, energy.Mate.Creature));
+        var energyChoice = KernelPotionOpportunity.Choose(energy.Root, [energy.Bot], [energy.Bot, energy.Mate],
+            null, null, unmodeledOnly: false, bossOpening: true);
+        if (canTargetMate)
+        {
+            if (energyChoice is null || !ReferenceEquals(energyChoice.Action.Target, energy.Mate.Creature))
+                throw new Exception("An energy potion the owner cannot spend must go to the teammate who can.");
+        }
+        else if (energyChoice is not null)
+        {
+            throw new Exception("With no ally target, an unspendable energy potion must be kept, not wasted on self.");
+        }
+
+        // (c) 能量真的缺：仍然喝（对自己）。
+        var need = Build(botHand: 3, botEnergy: 0, scenario: "need",
+            ModelDb.Potion<EnergyPotion>().ToMutable());
+        var needChoice = KernelPotionOpportunity.Choose(need.Root, [need.Bot], [need.Bot, need.Mate],
+            null, null, unmodeledOnly: false, bossOpening: true);
+        if (needChoice is null || !ReferenceEquals(needChoice.Action.Target, need.Bot.Creature))
+            throw new Exception("An energy potion with a real energy shortfall must still be used on its owner.");
+
+        // (d) 满血治疗 = 把瓶子倒进下水道；实机 2026-10-05 Bot1 99/99 喝 BLOOD_POTION。
+        var heal = Build(botHand: 1, botEnergy: 3, scenario: "heal",
+            ModelDb.Potion<BloodPotion>().ToMutable());
+        var healChoice = KernelPotionOpportunity.Choose(heal.Root, [heal.Bot], [heal.Bot, heal.Mate],
+            null, null, unmodeledOnly: false, bossOpening: true);
+        if (healChoice is not null)
+            throw new Exception("A healing potion at full HP must be kept, not drunk into the cap.");
+
+        // (e) 伤害药水砸进 Intangible 只剩 1 点；同根状态去掉无敌后必须仍测到正收益（R5b）。
+        (KernelSession Root, Player Bot, Creature Foe) DamageBoard(string scenario, bool intangible)
+        {
+            var p = Player.CreateForNewRun<Deprived>(UnlockState.all, (ulong)(702 + scenario.Length));
+            var combat = new CombatState(runState: RunState.CreateForTest([p], seed: "POTION-DMG-" + scenario));
+            p.ResetCombatState(); combat.AddPlayer(p);
+            p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80);
+            p.PlayerCombatState!.Phase = PlayerTurnPhase.Play; p.PlayerCombatState.GainEnergy(3);
+            p.PlayerCombatState.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(p));
+            var foe = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "0");
+            combat.AddCreature(foe); foe.Monster!.SetUpForCombat();
+            foe.SetMaxHpInternal(200); foe.SetCurrentHpInternal(200);
+            foe.Monster.SetMoveImmediate((MoveState)foe.Monster.MoveStateMachine!.States["ATTACK"], true);
+            if (intangible)
+                ModelDb.Power<IntangiblePower>().ToMutable().ApplyInternal(foe, 1, true);
+            p.AddPotionInternal(ModelDb.Potion<FirePotion>().ToMutable(), silent: true);
+            return (KernelSession.Capture(combat), p, foe);
+        }
+
+        var blocked = DamageBoard("intangible", intangible: true);
+        var blockedAction = new KernelTeamSearch.Action(blocked.Bot, null, blocked.Foe, blocked.Bot.Potions.First());
+        var blockedBenefit = KernelPotionPolicy.ImmediateBenefit(blocked.Root, [blocked.Bot], blockedAction);
+        if (blockedBenefit > 0.01)
+            throw new Exception($"A damage potion into IntangiblePower must not look useful, benefit={blockedBenefit:F2}.");
+        var blockedMeasure = KernelPotionOpportunity.Measure(blocked.Root, blocked.Bot.Potions.First(),
+            blocked.Foe, [blocked.Bot]);
+        if (blockedMeasure.Benefit > 0.01)
+            throw new Exception($"Intangible must cap a non-lethal damage bottle's measured benefit, got {blockedMeasure.Benefit:F2}.");
+        var open = DamageBoard("open", intangible: false);
+        var openAction = new KernelTeamSearch.Action(open.Bot, null, open.Foe, open.Bot.Potions.First());
+        var openBenefit = KernelPotionPolicy.ImmediateBenefit(open.Root, [open.Bot], openAction);
+        if (openBenefit <= 0.01)
+            throw new Exception($"The same damage potion must stay useful without Intangible, benefit={openBenefit:F2}. ");
+        var openMeasure = KernelPotionOpportunity.Measure(open.Root, open.Bot.Potions.First(), open.Foe, [open.Bot]);
+        if (openMeasure.Benefit <= 0.01)
+            throw new Exception($"A normal damage bottle must keep its measured benefit, got {openMeasure.Benefit:F2}.");
+
+        Console.WriteLine("PASS: boss-opening spends do not waste card potions into a full hand or energy on an unspendable turn.");
+    }
+
     private static void AuditProactivePotion()
     {
         var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 1));
@@ -1088,6 +1248,134 @@ internal static class KernelEngineScenarios
         Console.WriteLine("PASS: the chosen plan attacks the scaling enemy rather than only blocking.");
 
         static Player Party(CombatState combat) => combat.Players.First();
+    }
+
+    // 2026-10-05 实机团灭回归（seed PQWEBGY4ZTGQ）：女王爪牙（火炬头聚合体）标注成
+    // 「可先打」之后，(a) 它被算作每回合 +1 力量的成长目标，(b) 搜索必须保留一条打
+    // 爪牙的候选线（旧行为里它连一个动作都活不过 beam），(c) KillAdds 政策先打它，
+    // 而默认 Kill 政策仍先打主要敌人——owner 要的是「允许」，不是「强制」。
+    // R2：把 KernelPriorityAdds.IsPriorityAdd 改成恒 false，本方法的 (b)/(c) 必须变红。
+    private static void AuditQueenPriorityAdd()
+    {
+        (CombatState Combat, Player Bot, Creature Queen, Creature Claw) Build()
+        {
+            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 5));
+            var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "QUEENCLAW"));
+            bot.ResetCombatState(); combat.AddPlayer(bot);
+            bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
+            bot.PlayerCombatState!.Phase = PlayerTurnPhase.Play; bot.PlayerCombatState.GainEnergy(3);
+            var queen = combat.CreateCreature(ModelDb.Monster<Queen>().ToMutable(), CombatSide.Enemy, "queen");
+            combat.AddCreature(queen); queen.Monster!.SetUpForCombat();
+            queen.SetMaxHpInternal(200); queen.SetCurrentHpInternal(200);
+            queen.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(4)), true);
+            var claw = combat.CreateCreature(ModelDb.Monster<TorchHeadAmalgam>().ToMutable(), CombatSide.Enemy, "claw");
+            combat.AddCreature(claw); claw.Monster!.SetUpForCombat();
+            claw.SetMaxHpInternal(120); claw.SetCurrentHpInternal(120);
+            claw.Monster.SetMoveImmediate(new MoveState("TACKLE", _ => Task.CompletedTask, new SingleAttackIntent(8)), true);
+            // MINION 让爪牙不是主要敌人：胜负条件（RemainingOpposition）只认主要敌人。
+            ((MinionPower)ModelDb.Power<MinionPower>().ToMutable()).ApplyInternal(claw, 1, true);
+            for (var i = 0; i < 4; i++) bot.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
+            return (combat, bot, queen, claw);
+        }
+
+        var (combat, bot, queen, claw) = Build();
+        if (!KernelPriorityAdds.IsPriorityAdd(claw) || KernelPriorityAdds.IsPriorityAdd(queen))
+            throw new Exception("Only the TorchHeadAmalgam may be annotated as a priority add.");
+        var root = KernelSession.Capture(combat);
+        if (root.IsPrimaryEnemy(claw))
+            throw new Exception("The MINION claw must not count as a primary enemy.");
+        if (!KernelPriorityAdds.ScalesEachRound(root.Enemies, claw))
+            throw new Exception("The claw must be priced as +1 Strength per round while the Queen lives.");
+        queen.SetCurrentHpInternal(0);
+        if (KernelPriorityAdds.ScalesEachRound(root.Enemies, claw))
+            throw new Exception("A dead Queen must not keep granting the claw free scaling.");
+        queen.SetCurrentHpInternal(200);
+        Console.WriteLine("PASS: Queen's claw is annotated; scaling credit follows the living Queen, primary-enemy semantics untouched.");
+
+        // (c) 政策目标：KillAdds 先打爪牙，Kill 仍先打主要敌人。
+        root = KernelSession.Capture(combat);
+        {
+            var adds = new RolloutRun(root.Fork(), [bot], [bot], new RolloutOptions(RolloutPolicyKind.KillAdds, MaxSteps: 2));
+            while (!adds.Done) adds.Step();
+            var first = adds.Result!.Actions[0];
+            if (!KernelPriorityAdds.IsPriorityAdd(first.Target))
+                throw new Exception($"KillAdds must open on the claw, got {first.Target?.Monster?.Id.Entry ?? "null"}.");
+        }
+        {
+            var kill = new RolloutRun(root.Fork(), [bot], [bot], new RolloutOptions(RolloutPolicyKind.Kill, MaxSteps: 2));
+            while (!kill.Done) kill.Step();
+            var first = kill.Result!.Actions[0];
+            if (!ReferenceEquals(first.Target, queen))
+                throw new Exception($"Kill must keep the primary as its target, got {first.Target?.Monster?.Id.Entry ?? "null"}.");
+        }
+        Console.WriteLine("PASS: KillAdds opens on the claw; Kill still opens on the primary (allow, not force).");
+
+        // (b) 搜索保留一条打爪牙的线：评分函数刻意只看女王 HP（旧 bias），且和实机
+        // 联合搜索一致地走 Deduplicate=false 的 SelectUnmergedFrontier 裁剪路径。
+        // width=2 是刻意的：爪牙线分数永远落后，只有「保护」能让它活下来
+        // （R2 实测：width=4 或 Deduplicate=true 时，同分填充会漏进一条顺手打到爪牙的
+        // 线，断言改坏后仍绿——那种夹具抓不住机制本身）。
+        using (var search = new KernelTeamSearch(KernelSession.Capture(combat), [bot],
+            state => -state.Hp(queen), new(Depth: 3, Width: 2, MaxNodes: 256)
+            { PreserveSetupRoutes = true, Deduplicate = false }))
+        {
+            while (!search.Advance(TimeSpan.FromMilliseconds(3), () => true)) { }
+            var kept = search.ContinuationPaths.Any(
+                path => path.Any(a => KernelPriorityAdds.IsPriorityAdd(a.Target)));
+            if (!kept)
+                throw new Exception("The search must retain a claw-targeting continuation even when only primary HP is scored.");
+        }
+        Console.WriteLine("PASS: the beam keeps one claw-targeting line for the ending comparison to judge.");
+
+        // 范围回归（owner 2026-10-05）：只允许 Queen 的聚合体被标注。胧光怪（TheObscura）
+        // 会召唤会复活的幻影爪牙（Parafright，带 MINION+ILLUSION）；此前 Bot 会把火力
+        // 倒在它身上导致主怪过慢。这里断言幻影既不是标注爪牙、也不参与进度估值，
+        // 计划必须打主怪（两条政策都查）。
+        var obscura = BuildObscura();
+        if (KernelPriorityAdds.IsPriorityAdd(obscura.Illusion) || KernelPriorityAdds.IsPriorityAdd(obscura.Main))
+            throw new Exception("Only the Queen's torch-head amalgam may be annotated as a priority add.");
+        if (KernelPriorityAdds.ScalesEachRound(obscura.Combat.Enemies, obscura.Illusion))
+            throw new Exception("A reviving illusion must never inherit the claw's scaling credit.");
+        var obscuraRoot = KernelSession.Capture(obscura.Combat);
+        var obscuraEval = new KernelCombatEvaluation(obscura.Combat, [obscura.Bot], null);
+        using (var search = new KernelTeamSearch(obscuraRoot.Fork(), [obscura.Bot],
+            state => obscuraEval.Evaluate(state).Score, new(Depth: 3, Width: 4, MaxNodes: 192)))
+        {
+            while (!search.Advance(TimeSpan.FromMilliseconds(3), () => true)) { }
+            var first = search.CompletedResult!.Actions.Count > 0 ? search.CompletedResult.Actions[0] : null;
+            if (first is null || !ReferenceEquals(first.Target, obscura.Main))
+                throw new Exception("Against a reviving low-HP illusion the plan must attack the main enemy, "
+                    + $"got {first?.Target?.Monster?.Id.Entry ?? "none"}.");
+        }
+        var obscuraAdds = new RolloutRun(obscuraRoot.Fork(), [obscura.Bot], [obscura.Bot],
+            new RolloutOptions(RolloutPolicyKind.KillAdds, MaxSteps: 2));
+        while (!obscuraAdds.Done) obscuraAdds.Step();
+        var obscuraFirst = obscuraAdds.Result!.Actions[0];
+        if (!ReferenceEquals(obscuraFirst.Target, obscura.Main))
+            throw new Exception("KillAdds must not open on a reviving illusion, "
+                + $"got {obscuraFirst.Target?.Monster?.Id.Entry ?? "null"}.");
+        Console.WriteLine("PASS: only the Queen's claw is annotated; a reviving illusion is demoted, not focused.");
+
+        static (CombatState Combat, Player Bot, Creature Main, Creature Illusion) BuildObscura()
+        {
+            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 6));
+            var combat = new CombatState(runState: RunState.CreateForTest(new[] { bot }, seed: "OBSCURA-ILLUSION"));
+            bot.ResetCombatState(); combat.AddPlayer(bot);
+            bot.Creature.SetMaxHpInternal(80); bot.Creature.SetCurrentHpInternal(80);
+            bot.PlayerCombatState!.Phase = PlayerTurnPhase.Play; bot.PlayerCombatState.GainEnergy(3);
+            var main = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "main");
+            combat.AddCreature(main); main.Monster!.SetUpForCombat();
+            main.SetMaxHpInternal(200); main.SetCurrentHpInternal(200);
+            main.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(4)), true);
+            var illusion = combat.CreateCreature(ModelDb.Monster<Parafright>().ToMutable(), CombatSide.Enemy, "illusion");
+            combat.AddCreature(illusion); illusion.Monster!.SetUpForCombat();
+            illusion.SetMaxHpInternal(20); illusion.SetCurrentHpInternal(20);
+            illusion.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(6)), true);
+            ((MinionPower)ModelDb.Power<MinionPower>().ToMutable()).ApplyInternal(illusion, 1, true);
+            ((IllusionPower)ModelDb.Power<IllusionPower>().ToMutable()).ApplyInternal(illusion, 1, true);
+            for (var i = 0; i < 4; i++) bot.PlayerCombatState!.Hand.AddInternal(combat.CreateCard<StrikeIronclad>(bot));
+            return (combat, bot, main, illusion);
+        }
     }
 
     // P1-2: a settled enemy phase advances into the next player turn (draw,
@@ -2341,12 +2629,20 @@ internal static class KernelEngineScenarios
         var counter = session.KnowledgeDemonCurseCounter(inBranch);
         if (counter != 1)
             throw new Exception($"CURSE_OF_KNOWLEDGE must advance its counter once per move, got {counter}.");
+        // This test pins the COUNTER crossing, not which curse the opportunity-cost
+        // policy happens to pick. Owner 2026-10-04 rebalanced that policy (it used to
+        // take Mind Rot almost always), so accept exactly one of the four Knowledge
+        // curses per target instead of hard-coding Mind Rot.
         foreach (var player in party)
         {
-            var mindRot = session.Power<MindRotPower>(player.Creature);
-            if (mindRot != 1)
-                throw new Exception($"The default curse must resolve for every target; "
-                    + $"{player.NetId} has MindRot={mindRot}.");
+            var curseTypes = 0;
+            if (session.Power<MindRotPower>(player.Creature) > 0) curseTypes++;
+            if (session.Power<SlothPower>(player.Creature) > 0) curseTypes++;
+            if (session.Power<WasteAwayPower>(player.Creature) > 0) curseTypes++;
+            if (session.Power<DisintegrationPower>(player.Creature) > 0) curseTypes++;
+            if (curseTypes != 1)
+                throw new Exception($"The default curse must resolve exactly once for every target; "
+                    + $"{player.NetId} has {curseTypes} Knowledge curse types.");
         }
         Console.WriteLine("PASS: Knowledge Demon's curse resolves for every target and advances "
             + "its counter exactly once per move in tournament roll-outs.");
@@ -2389,6 +2685,205 @@ internal static class KernelEngineScenarios
     /// <item>giving a script up is a single, named, counted decision.</item>
     /// </list>
     /// </summary>
+    /// <summary>
+    /// The party stamp is compared as ONE ';'-separated list, so every field has to be
+    /// present on BOTH sides.
+    ///
+    /// Two fields were emitted only when non-empty, which made the field COUNT depend on
+    /// the state: live 2026-10-06 (FABRICATOR_NORMAL) reported
+    /// `field_order[35] expected={PT=0:GUARDED_POWER=1@0,…} actual={R=3008…}` -- one side
+    /// had a targeted power and the other did not, so every later field was compared one
+    /// slot off and the real difference (GUARDED missing live) was never named.
+    ///
+    /// P= is compared by INDEX as well, and the two renderers enumerate powers in
+    /// different orders (live: <c>Creatures.SelectMany(c =&gt; c.Powers)</c>; a branch:
+    /// <c>EffectivePowers()</c>, the hook-listener order). The same board can therefore
+    /// report a `P[n]` difference that is only an order difference, or two genuinely
+    /// different boards can render the same text.
+    /// </summary>
+    private static void StampFieldsArePositionallyStable()
+    {
+        // (a) A targeted power must not change the field count.
+        string plain = KernelSession.CaptureLivePartyText(StampBoard(targeted: false));
+        string withTarget = KernelSession.CaptureLivePartyText(StampBoard(targeted: true));
+        int plainFields = plain.Split(';').Length, targetFields = withTarget.Split(';').Length;
+        if (plainFields != targetFields)
+            throw new Exception($"Kernel: the party stamp must carry the same field count whether or not a "
+                + $"targeted power exists; got {plainFields} without and {targetFields} with. Live 2026-10-06 "
+                + "reported `field_order[35] expected={PT=0:GUARDED_POWER=1@0,…} actual={R=3008…}`.");
+
+        // (b) P= has to be in one canonical order, so index n is the same power on both sides.
+        string first = PField(KernelSession.CaptureLivePartyText(StampBoard(powerOrder: 0)));
+        string second = PField(KernelSession.CaptureLivePartyText(StampBoard(powerOrder: 1)));
+        if (first != second)
+            throw new Exception("Kernel: the P= list must be ordered canonically, not by enumeration order; "
+                + $"the same two powers attached in the opposite order rendered\n  {first}\n  {second}");
+
+        Console.WriteLine("PASS: the party stamp's field count is state-independent and P= is canonically ordered.");
+    }
+
+    private static string PField(string text)
+    {
+        int start = text.IndexOf(";P=", StringComparison.Ordinal);
+        int end = text.IndexOf(";PT=", start, StringComparison.Ordinal);
+        return text[start..(end < 0 ? text.Length : end)];
+    }
+
+    private static CombatState StampBoard(bool targeted = false, int powerOrder = -1)
+    {
+        var party = Enumerable.Range(0, 2)
+            .Select(i => Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 88, i)))
+            .ToArray();
+        var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "STAMP-FIELDS"));
+        foreach (var p in party)
+        {
+            p.ResetCombatState(); combat.AddPlayer(p);
+            p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80);
+        }
+        var enemy = combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "0");
+        combat.AddCreature(enemy); enemy.Monster!.SetUpForCombat();
+        enemy.SetMaxHpInternal(200); enemy.SetCurrentHpInternal(200);
+        enemy.Monster.SetMoveImmediate(new MoveState("ATTACK", _ => Task.CompletedTask, new SingleAttackIntent(4)), true);
+        if (targeted)
+        {
+            var pit = (SandpitPower)ModelDb.Power<SandpitPower>().ToMutable();
+            pit.Target = party[0].Creature;
+            pit.ApplyInternal(enemy, 3, true);
+        }
+        if (powerOrder >= 0)
+        {
+            var powers = new PowerModel[]
+            {
+                ModelDb.Power<RitualPower>().ToMutable(),
+                ModelDb.Power<RampartPower>().ToMutable(),
+            };
+            if (powerOrder == 1) Array.Reverse(powers);
+            foreach (var power in powers) power.ApplyInternal(enemy, 3, true);
+        }
+        return combat;
+    }
+
+    /// <summary>
+    /// A side-turn-start HOOK must fire once per SIDE turn, not once per seat.
+    ///
+    /// Live 2026-10-06 (seed 8W0NNPPSPFTX, TURRET_OPERATOR_WEAK): the refinement
+    /// boundary check reported `field=E1.block expected={480} actual={120}` three
+    /// times in one fight, and 480 = 4 seats x RAMPART_POWER(120). The value is
+    /// CONSTANT across the reported rounds, which pins it to "granted once per seat
+    /// inside one round" rather than a per-round accumulation -- the sim clears
+    /// enemy block at the enemy side-turn start, so a per-round accumulation would
+    /// have read 240/360/480.
+    ///
+    /// The native model is an ordinary side-turn-start hook:
+    ///   RampartPower.AfterSideTurnStart(side, participants, state) -> CreatureCmd.GainBlock
+    /// (third_party/CombatSolver-main/coverage/state-mutations.json, runtimeVerified),
+    /// and its own note says it fires at "ordinary player side-turn start" -- once
+    /// per side, with the whole participant list. Our party model drives that
+    /// sequence once per seat (KernelTurns.StartNextPlayerTurn), so a hook the
+    /// single-seat vendored solver fires once lands once per seat here. This is a
+    /// multiplayer-integration deviation in a vendored file, not an upstream defect.
+    /// </summary>
+    private static void RampartGrantsOncePerPlayerTurnNotOncePerSeat()
+    {
+        const int rampart = 120;
+        (Player[] Party, CombatState Combat, Creature Turret) Board(string seed)
+        {
+            var seats = Enumerable.Range(0, 4)
+                .Select(i => Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 77, i)))
+                .ToArray();
+            var state = new CombatState(runState: RunState.CreateForTest(seats, seed: seed));
+            foreach (var p in seats)
+            {
+                p.ResetCombatState(); state.AddPlayer(p);
+                p.Creature.SetMaxHpInternal(200); p.Creature.SetCurrentHpInternal(200);
+                p.PlayerCombatState!.Phase = PlayerTurnPhase.Play;
+                p.PlayerCombatState.GainEnergy(3);
+                for (var i = 0; i < 5; i++)
+                    p.PlayerCombatState.DrawPile.AddInternal(state.CreateCard<StrikeIronclad>(p));
+            }
+            var foe = state.CreateCreature(ModelDb.Monster<TurretOperator>().ToMutable(), CombatSide.Enemy, "turret");
+            state.AddCreature(foe); foe.Monster!.SetUpForCombat();
+            foe.SetMaxHpInternal(400); foe.SetCurrentHpInternal(400);
+            foe.Monster.SetMoveImmediate((MoveState)foe.Monster.MoveStateMachine!.States.Values.First(), true);
+            return (seats, state, foe);
+        }
+
+        // A new RAW application and a captured FINAL layer count are different
+        // native operations. PowerCmd.Apply scales raw 120 to 528 at four seats
+        // in act index zero; ApplyInternal restores an already-final 120.
+        // The historical live 120 is the latter, not evidence of a raw 120.
+        // R2 (private mirror; production files unchanged): disable first enemy
+        // scaling -> build0 / RED1; exact byte restore -> build0 / GREEN0.
+        // System.Exception: Kernel: native first raw Rampart 120 must scale to 528 at four seats; native=528, simulation=120, root=0.
+        // Raw commands/runtime hashes: work/latest-run-repair-20261008/rampart-review/rampart-r2-results.json.
+        var (rawParty, rawCombat, rawTurret) = Board("RAMPART-RAW");
+        var rawRoot = KernelSession.Capture(rawCombat);
+        var rawAfter = rawRoot.Fork();
+        ClassPowerScenarios.State(rawAfter).Apply<RampartPower>(rawTurret, rampart, rawTurret);
+        using (new RampartNativeTurn(rawCombat))
+        {
+            MegaCrit.Sts2.Core.Commands.PowerCmd.Apply<RampartPower>(
+                new MegaCrit.Sts2.Core.GameActions.Multiplayer.ThrowingPlayerChoiceContext(),
+                rawTurret, rampart, rawTurret, null, silent: true).GetAwaiter().GetResult();
+            var nativeAmount = rawTurret.GetPower<RampartPower>()!.Amount;
+            if (nativeAmount != 528 || rawAfter.Power<RampartPower>(rawTurret) != nativeAmount
+                || rawRoot.Power<RampartPower>(rawTurret) != 0)
+                throw new Exception($"Kernel: native first raw Rampart 120 must scale to 528 at four seats; "
+                    + $"native={nativeAmount}, simulation={rawAfter.Power<RampartPower>(rawTurret)}, "
+                    + $"root={rawRoot.Power<RampartPower>(rawTurret)}.");
+            MegaCrit.Sts2.Core.Hooks.Hook.AfterSideTurnStart(rawCombat, CombatSide.Player,
+                rawParty.Select(p => p.Creature).ToArray()).GetAwaiter().GetResult();
+            if (rawTurret.Block != nativeAmount)
+                throw new Exception($"Kernel: one native raw Rampart side hook must grant 528, got {rawTurret.Block}.");
+            Console.WriteLine($"PASS: native first raw Rampart 120 -> {nativeAmount} layers -> {rawTurret.Block} block on one player side hook.");
+        }
+
+        var (party, combat, turret) = Board("RAMPART-SEATS");
+        ModelDb.Power<RampartPower>().ToMutable().ApplyInternal(turret, rampart, true);
+
+        var root = KernelSession.Capture(combat);
+        var after = root.Fork();
+        after.AutoResolveTurnStartChoices = true; after.AutoResolveEnemyChoices = true;
+        using (new RampartNativeTurn(combat))
+        {
+            MegaCrit.Sts2.Core.Hooks.Hook.AfterSideTurnStart(combat, CombatSide.Player,
+                party.Select(p => p.Creature).ToArray()).GetAwaiter().GetResult();
+            if (turret.Block != rampart || turret.GetPower<RampartPower>()!.Amount != rampart)
+                throw new Exception($"Kernel: captured final Rampart 120 must remain 120 and grant one native 120 block; "
+                    + $"amount={turret.GetPower<RampartPower>()!.Amount}, block={turret.Block}.");
+        }
+        foreach (var p in party)
+            if (!after.EndTurn(p, 3, out var boundary))
+                throw new Exception($"Kernel: the Rampart fixture must cross one round: {boundary}");
+        var block = after.Block(turret);
+        // R2: disable TryClaimRampartGrant -> build0 / RED1; exact restore -> build0 / GREEN0.
+        // System.Exception: Kernel: RampartPower is a side-turn-start hook and must grant 120 block once per player turn, not once per seat; a 4-seat table got 480 (= 4x). Live 2026-10-06 reported `E1.block expected={480} actual={120}`.
+        if (block != rampart)
+            throw new Exception($"Kernel: RampartPower is a side-turn-start hook and must grant {rampart} block "
+                + $"once per player turn, not once per seat; a {party.Length}-seat table got {block} "
+                + $"(= {block / rampart}x). Live 2026-10-06 reported `E1.block expected={{480}} actual={{120}}`.");
+        if (root.Block(turret) != 0 || root.Power<RampartPower>(turret) != rampart
+            || after.Power<RampartPower>(turret) != rampart || turret.Block != rampart)
+            throw new Exception("Kernel: captured final Rampart must preserve root/live isolation and its final 120 layers.");
+        Console.WriteLine($"PASS: RampartPower grants {rampart} block once per player turn on a {party.Length}-seat table.");
+    }
+
+    private sealed class RampartNativeTurn : IDisposable
+    {
+        private readonly FieldInfo field = HarmonyLib.AccessTools.Field(typeof(CombatManager), "_turnState");
+        private readonly object? previous;
+        internal RampartNativeTurn(CombatState combat)
+        {
+            previous = field.GetValue(CombatManager.Instance);
+            var turn = Activator.CreateInstance(field.FieldType,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, [combat], null)!;
+            HarmonyLib.AccessTools.Property(field.FieldType, "IsInProgress").SetValue(turn, true);
+            HarmonyLib.AccessTools.Property(field.FieldType, "IsStarting").SetValue(turn, false);
+            field.SetValue(CombatManager.Instance, turn);
+        }
+        public void Dispose() => field.SetValue(CombatManager.Instance, previous);
+    }
+
     private static void RunContinuationInvariants()
     {
         // (1) A live value must not leak into the recorded state text.
@@ -2695,9 +3190,9 @@ internal static class KernelEngineScenarios
             if (played == "0/0/0/0")
                 throw new Exception("Continuation: the probe play moved no turn counter, so the reset test proves nothing.");
 
-            // TWO crossings. With one, "the enemy attacked once this enemy phase" and "the
-            // enemy never resets and has attacked once so far" are the SAME number — only a
-            // second crossing separates them (1 = it reset, 2 = it did not).
+            // TWO crossings, ending on the player side. Native HappenedThisTurn
+            // checks both side and every player's turn number, so the previous
+            // enemy attacks have expired even though their history entries remain.
             for (var round = 0; round < 2; round++)
                 foreach (var seat in new[] { bot, other })
                     if (!branch.EndTurn(seat, 3, out var boundary))
@@ -2714,11 +3209,14 @@ internal static class KernelEngineScenarios
             // as combat_id/hp/max_hp/block/move and their per-turn counters appear nowhere,
             // which is why the omission there was invisible to every assertion above.
             var enemyAttacks = branch.CreatureAttacksThisTurnForTesting(combat.Enemies[0]);
-            if (enemyAttacks != 1)
+            // R2: omit enemies from ResetSideHistory ->
+            // "Latest projection repairs: enemy cached this-turn attack history must expire".
+            // work/decision-repair-20261007/projection-r2-results.json.
+            if (enemyAttacks != 0)
                 throw new Exception($"Continuation: the enemy's per-turn attack count is {enemyAttacks} after two "
-                    + "rounds (expected 1 — one enemy phase since the last reset). A value of 2 means the enemy "
-                    + "side never resets its per-turn state, so every later round is priced against accumulated "
-                    + "enemy bookkeeping the live game has already cleared.");
+                    + "rounds (expected 0 on the new player side). The native HappenedThisTurn predicate "
+                    + "expires the previous enemy phase on the shared side/turn transition; cached enemy "
+                    + "bookkeeping must expire with it.");
             Console.WriteLine("PASS: per-turn counters reset on the round crossing, on both sides.");
         }
 

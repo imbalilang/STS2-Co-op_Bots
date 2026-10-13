@@ -21,12 +21,19 @@ public enum RolloutPolicyKind
 {
     /// <summary>Finishing first: prefer the hit that kills, then the biggest hit.</summary>
     Kill,
+    /// <summary>
+    /// 2026-10-05 owner「允许 Bot 先打爪牙」：优先攻击被标注的爪牙（KernelPriorityAdds），
+    /// 其次主要敌人；「这张牌能直接击杀主要敌人」仍然最高优先。其余策略行为不变。
+    /// </summary>
+    KillAdds,
     /// <summary>Survival first: prefer the most block, then the biggest hit.</summary>
     Defend,
     /// <summary>Setup first: prefer powers and other non-damage, non-block cards, then damage.</summary>
     Growth,
     /// <summary>Bounded one-action lookahead using resolved damage and useful defence.</summary>
     Tactical,
+    /// <summary>Prioritize removing current harmful hand cards before ordinary output.</summary>
+    Cleanup,
 }
 
 public sealed record RolloutOptions(
@@ -37,13 +44,41 @@ public sealed record RolloutOptions(
     int MaxRounds = 80,
     // Ties are broken from THIS stream. Rolling a random tie out of the combat RNG would
     // make the simulated fight disagree with the real one and poison the live battle.
-    int Seed = 0);
+    int Seed = 0)
+{
+    internal bool InvestmentLookahead { get; init; } = true;
+    internal bool SequenceLookahead { get; init; } = true;
+    internal int InvestmentStepBudget { get; init; } = 384;
+    // The first complete policy comparisons retain native AB/BA ordering,
+    // but do not nest whole-hand rollouts inside every mutually exclusive pair.
+    // The wider search can still fund those optional numeric suffixes.
+    internal bool SequenceHandLookahead { get; init; } = true;
+    internal bool CaptureActionCheckpoints { get; init; }
+}
 
 /// <summary>
 /// What one rollout found. <see cref="Terminal"/> is true only for a real ending the
 /// simulation produced — a victory or a party wipe. Everything else is a cutoff and says
 /// why in <see cref="StopReason"/>.
 /// </summary>
+internal sealed record KernelSeatCheckpoint(ulong Player, int Turn, bool Ready, bool Acting,
+    int CardsPlayed, int EnergySpent, bool Alive);
+internal sealed record KernelActionCheckpoint(int NativeRound, int SideSegments, bool ExtraTurn,
+    IReadOnlyList<KernelSeatCheckpoint> Seats)
+{
+    internal bool SameBoundary(KernelActionCheckpoint other) => NativeRound == other.NativeRound
+        && SideSegments == other.SideSegments && ExtraTurn == other.ExtraTurn
+        && Seats.SequenceEqual(other.Seats);
+}
+
+public sealed partial class KernelSession
+{
+    internal KernelActionCheckpoint ActionCheckpoint() => new(Combat.RoundNumber, RoundsAdvanced,
+        extraTurnParticipants.Count > 0, Combat.Players.Select(p => new KernelSeatCheckpoint(p.NetId,
+            Combat.GetPlayerTurnNumber(p), IsReady(p), CanAct(p), CardsPlayedThisTurn(p),
+            Combat.GetEnergySpentThisTurn(p), Hp(p.Creature) > 0)).ToArray());
+}
+
 public sealed record RolloutOutcome(
     bool Terminal,
     bool Victory,
@@ -61,6 +96,7 @@ public sealed record RolloutOutcome(
     int RoundsAdvanced,
     TerminalRecord Record)
 {
+    internal IReadOnlyList<KernelActionCheckpoint>? Checkpoints { get; init; }
     public bool Cutoff => !Terminal;
 }
 
@@ -120,6 +156,8 @@ public sealed class RolloutRun
     private readonly RolloutOptions o;
     private readonly List<KernelTeamSearch.Action> actions = new();
     private readonly List<ulong[]> aliveStates = new();
+    private readonly List<KernelActionCheckpoint>? actionCheckpoints;
+    private IReadOnlyList<KernelActionCheckpoint>? AlignedCheckpoints => steps == actions.Count ? actionCheckpoints : null;
     // Index-aligned with aliveStates, and for the same reason: a script whose line assumed
     // an enemy would be dead by step N must not keep replaying as if it were.
     private readonly List<Creature[]> enemyStates = new();
@@ -129,6 +167,30 @@ public sealed class RolloutRun
     private readonly bool exploreAttrition;
     private readonly Queue<KernelTeamSearch.Action> attritionSequence = new();
     private int attritionCheckedRound = -1;
+    private int investmentRound = -1;
+    private readonly HashSet<(Player, string)> examinedPowers = new();
+    private readonly Dictionary<Player, int> examinedEnergy = new();
+    private int investmentSteps;
+    internal int InvestmentProbes { get; private set; }
+    private KernelInvestmentProbe? investment;
+    private string? investmentHand;
+    private KernelTeamSearch.Action? investmentChoice;
+    private int orderRound = -1;
+    // Per-player turn counts can catch up to the party maximum during extra
+    // turns. Completed side segments are monotonic even in that boundary.
+    private int SequenceBudgetEpoch => session.RoundsAdvanced;
+    private readonly Dictionary<Player, int> orderPairs = new();
+    private readonly Dictionary<Player, int> orderSetupPairs = new();
+    private KernelSequenceOrder.ProbeCache? orderCache;
+    internal KernelSession State => session;
+
+    internal void InheritSequenceBudget(RolloutRun opening)
+    {
+        if (opening.orderRound != SequenceBudgetEpoch) return;
+        orderRound = opening.orderRound;
+        foreach (var item in opening.orderPairs) orderPairs[item.Key] = item.Value;
+        foreach (var item in opening.orderSetupPairs) orderSetupPairs[item.Key] = item.Value;
+    }
 
     public RolloutOutcome? Result { get; private set; }
     public bool Done => Result is not null;
@@ -145,6 +207,7 @@ public sealed class RolloutRun
         session.AutoResolveEnemyChoices = true;
         this.party = party;
         o = options ?? new RolloutOptions();
+        if (o.CaptureActionCheckpoints) actionCheckpoints = new();
         driven = actors.ToHashSet();
         this.actors = actors;
         this.exploreAttrition = exploreAttrition;
@@ -155,14 +218,34 @@ public sealed class RolloutRun
     /// One action of the simulated fight: play one card for one seat, or end one seat's turn.
     /// Repeat until <see cref="Done"/>. Safe to call after Done (it does nothing).
     /// </summary>
+    internal KernelChoicePrefixCache? ChoicePrefixCache { private get; init; }
+    // The owner checks only between settled Steps, never inside native OnPlay,
+    // resource spending, choice settlement or side-turn hooks.
+    internal Func<bool>? StopRequested { private get; init; }
+    private KernelChoicePrefixCache.Cursor? choicePrefixCursor;
+    private KernelChoicePrefixCache.Cursor? PrefixCursor
+        => choicePrefixCursor ??= ChoicePrefixCache?.CreateCursor();
+    private bool ResolveEndTurn(Player player, out string boundary, out KernelTeamSearch.Action resolvedAction)
+    {
+        if (PrefixCursor is not { } cursor) return session.EndTurn(player, o.MaxRounds, out boundary, out resolvedAction);
+        var ended = cursor.End(actions.Count, session, player, o.MaxRounds, out var after, out boundary, out resolvedAction);
+        session = after;
+        return ended;
+    }
+
     public void Step()
     {
+        using var allocation = AllocationProbe.Measure(AllocationProbe.Phase.RolloutStep);
         if (Done) return;
+        if (StopRequested?.Invoke() == true) { FinishAtBudget(); return; }
+        var failed = false;
+        try
+        {
 
         if (session.HasTerminal)
         {
             Result = new RolloutOutcome(true, session.HasWon, session.HasWon ? "victory" : "wipe",
-                actions, aliveStates, enemyStates, steps, session.RoundsAdvanced, Record(session, party, true, ""));
+                actions, aliveStates, enemyStates, steps, session.RoundsAdvanced, Record(session, party, true, "")) { Checkpoints = AlignedCheckpoints };
             return;
         }
         if (steps >= o.MaxSteps) { Result = Cutoff("step-cap"); return; }
@@ -171,7 +254,8 @@ public sealed class RolloutRun
         // Choose across all delegated seats before ending anybody's turn. A
         // per-seat TryPlay loop emptied seat 1, then seat 2, on EVERY simulated
         // round, including the cached continuation after a joint-search prefix.
-        var acted = TryAttritionSequence() || TryPlay() || TryAttritionContinuation();
+        if (AdvanceInvestment()) return;
+        var acted = TryInvestmentChoice() || TryAttritionSequence() || TryPlay() || TryAttritionContinuation();
         if (acted) attritionCheckedRound = -1;
         var stuck = "no-actor";
         foreach (var p in acted ? Array.Empty<Player>() : party)
@@ -183,7 +267,12 @@ public sealed class RolloutRun
                 // "player does nothing" stress scenario (§08): end the seat's turn
                 // rather than inventing an action on a human's behalf. A real causal
                 // player model replaces this, and that is P4, not P1.
-                if (session.EndTurn(p, o.MaxRounds, out _)) { steps++; acted = true; }
+                if (ResolveEndTurn(p, out _, out var unownedEnd))
+                {
+                    if (unownedEnd.TurnStartChoices is { OwnersTurnNumbers.Count: > 0 })
+                    { Result = Cutoff("unowned-turn-start-transition"); return; }
+                    steps++; acted = true;
+                }
                 else stuck = "undelegated-seat-cannot-end";
                 break;
             }
@@ -197,13 +286,15 @@ public sealed class RolloutRun
             // in round 1), and the check fired 20-34 times a run with more than half of them in
             // the first half of a script — the tournament was dropping its plan and re-searching
             // after almost every kill instead of following it.
+            var checkpointBefore = actionCheckpoints is null ? null : session.ActionCheckpoint();
             var aliveBefore = SnapshotAlive();
             var enemiesBefore = SnapshotEnemies();
-            if (session.EndTurn(p, o.MaxRounds, out var endBoundary))
+            if (ResolveEndTurn(p, out var endBoundary, out var resolvedEnd))
             {
+                actionCheckpoints?.Add(checkpointBefore!);
                 aliveStates.Add(aliveBefore);
                 enemyStates.Add(enemiesBefore);
-                actions.Add(new KernelTeamSearch.Action(p, null, null, EndTurn: true));
+                actions.Add(resolvedEnd);
                 steps++;
                 acted = true;
                 break;
@@ -218,12 +309,28 @@ public sealed class RolloutRun
         {
             if (stuck == "no-actor")
             {
-                if (session.TryAdvanceReadySide(o.MaxRounds, out var automaticBoundary)) return;
+                if (session.TryAdvanceReadySide(o.MaxRounds, out var automaticBoundary))
+                {
+                    if (actions.Count == 0)
+                    { Result = Cutoff("turn-start-transition-without-action"); return; }
+                    // Native Kill/readiness belongs to the causative last real
+                    // card or bottle, never an invented end-turn by a dead seat.
+                    actions[^1] = actions[^1] with { TurnStartChoices = session.LastTurnStartChoices };
+                    return;
+                }
                 if (automaticBoundary.Length > 0) stuck = "stuck:" + automaticBoundary;
             }
             Result = Cutoff(stuck == "no-actor" ? NoActorReason() : stuck);
             return;
         }
+
+        // Track energy spent since the last comparison. A refill from 0 to 2
+        // matters even if the previous probe started at 3. Keep gains pending
+        // until AdvanceInvestment compares the newly funded alternatives.
+        foreach (var player in actors)
+            if (examinedEnergy.TryGetValue(player, out var previouslyExamined)
+                && session.Energy(player) < previouslyExamined)
+                examinedEnergy[player] = session.Energy(player);
 
         // Cycle guard. A repeated position is NOT a game-rule defeat (the plan says so
         // explicitly) and the policy's own tie-break stream is part of what makes it
@@ -233,11 +340,151 @@ public sealed class RolloutRun
         recentStates.Enqueue(key);
         if (recentStates.Count > 12) recentStates.Dequeue();
         if (recentStates.Count(r => r == key) >= 4) Result = Cutoff("cycle");
+        }
+        catch { failed = true; throw; }
+        finally
+        {
+            // A terminal reached by the last native action stays a terminal.
+            // FinishAtBudget distinguishes it from an interrupted continuation.
+            if (!failed && !Done && StopRequested?.Invoke() == true) FinishAtBudget();
+        }
+    }
+
+    private bool AdvanceInvestment()
+    {
+        if (!o.InvestmentLookahead || o.Policy is not (RolloutPolicyKind.Tactical or RolloutPolicyKind.Defend) || exploreAttrition) return false;
+        if (investmentRound != session.TurnNumber)
+        {
+            investmentRound = session.TurnNumber;
+            examinedPowers.Clear(); examinedEnergy.Clear(); investmentSteps = 0;
+        }
+        if (investmentSteps >= o.InvestmentStepBudget) return false;
+        if (investment is null)
+        {
+            var powers = actors.Where(session.CanAct)
+                .SelectMany(p => session.Hand(p).Where(c => c.Type == CardType.Power && session.CanPlay(c)))
+                .Select(c => (Player: session.CardOwner(c), Key: session.CardStateKey(c))).Distinct().ToArray();
+            // A new draw, newly affordable power, or energy gain changes the
+            // investment choice even within the same turn. Ordinary damage
+            // actions do not start the same expensive probe again.
+            var hand = string.Join(";", actors.Where(session.CanAct).SelectMany(session.Hand).Select(session.CardStateKey));
+            if (powers.Length > 0 && (investmentHand != hand || powers.Any(k => !examinedPowers.Contains(k)
+                || session.Energy(k.Player) > examinedEnergy.GetValueOrDefault(k.Player))))
+            {
+                foreach (var k in powers)
+                {
+                    examinedPowers.Add(k);
+                    examinedEnergy[k.Player] = session.Energy(k.Player);
+                }
+                investmentHand = hand;
+                investment = new KernelInvestmentProbe(session, party, actors, o);
+                InvestmentProbes++;
+            }
+        }
+        if (investment is null) return false;
+        investmentSteps++;
+        investment.Step();
+        if (!investment.Done && investmentSteps < o.InvestmentStepBudget) return true;
+        investmentChoice = investment.Choice;
+        investment = null;
+        return false;
+    }
+
+    private bool TryInvestmentChoice()
+    {
+        var choice = investmentChoice; investmentChoice = null;
+        if (choice is null) return false;
+        var branch = session.Fork();
+        if (!branch.ReplayPlanned(choice, o.MaxRounds, out _, out var resolvedChoice)) return false;
+        aliveStates.Add(SnapshotAlive()); enemyStates.Add(SnapshotEnemies());
+        if (actionCheckpoints is not null) actionCheckpoints.Add(session.ActionCheckpoint());
+        session = branch; actions.Add(resolvedChoice); steps++;
+        return true;
+    }
+
+    private KernelTeamSearch.Action Order(KernelTeamSearch.Action proposed, KernelSession.CardBranch? proposedBranch = null)
+        => OrderWithResolvedProbes(proposed, proposedBranch, null);
+
+    private KernelTeamSearch.Action OrderWithResolvedProbes(KernelTeamSearch.Action proposed, KernelSession.CardBranch? proposedBranch,
+        IReadOnlyList<(KernelTeamSearch.Action Action, KernelSession.CardBranch Branch)>? resolvedProbes)
+    {
+        // A cache never survives a new proposal decision or a real commit.
+        orderCache = null;
+        if (!o.SequenceLookahead) return proposed;
+        var cache = orderCache = new KernelSequenceOrder.ProbeCache(session, party, actors, o.SequenceHandLookahead);
+        // A scoring-only selected branch is not evidence of the formal native
+        // choice. Reopen it for ordering before making an irreversible pair;
+        // non-choice branches can still reuse their already settled result.
+        bool CompleteProbe(KernelSession.CardBranch branch) => o.SequenceHandLookahead || branch.Choices.Count == 0;
+        if (resolvedProbes is not null)
+            foreach (var probe in resolvedProbes)
+                if (CompleteProbe(probe.Branch)) cache.Seed(probe.Action, probe.Branch);
+        if (proposedBranch is not null && CompleteProbe(proposedBranch)) cache.Seed(proposed, proposedBranch);
+        var proposedFirst = proposedBranch is not null && CompleteProbe(proposedBranch) ? proposedBranch.State : null;
+        // The same sixteen broad pair probes are apportioned among seats. A
+        // busy first seat cannot spend the last seat's allowance. Half is held
+        // for an attack's own setup, including an engine drawn later this turn.
+        if (orderRound != SequenceBudgetEpoch)
+        {
+            orderRound = SequenceBudgetEpoch; orderPairs.Clear(); orderSetupPairs.Clear();
+            var seats = actors.Where(p => session.Hp(p.Creature) > 0).ToArray();
+            for (var i = 0; i < seats.Length; i++)
+            {
+                var quota = KernelSequenceOrder.SeatAllowance(seats.Length, i);
+                orderPairs[seats[i]] = quota.Ordinary; orderSetupPairs[seats[i]] = quota.Setup;
+            }
+        }
+        var alternatives = candidates.OrderByDescending(c => c.Score).Select(c =>
+            new KernelTeamSearch.Action(session.CardOwner(c.Card), c.Card, c.Target,
+                CardStateKey: c.Key, CardStateOccurrence: c.Occurrence)).ToArray();
+        var setupPairs = orderSetupPairs.GetValueOrDefault(proposed.Player);
+        if (setupPairs > 0)
+        {
+            // An irreversible hand/resource spend has no later chance to use
+            // the reserve. Discover it from the actual native first branch,
+            // covering discard/exhaust and last-energy defence alike.
+            proposedFirst ??= cache.Open(proposed)?.State;
+            var setup = KernelSequenceOrder.Before(session, party, actors, proposed,
+                alternatives.Where(a => KernelSequenceOrder.HeldSetup(proposed, a)
+                    || proposedFirst is not null && (!proposedFirst.Hand(a.Player).Contains(a.Card!)
+                        || !proposedFirst.CanPlay(a.Card!))), ref setupPairs, proposedFirst, cache);
+            orderSetupPairs[proposed.Player] = Math.Max(0, setupPairs);
+            if (setup != proposed)
+            {
+                // The reserved same-seat engine is only the first dependency.
+                // Keep checking the broad allowance for another seat's setup
+                // before cashing the new payoff (e.g. debuff -> engine -> hit).
+                // Its native after-state belongs to the original proposal.
+                proposed = setup;
+                proposedFirst = null;
+            }
+        }
+        // Do not refill tiny hands on every action: four independently tiny
+        // hands made the supposedly sixteen-pair limit grow on every step.
+        // The seat's reserved setup allowance already protects late amplifiers.
+        var pairs = orderPairs.GetValueOrDefault(proposed.Player);
+        if (pairs <= 0) return proposed;
+        var ordered = KernelSequenceOrder.Before(session, party, actors, proposed, alternatives, ref pairs, proposedFirst, cache);
+        orderPairs[proposed.Player] = Math.Max(0, pairs);
+        return ordered;
     }
 
     private RolloutOutcome Cutoff(string reason) =>
         new(false, false, reason, actions, aliveStates, enemyStates, steps, session.RoundsAdvanced,
-            Record(session, party, false, reason));
+            Record(session, party, false, reason)) { Checkpoints = AlignedCheckpoints };
+
+    // A genuinely resolved native prefix remains a cutoff until its replay or
+    // continuation reaches a terminal. Never publish this as a completed lane.
+    internal RolloutOutcome SettledPrefix() => Cutoff("potion-round-repair-prefix");
+    internal int CommittedSteps => steps;
+
+    internal void FinishAtBudget()
+    {
+        if (!Done) Result = session.HasTerminal
+            ? new RolloutOutcome(true, session.HasWon, session.HasWon ? "victory" : "wipe", actions,
+                aliveStates, enemyStates, steps, session.RoundsAdvanced, Record(session, party, true, "")) { Checkpoints = AlignedCheckpoints }
+            : Cutoff("continuation-budget");
+    }
 
     /// <summary>
     /// Why a rollout found nobody who could act. The old bare `no-actor` was measured
@@ -291,12 +538,16 @@ public sealed class RolloutRun
                     // Aim the one-turn buff at the ally with the most relevant actions
                     // left, not the lowest-HP ally: it is worth zero after that ally has
                     // already played the cards it would amplify.
-                    target = BestBuffTarget(session, targets, buffTiming);
+                    target = BestBuffTarget(session, party, targets, card);
                 }
                 else
                 {
                     target = null;
                     var lowest = int.MaxValue;
+                    var bestRank = 0;
+                    // 2026-10-05「允许先打爪牙」：只有 KillAdds 政策改优先级；其余政策
+                    // 保持「主要敌人优先、同级血少优先」的旧行为（rank 0/1 与旧分支等价）。
+                    var killAdds = o.Policy == RolloutPolicyKind.KillAdds;
                     var needsPoison = CardPoisonEffects.RequiresPoison(card);
                     var hasPoisonedTarget = needsPoison && targets.Any(t => t is not null
                         && session.Power<MegaCrit.Sts2.Core.Models.Powers.PoisonPower>(t) > 0);
@@ -305,8 +556,16 @@ public sealed class RolloutRun
                         if (targets[i] is not { } t) continue;
                         if (hasPoisonedTarget && session.Power<MegaCrit.Sts2.Core.Models.Powers.PoisonPower>(t) <= 0) continue;
                         var hp = session.Hp(t);
-                        if (hp >= lowest) continue;
-                        lowest = hp; target = t;
+                        var primary = session.IsPrimaryEnemy(t);
+                        var rank = primary ? 1 : 0;
+                        if (killAdds)
+                        {
+                            if (KernelPriorityAdds.IsPriorityAdd(t)) rank = 2;
+                            // 能一击杀死主要敌人的牌仍然最高优先：那是战斗结束，比打爪牙更硬。
+                            if (primary && session.AttackHint(card, t).Lethal) rank = 3;
+                        }
+                        if (target is not null && (rank < bestRank || rank == bestRank && hp >= lowest)) continue;
+                        bestRank = rank; lowest = hp; target = t;
                     }
                 }
                 candidates.Add((card, target, key, occurrence,
@@ -325,7 +584,11 @@ public sealed class RolloutRun
             for (var i = 1; i < candidates.Count; i++)
                 if (candidates[i].Score > candidates[pick].Score) pick = i;
             var (card, target, key, occurrence, _) = candidates[pick];
-            var player = card.Owner;
+            var ordered = Order(new KernelTeamSearch.Action(session.CardOwner(card), card, target,
+                CardStateKey: key, CardStateOccurrence: occurrence));
+            card = ordered.Card!; target = ordered.Target; key = ordered.CardStateKey; occurrence = ordered.CardStateOccurrence;
+            pick = candidates.FindIndex(c => c.Card == card && c.Target == target);
+            var player = session.CardOwner(card);
             // NOT PLAYING IS A REAL OPTION. A 0-cost exhaust that cannot unlock a card,
             // or a low-threat pure-setup exhaust (Piercing Wail), is worth more held:
             // skipping it here lets the caller end the turn instead. Clearing the best
@@ -338,11 +601,16 @@ public sealed class RolloutRun
             // Resolve on a settled fork BEFORE attempting Play. A failed Play poisons its
             // session, so trying CardBranches afterwards can never recover a pending choice.
             // Keeping the parent also lets us skip an unsupported card without losing the line.
-            var resolved = session.CardBranches(card, target, maximumBranches: 1)
-                .FirstOrDefault(branch => branch.Boundary.Length == 0);
+            KernelSession.CardBranch? NativeBranch() => orderCache?.HasRoot(session) == true ? orderCache.Open(ordered)
+                : session.CardBranches(card, target, maximumBranches: 1).FirstOrDefault(branch => branch.Boundary.Length == 0);
+            // Ordering may already own a settled native branch, but committing
+            // it still belongs to the exact prefix tree. Feed that branch through
+            // the same cursor so Commit receives its real pending native edge.
+            var resolved = PrefixCursor is { } prefix ? prefix.Card(actions.Count, ordered, NativeBranch) : NativeBranch();
             if (resolved is not null)
             {
-                if(!exploreAttrition && session.HasWitheringPresence(player) && !resolved.State.HasWon
+                if(!exploreAttrition && (session.HasWitheringPresence(player)
+                    || KernelTacticalPolicy.ChangedEnemyStrength(session, resolved.State)) && !resolved.State.HasWon
                     && KernelTacticalPolicy.ActionValue(session,resolved.State,party,actors)
                         <= KernelTacticalPolicy.Value(session,party,actors))
                 {
@@ -353,13 +621,18 @@ public sealed class RolloutRun
                 // live measurement that pinned this contract.
                 aliveStates.Add(SnapshotAlive());
                 enemyStates.Add(SnapshotEnemies());
+                if (actionCheckpoints is not null) actionCheckpoints.Add(session.ActionCheckpoint());
                 session = resolved.State;
+                orderCache = null;
                 session.AutoResolveTurnStartChoices = true;
                 session.AutoResolveEnemyChoices = true;
-                actions.Add(new KernelTeamSearch.Action(player, card, target,
+                var committed = new KernelTeamSearch.Action(player, card, target,
                     Choices: resolved.Choices,
                     ChoiceOrdinals: resolved.ChoiceOrdinals,
-                    CardStateKey: key, CardStateOccurrence: occurrence));
+                    CardStateKey: key, CardStateOccurrence: occurrence)
+                    { TurnStartChoices = resolved.TurnStartChoices };
+                PrefixCursor?.Commit(committed);
+                actions.Add(committed);
                 steps++;
                 return true;
             }
@@ -398,41 +671,123 @@ public sealed class RolloutRun
         var probes = ranked.Where(c => KernelActionCoverage.TeamDefence(c.Card)).Take(1)
             .Concat(ranked.Where(c => cleanup && KernelActionCoverage.Cleanup(c.Card)).Take(1))
             .Concat(ranked.Where(c => c.Card.GainsBlock).Take(1))
-            .Concat(ranked.DistinctBy(c => (c.Card.Owner, c.Key))).Concat(ranked)
-            .DistinctBy(c => (c.Card.Owner, c.Key, c.Target))
+            // Keep the strongest cheap proposal (including lethal / Expose)
+            // even when eight different powers compete for coverage.
+            .Concat(ranked.Take(1))
+            // Zero printed damage cannot exclude a power before its native
+            // branch/recurring payoff is evaluated. Reserve distinct engines
+            // across seats, with the same overall probe cap.
+            .Concat(ranked.Where(c => c.Card.Type == CardType.Power)
+                .DistinctBy(c => (session.CardOwner(c.Card), c.Key)))
+            .Concat(ranked.DistinctBy(c => (session.CardOwner(c.Card), c.Key))).Concat(ranked)
+            .DistinctBy(c => (session.CardOwner(c.Card), c.Key, c.Target))
             .Take(KernelTacticalPolicy.Width);
         KernelSession.CardBranch? best = null;
         KernelTeamSearch.Action? action = null;
+        var resolvedProbes = new List<(KernelTeamSearch.Action Action, KernelSession.CardBranch Branch)>();
         // Under card-count/status pressure, ending the turn is a real baseline.
         // This is a rollout preference, not a legality gate on the full search.
-        var bestValue = !exploreAttrition && session.HasAttritionPressure
+        var bestValue = !exploreAttrition && (session.HasAttritionPressure || session.HasEnemyCardReactions)
             ? KernelTacticalPolicy.Value(session, party, actors) : double.NegativeInfinity;
         foreach (var candidate in probes)
         {
-            var player = candidate.Card.Owner;
-            var resolved = session.CardBranches(candidate.Card, candidate.Target, maximumBranches: 1)
-                .FirstOrDefault(b => b.Boundary.Length == 0);
+            var player = session.CardOwner(candidate.Card);
+            KernelSession.CardBranch? resolved;
+            // Cheap references compare native after-states without nesting a
+            // complete hand comparison inside every discarded proposal. The
+            // chosen action is resolved again below with full choice ranking.
+            // Wider continuations keep the complete candidate comparisons.
+            using (o.SequenceHandLookahead ? null : KernelChoiceContinuation.Enter())
+                resolved = session.CardBranches(candidate.Card, candidate.Target, maximumBranches: 1)
+                    .FirstOrDefault(b => b.Boundary.Length == 0);
             if (resolved is null) continue;
+            resolvedProbes.Add((new KernelTeamSearch.Action(player, candidate.Card, candidate.Target,
+                CardStateKey: candidate.Key, CardStateOccurrence: candidate.Occurrence), resolved));
             var value = KernelTacticalPolicy.ActionValue(session, resolved.State, party, actors);
+            value = Math.Max(value, GeneratedFollowupValue(session, resolved.State, party, actors));
             // Preserve the existing timing model for short-lived team buffs.
             if (KernelTemporaryBuffs.Timing(candidate.Card) is not null)
-                value += RelevantRemaining(session, party, player, candidate.Card, candidate.Target) * 4;
+                value += FollowupsAfterSetup(resolved.State, player, candidate.Card, candidate.Target) * 4;
             if (value <= bestValue) continue;
             bestValue = value;
             best = resolved;
             action = new KernelTeamSearch.Action(player, candidate.Card, candidate.Target,
                 Choices: resolved.Choices, ChoiceOrdinals: resolved.ChoiceOrdinals,
-                CardStateKey: candidate.Key, CardStateOccurrence: candidate.Occurrence);
+                CardStateKey: candidate.Key, CardStateOccurrence: candidate.Occurrence)
+                { TurnStartChoices = resolved.TurnStartChoices };
         }
         if (best is null || action is null) return false;
+        var ordered = OrderWithResolvedProbes(action, best, resolvedProbes);
+        if (!o.SequenceHandLookahead)
+        {
+            // Scoring-only choice ordinals never become the formal script.
+            // Restore the normal complete native discard/exhaust comparison
+            // after ordering, including when AB/BA chose another predecessor.
+            var finalized = session.CardBranches(ordered.Card!, ordered.Target, 1)
+                .FirstOrDefault(b => b.Boundary.Length == 0);
+            if (finalized is null) return false;
+            best = finalized;
+            action = ordered with { Choices = finalized.Choices, ChoiceOrdinals = finalized.ChoiceOrdinals,
+                TurnStartChoices = finalized.TurnStartChoices };
+        }
+        else if (ordered.Card != action.Card || ordered.Target != action.Target)
+        {
+            var reordered = orderCache?.HasRoot(session) == true ? orderCache.Open(ordered)
+                : session.CardBranches(ordered.Card!, ordered.Target, 1).FirstOrDefault(b => b.Boundary.Length == 0);
+            if (reordered is not null)
+            {
+                best = reordered;
+                action = ordered with { Choices = reordered.Choices, ChoiceOrdinals = reordered.ChoiceOrdinals,
+                    TurnStartChoices = reordered.TurnStartChoices };
+            }
+        }
         aliveStates.Add(SnapshotAlive());
         enemyStates.Add(SnapshotEnemies());
+        if (actionCheckpoints is not null) actionCheckpoints.Add(session.ActionCheckpoint());
         session = best.State;
+        orderCache = null;
         session.AutoResolveTurnStartChoices = true;
         session.AutoResolveEnemyChoices = true;
         actions.Add(action);
         steps++;
         return true;
+    }
+
+    // Native generated free attacks are a short action sequence, not a small
+    // generic "extra hand card" bonus. Compare their actually resolved payoff,
+    // including target death, thorns and Wither. Only the original action is
+    // committed; the next tactical step re-evaluates the resulting hand.
+    internal static double GeneratedFollowupValue(KernelSession before, KernelSession after,
+        IReadOnlyList<Player> party, IReadOnlyList<Player> actors)
+    {
+        var held = actors.SelectMany(before.Hand).ToHashSet();
+        var generated = actors.SelectMany(after.Hand).Where(c => !held.Contains(c)
+            && c.Type == CardType.Attack && after.AttackCosts(c) == (0, 0)).ToHashSet();
+        if (generated.Count == 0) return double.NegativeInfinity;
+        var state = after;
+        var bestValue = KernelTacticalPolicy.ActionValue(before, state, party, actors);
+        for (var step = 0; step < 10 && generated.Count > 0 && !state.HasTerminal; step++)
+        {
+            KernelSession? best = null;
+            CardModel? chosen = null;
+            var nextValue = bestValue;
+            foreach (var card in actors.SelectMany(state.Hand).Where(generated.Contains)
+                .DistinctBy(c => (state.CardOwner(c), state.CardStateKey(c))))
+            {
+                if (!state.CanAct(state.CardOwner(card)) || !state.CanPlay(card) || state.AttackCosts(card) != (0, 0)) continue;
+                foreach (var target in state.Targets(card))
+                {
+                    var branch = state.CardBranches(card, target, 1).FirstOrDefault(b => b.Boundary.Length == 0);
+                    if (branch is null) continue;
+                    var value = KernelTacticalPolicy.ActionValue(before, branch.State, party, actors);
+                    if (value <= nextValue) continue;
+                    nextValue = value; best = branch.State; chosen = card;
+                }
+            }
+            if (best is null || chosen is null) break;
+            generated.Remove(chosen); state = best; bestValue = nextValue;
+        }
+        return bestValue;
     }
 
     // A one-action loss is not proof that the remaining turn is unprofitable.
@@ -480,15 +835,16 @@ public sealed class RolloutRun
     {
         if (!attritionSequence.TryDequeue(out var action)) return false;
         var branch = session.Fork();
-        if (!branch.ReplayPlanned(action, o.MaxRounds, out _))
+        if (!branch.ReplayPlanned(action, o.MaxRounds, out _, out var resolvedAction))
         {
             attritionSequence.Clear();
             return false;
         }
         aliveStates.Add(SnapshotAlive());
         enemyStates.Add(SnapshotEnemies());
+        if (actionCheckpoints is not null) actionCheckpoints.Add(session.ActionCheckpoint());
         session = branch;
-        actions.Add(action);
+        actions.Add(resolvedAction);
         steps++;
         return true;
     }
@@ -496,17 +852,10 @@ public sealed class RolloutRun
     /// <summary>
     /// Whether the cheap policy should NOT play this card and let the caller end the turn.
     ///
-    /// The baseline policies had no "do nothing" answer: they always played the
-    /// highest-scoring card, so Wisp's +1 energy and Piercing Wail's Strength loss were
-    /// spent the moment they appeared. Two bounded rules cover the live reports:
-    ///
-    ///   * a 0-cost energy gain whose extra energy unlocks no card this turn is a wasted
-    ///     exhaust (the live example: 1 energy, Wisp + a 3-cost card, end with 2 energy);
-    ///   * a pure setup/defensive exhaust is held when this turn's incoming attack is
-    ///     already small enough not to need it (Piercing Wail into a 2-damage attack).
-    ///
-    /// Lethal/damage/block cards never reach this path: a damaging exhaust attack has
-    /// damage > 0, and a block exhaust has block > 0.
+    /// Preserve temporary setup without a follow-up, energy without a use, and
+    /// skill exhausts whose resolved native effect cannot repay their option
+    /// value. Card changes, draw and persistent payoffs remain usable. This is
+    /// a policy preference; the tournament and beam can still try every card.
     /// </summary>
     internal static bool ShouldHold(KernelSession session, IReadOnlyList<Player> party,
         Player player, CardModel card)
@@ -514,6 +863,21 @@ public sealed class RolloutRun
         // A one-turn setup card is worth zero once nothing it enables is left.
         if (KernelTemporaryBuffs.IsPureSetup(card))
             return RelevantRemaining(session, party, player, card, target: null) <= 0;
+        // A legal zero-energy X play is not automatically useful. Resolve its
+        // actual triggers (Afterimage, Hex, etc.) before preferring it to pass.
+        // Beam candidates remain legal; this only guides cheap continuations.
+        if (card.EnergyCost.CostsX && session.Energy(player) == 0 && !card.HasStarCostX)
+        {
+            var baseline = KernelTacticalPolicy.Value(session, party, party);
+            foreach (var target in session.Targets(card))
+            {
+                using var scoringOnly = KernelChoiceContinuation.Enter();
+                var branch = session.CardBranches(card, target, 1).FirstOrDefault(b => b.Boundary.Length == 0);
+                if (branch is null || KernelTacticalPolicy.ActionValue(session, branch.State, party, party) > baseline)
+                    return false;
+            }
+            return true;
+        }
         var resources = CardResourceTiming.Of(card, session.Energy(player));
         // Future resources do not need a payable card in this turn's hand.
         // Mixed cards (block/draw/ally support) also cannot be refused just
@@ -522,8 +886,21 @@ public sealed class RolloutRun
         var energyGain = (int)resources.EnergyNow;
         if (energyGain > 0 && card.TargetType == TargetType.Self && !card.GainsBlock
             && Variable<DamageVar>(card) <= 0 && Variable<CardsVar>(card) <= 0)
-            return WastesEnergyGain(session, player, card, energyGain);
-        return IsPureExhaustSetup(card) && LowThreatTurn(session, party, player);
+        {
+            // This boolean witness never publishes choice tokens. Bound any
+            // nested menus instead of starting a whole-hand choice portfolio.
+            using var scoringOnly = KernelChoiceContinuation.Enter();
+            var branch = session.CardBranches(card, null, 1).FirstOrDefault(b => b.Boundary.Length == 0);
+            // Unknown transactions remain available to the wider search.
+            if (branch is null || !WastesEnergyGain(session, player, card, branch.State)) return false;
+            // Energy can be redundant while native HP-loss/exhaust/play hooks
+            // still repay the card. A resource-only hold rule hid such triggers
+            // from every continuation, including investment trials.
+            return KernelTacticalPolicy.ActionValue(session, branch.State, party, party)
+                - Math.Max(0, branch.State.Energy(player) - session.Energy(player)) * 3
+                <= KernelTacticalPolicy.Value(session, party, party);
+        }
+        return KernelExhaustPolicy.ShouldHold(session, party, player, card);
     }
 
     /// <summary>Playable attack cards left in this ally's hand.</summary>
@@ -546,34 +923,65 @@ public sealed class RolloutRun
     internal static int RelevantRemaining(KernelSession session, IReadOnlyList<Player> party,
         Player actor, CardModel card, Creature? target)
     {
-        if (KernelTemporaryBuffs.Timing(card) is not { } timing) return 0;
-        if (timing == TemporaryBuffTiming.Cards)
-            return RemainingPlayables(session, actor);
-        Func<KernelSession, Player, int> countFor = timing == TemporaryBuffTiming.Attack
-            ? RemainingAttacks
-            : RemainingBlocks;
-        if (target?.Player is { } targetAlly) return countFor(session, targetAlly);
-        if (KernelTemporaryBuffs.IsAllyTarget(card))
-            return party.Where(p => p.Creature.IsAlive).Select(p => countFor(session, p)).DefaultIfEmpty(0).Max();
-        return countFor(session, actor);
+        if (KernelTemporaryBuffs.Timing(card) is null) return 0;
+        var targets = target is not null ? new Creature?[] { target } : session.Targets(card);
+        var best = 0;
+        foreach (var candidate in targets)
+        {
+            var branch = session.CardBranches(card, candidate, 1).FirstOrDefault(b => b.Boundary.Length == 0);
+            if (branch is not null) best = Math.Max(best, FollowupsAfterSetup(branch.State, actor, card, candidate));
+        }
+        return best;
+    }
+
+    // Native branches pay setup costs and advance per-player play limits first.
+    // Ringing/Sloth/Smog, remaining energy, and target death therefore affect
+    // the follow-up sequence without another handwritten status blacklist.
+    private static int FollowupsAfterSetup(KernelSession state, Player actor, CardModel setup, Creature? target)
+    {
+        var timing = KernelTemporaryBuffs.Timing(setup);
+        var recipient = target?.Player ?? actor;
+        var count = 0;
+        for (; count < 3 && state.CanAct(recipient)
+            && (timing != TemporaryBuffTiming.Skill
+                || state.Power<MegaCrit.Sts2.Core.Models.Powers.BurstPower>(recipient.Creature) > 0)
+            && (timing != TemporaryBuffTiming.AttackRepeat
+                || state.Power<MegaCrit.Sts2.Core.Models.Powers.OneTwoPunchPower>(recipient.Creature) > 0); count++)
+        {
+            KernelSession? next = null;
+            foreach (var card in state.Hand(recipient).Where(c => c != setup && state.CanPlay(c)
+                && (timing == TemporaryBuffTiming.Cards
+                    || timing is TemporaryBuffTiming.Attack or TemporaryBuffTiming.AttackRepeat && c.Type == CardType.Attack
+                    || timing == TemporaryBuffTiming.Block && c.GainsBlock && state.UsefulBlockHint(c, null) > 0
+                    || timing == TemporaryBuffTiming.Skill && c.Type == CardType.Skill))
+                .OrderBy(c => state.AttackCosts(c).Energy))
+            {
+                foreach (var aim in state.Targets(card))
+                {
+                    next = state.CardBranches(card, aim, 1).FirstOrDefault(b => b.Boundary.Length == 0)?.State;
+                    if (next is not null) break;
+                }
+                if (next is not null) break;
+            }
+            if (next is null) break;
+            state = next;
+        }
+        return count;
     }
 
     /// <summary>
     /// The ally that should receive a one-turn buff: the one with the most actions
     /// left of the buff's kind, then lowest HP as the tie-break.
     /// </summary>
-    internal static Creature? BestBuffTarget(KernelSession session, IReadOnlyList<Creature?> targets,
-        TemporaryBuffTiming timing)
+    internal static Creature? BestBuffTarget(KernelSession session, IReadOnlyList<Player> party,
+        IReadOnlyList<Creature?> targets, CardModel card)
     {
-        Func<KernelSession, Player, int> countFor = timing == TemporaryBuffTiming.Attack
-            ? RemainingAttacks
-            : RemainingBlocks;
         Creature? best = null;
         var bestCount = -1;
         foreach (var candidate in targets)
         {
             if (candidate is not { } target || target.Player is not { } ally) continue;
-            var count = countFor(session, ally);
+            var count = RelevantRemaining(session, party, session.CardOwner(card), card, target);
             if (count > bestCount
                 || (count == bestCount && (best is null || session.Hp(target) < session.Hp(best))))
             {
@@ -584,32 +992,55 @@ public sealed class RolloutRun
         return best;
     }
 
-    private static bool WastesEnergyGain(KernelSession session, Player player, CardModel card, int gain)
+    private static bool WastesEnergyGain(KernelSession session, Player player, CardModel card, KernelSession supplied)
     {
         var energyBefore = session.Energy(player);
-        var energyAfter = energyBefore - CardCost(card) + gain;
-        foreach (var other in session.Hand(player))
+        var state = supplied;
+        var spent = 0;
+        // One bounded native payment witness, not a whole-hand tournament.
+        // Paying the supply card has already consumed its actual play counter.
+        // Prefer the largest payable expense (including real X payment), then
+        // advance that single line before asking whether another play is legal.
+        try
         {
-            if (ReferenceEquals(other, card)) continue;
-            var cost = CardCost(other);
-            if (cost < 0 || cost <= energyBefore) continue;
-            if (cost <= energyAfter) return false;
+            for (var step = 0; step < 8; step++)
+            {
+                if (!state.CanAct(player)) return true;
+                var candidates = state.Hand(player).Where(other => other != card && state.CanPlay(other))
+                    .Select(other => (Card: other, Cost: state.AttackCosts(other).Energy))
+                    .OrderByDescending(other => other.Cost).ToArray();
+                if (candidates.Length == 0) return true;
+                KernelSession? next = null;
+                var payment = 0;
+                foreach (var other in candidates)
+                {
+                    foreach (var target in state.Targets(other.Card))
+                    {
+                        using var scoringOnly = KernelChoiceContinuation.Enter();
+                        next = state.CardBranches(other.Card, target, 1).FirstOrDefault(b => b.Boundary.Length == 0)?.State;
+                        if (next is not null)
+                        {
+                            payment = next.EnergySpentThisTurn(player) - state.EnergySpentThisTurn(player);
+                            break;
+                        }
+                    }
+                    if (next is not null) break;
+                }
+                // A legal action whose transaction cannot be resolved is not
+                // proof of waste. Keep the supply candidate for the search.
+                if (next is null) return false;
+                // Costs only sort the witness. Native resource history records
+                // the actual payment, including X and excess costs using stars.
+                // A reset/unknown boundary cannot prove the resource is wasted.
+                if (payment < 0 || next.RoundsAdvanced != state.RoundsAdvanced) return false;
+                spent += payment;
+                state = next;
+                if (spent > energyBefore) return false;
+            }
         }
-        return true;
-    }
-
-    private static int CardCost(CardModel card)
-    {
-        try { return (int)card.EnergyCost.GetWithModifiers(CostModifiers.All); }
-        catch { return -1; }
-    }
-
-    private static bool IsPureExhaustSetup(CardModel card)
-    {
-        // Exhaust alone does not mean "only useful against this turn's attack".
-        // Adrenaline draws now; Apotheosis and LimitBreak improve later turns.
-        // Only the actual one-turn enemy attack reductions belong in this gate.
-        return card.GetType().Name is "PiercingWail" or "DarkShackles";
+        catch { return false; } // Unknown native costs/effects keep the candidate.
+        // The finite witness may leave another route beyond its allowance.
+        return false;
     }
 
     internal static bool LowThreatTurn(KernelSession session, IReadOnlyList<Player> party, Player player)
@@ -675,25 +1106,44 @@ public sealed class RolloutRun
     private static double Score(KernelSession session, IReadOnlyList<Player> party,
         RolloutPolicyKind kind, Player actor, CardModel card, Creature? target, Random rng)
     {
-        var damage = target is not null && card.Type == CardType.Attack
-            ? session.AttackDamageHint(card, target) : Variable<DamageVar>(card);
+        var (damage, lethal) = session.AttackHint(card, target);
         var poisonReady = !CardPoisonEffects.RequiresPoison(card) || target is not null
             && session.Power<MegaCrit.Sts2.Core.Models.Powers.PoisonPower>(target) > 0;
         var delayedDamage = poisonReady ? CardPoisonEffects.TwoTicks(CardPoisonEffects.DirectAmount(card)) : 0;
         if (target is not null) delayedDamage = Math.Min(delayedDamage, session.Hp(target));
         var offense = damage + delayedDamage;
-        var block = card.DynamicVars.Values.OfType<BlockVar>().Sum(v => (double)v.BaseValue);
+        var block = session.UsefulBlockHint(card, target);
+        // Debuffs and other defensive skills can protect every seat without
+        // printing BlockVar. Resolve those effects for the defensive policy.
+        // Ordinary block cards keep the inexpensive hint used by reference runs.
+        if (kind == RolloutPolicyKind.Defend && card.Type == CardType.Skill && !card.GainsBlock)
+        {
+            // Only a Threat estimate is read from this speculative branch.
+            // Actual TryPlay/Order still resolve and publish fully compared
+            // native choices; this scoring probe exports no action or tokens.
+            using var scoringOnly = KernelChoiceContinuation.Enter();
+            var branch = session.CardBranches(card, target, 1).FirstOrDefault(b => b.Boundary.Length == 0);
+            if (branch is not null)
+                block = Math.Max(block, party.Sum(p => Math.Max(0,
+                    session.Threat(p).HpLoss - branch.State.Threat(p).HpLoss)));
+        }
         // An attack that kills the target it is aimed at is worth more than any amount of
         // damage that does not, in every policy: leaving an enemy alive costs a whole enemy
         // phase, and no baseline policy should need to be told that twice.
-        var lethal = damage > 0 && target is not null && damage >= session.Hp(target) + session.Block(target);
-        var setup = damage <= 0 && block <= 0 ? 1 : 0;
+        var setup = damage <= 0 && !card.GainsBlock ? 1 : 0;
         var tie = rng.NextDouble();
         var score = kind switch
         {
             RolloutPolicyKind.Kill => (lethal ? 1e9 : 0) + offense * 1e3 + block + tie,
+            RolloutPolicyKind.KillAdds => (lethal ? 1e9 : 0) + offense * 1e3 + block + tie,
             RolloutPolicyKind.Defend => (lethal ? 1e9 : 0) + block * 1e3 + offense + tie,
             RolloutPolicyKind.Growth => (lethal ? 1e9 : 0) + setup * 1e6 + offense * 1e3 + block + tie,
+            RolloutPolicyKind.Cleanup => (lethal ? 1e9 : 0)
+                + (card.GetType().Name is "SecondWind" or "TrueGrit" or "BurningPact" or "Cinder"
+                    or "FiendFire" or "Prepared" or "CalculatedGamble" or "Survivor" or "Purity"
+                    ? session.Hand(actor).Count(c => c.HasTurnEndInHandEffect
+                        || c.Keywords.Contains(CardKeyword.Unplayable)) * 1e6 : 0)
+                + offense * 1e3 + block + tie,
             _ => offense + tie,
         };
         // A conditional body with no trigger cannot outrank the source that

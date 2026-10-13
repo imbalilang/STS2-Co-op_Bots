@@ -87,6 +87,30 @@ internal sealed partial class CombatPredictionHistory(PredictionTrace trace)
         public CombatPredictionHistoryEntry[] Entries { get; } = entries;
         public Dictionary<CombatPredictionHistoryEntry, CombatPredictionHistoryEntry>? Completions { get; } = completions;
         public int Count { get; } = (parent?.Count ?? 0) + entries.Length;
+
+        // Owner 2026-10-08: index only immutable segment references. Classification
+        // remains live in PredictionCoverage for EVERY original risk occurrence.
+        private CombatPredictionRiskEntry[]? _riskEntries;
+
+        public CombatPredictionRiskEntry[] GetRiskEntries()
+        {
+            var cached = System.Threading.Volatile.Read(ref _riskEntries);
+            if (cached is not null)
+                return cached;
+            int count = 0;
+            foreach (CombatPredictionHistoryEntry entry in Entries)
+                if (entry is CombatPredictionRiskEntry)
+                    count++;
+            var risks = count == 0 ? Array.Empty<CombatPredictionRiskEntry>()
+                : new CombatPredictionRiskEntry[count];
+            int index = 0;
+            foreach (CombatPredictionHistoryEntry entry in Entries)
+                if (entry is CombatPredictionRiskEntry risk)
+                    risks[index++] = risk;
+            // Forks share this immutable segment. Publish a fully initialized array;
+            // a concurrent loser discards only its equivalent pure CLR filtering.
+            return System.Threading.Interlocked.CompareExchange(ref _riskEntries, risks, null) ?? risks;
+        }
     }
 
     private CombatPredictionHistory(
@@ -489,6 +513,28 @@ internal sealed partial class CombatPredictionHistory(PredictionTrace trace)
         {
             foreach (CombatPredictionHistoryEntry entry in _tail)
                 yield return entry;
+        }
+    }
+
+    // Match GetEnumerator's first-MoveNext prefix snapshot and late tail lookup.
+    // Never snapshot the mutable tail: keep its original List version checks even
+    // when a DescribeGap callback appends an ordinary non-risk history entry.
+    internal IEnumerable<CombatPredictionRiskEntry> RiskEntries()
+    {
+        if (_prefix is not null)
+        {
+            HistorySegment[] ordered = GetOrderedSegments();
+            for (int segmentIndex = 0; segmentIndex < ordered.Length; segmentIndex++)
+            {
+                foreach (CombatPredictionRiskEntry risk in ordered[segmentIndex].GetRiskEntries())
+                    yield return risk;
+            }
+        }
+        if (_tail is not null)
+        {
+            foreach (CombatPredictionHistoryEntry entry in _tail)
+                if (entry is CombatPredictionRiskEntry risk)
+                    yield return risk;
         }
     }
 

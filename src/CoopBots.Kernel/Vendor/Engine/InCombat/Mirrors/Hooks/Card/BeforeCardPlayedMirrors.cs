@@ -404,16 +404,27 @@ internal sealed class MusicBoxPredictionState(MusicBox relic) : IPredictionState
 
     public CardModel? CardBeingPlayed { get; set; }
 
-    public object Fork(PredictionForkContext context)
-    {
-        AssertForkable();
-        return MemberwiseClone();
-    }
+    // CoopBots: a fork CARRIES this state instead of refusing to fork at all.
+    // Upstream throws here; the live cost was measured 2026-09-30 (A10 four seats,
+    // AEONGLASS_BOSS): the two Music Box holders threw out of the tournament on six
+    // consecutive round-1 decisions and fell back to the legacy planner
+    // ("falling back for this tick — InvalidOperationException: Cannot fork Music Box
+    // during card-play resolution") — the strongest planner switching itself off in
+    // the fight that wiped the run.
+    //
+    // CardBeingPlayed is only a marker spanning one card play's before/after hooks and
+    // holds a live CardModel both branches share, so a shallow copy is a valid state for
+    // a branch. If the branch does not continue that same card play the loss is bounded:
+    // the box hands out no Ethereal copy for the rest of the turn and WasUsedThisTurn
+    // resets at the turn boundary. Losing one copy beats losing the search.
+    public object Fork(PredictionForkContext context) => MemberwiseClone();
 
+    // Deliberately still an IPredictionForkBoundary: that interface ALSO keeps this
+    // state out of the manual card-choice continuation path
+    // (PredictionStateStore.SupportsManualCardChoiceContinuation), which is a separate
+    // and still-valid restriction. Only the fork refusal is lifted.
     public void AssertForkable()
     {
-        if (CardBeingPlayed is not null)
-            throw new InvalidOperationException("Cannot fork Music Box during card-play resolution.");
     }
 }
 

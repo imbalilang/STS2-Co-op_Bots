@@ -1,5 +1,6 @@
 using CoopBots;
 using CoopBots.Kernel;
+using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -9,15 +10,36 @@ using MegaCrit.Sts2.Core.Models.Characters;
 using MegaCrit.Sts2.Core.Models.Monsters;
 using MegaCrit.Sts2.Core.Models.Monsters.Mocks;
 using MegaCrit.Sts2.Core.Models.Powers;
+using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.MonsterMoves.Intents;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Unlocks;
 
+// Test-isolation R2 2026-10-08: successful private build -> named RED1 -> exact restore -> build0/GREEN0.
+// Raw results: work/latest-run-repair-20261008/choice/fixture-isolation/r2-results.json.
+// duplicate-wire-physical-occurrence: System.Exception: P1-1: Equal-looking cards must preserve their physical occurrence.
 internal static class KernelRoundScenarios
 {
     internal static void Run()
     {
+        TestEnvironment.Ensure();
+        var presentation = new Harmony("coopbots.kernel-round.presentation");
+        presentation.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Localization.LocString), "GetFormattedText"),
+            prefix: new HarmonyMethod(typeof(KernelRoundScenarios), nameof(Format)));
+        try { RunCore(); }
+        finally { presentation.UnpatchAll(presentation.Id); }
+    }
+
+    private static bool Format(ref string __result) { __result = ""; return false; }
+
+    private static void RunCore()
+    {
+        if (Environment.GetCommandLineArgs().Contains("--extra-round-only"))
+        {
+            ExtraTurnBoundaries();
+            return;
+        }
         void Check(bool value, string reason) { if (!value) throw new Exception("P1-1: " + reason); }
         var players = Enumerable.Range(1, 3).Select(i => Player.CreateForNewRun<Deprived>(UnlockState.all, (ulong)(50 + i))).ToArray();
         var combat = new CombatState(runState: RunState.CreateForTest(players, seed: "P1-ROUND"));
@@ -69,11 +91,21 @@ internal static class KernelRoundScenarios
         Check(root.Hand(players[0]).Contains(headbutt) && enemy.CurrentHp == 200, "Choice replay mutated root/live state.");
         var strikeChoice = choices.Select(c => c.Choices.Single()).First(c => c.Cards.Single().Id == strike.Id.Entry);
         var secondStrike = combat.CreateCard<StrikeIronclad>(players[0]);
-        var duplicate = strikeChoice with { Cards = [strikeChoice.Cards[0] with { Occurrence = 1 }] };
-        Check(ReferenceEquals(duplicate.Resolve(players[0].NetId, [strike, secondStrike], 1, 1)?.Single(), secondStrike),
+        // Capture a real duplicate-card menu rather than replacing only the
+        // selected token while retaining the original Strike/Defend menu.
+        players[0].PlayerCombatState.DiscardPile.AddInternal(secondStrike);
+        var duplicateMenu = KernelSession.Capture(combat).CardBranches(headbutt, enemy)
+            .Select(branch => branch.Choices.Single())
+            .First(choice => choice.Cards.Single().Id == strike.Id.Entry);
+        // Retrieval search may coalesce equal-value representatives. This wire
+        // identity control explicitly selects the other legal physical instance
+        // while retaining the complete menu captured from the real transaction.
+        var duplicate = duplicateMenu with { Cards = [duplicateMenu.Cards[0] with { Occurrence = 1 }] };
+        Check(ReferenceEquals(duplicate.Resolve(players[0].NetId, [strike, defend, secondStrike], 1, 1)?.Single(), secondStrike),
             "Equal-looking cards must preserve their physical occurrence.");
+        players[0].PlayerCombatState.DiscardPile.RemoveInternal(secondStrike);
         var altered = strikeChoice with { Cards = [strikeChoice.Cards[0] with { StateKey = "changed" }] };
-        Check(altered.Resolve(players[0].NetId, [strike], 1, 1) is null, "Reject changed semantic state even when card ID still matches.");
+        Check(altered.Resolve(players[0].NetId, [strike, defend], 1, 1) is null, "Reject changed semantic state even when card ID still matches.");
         Console.WriteLine("PASS: P1-1 Headbutt choice branching, wire roundtrip and owner validation.");
 
         foreach (var p in players) Hand<DefendIronclad>(p);
@@ -277,13 +309,122 @@ internal static class KernelRoundScenarios
                 + string.Join(',', ethereal.Party.Select(p => etherealState.Hand(p).Count)));
         Console.WriteLine("PASS: P1-1 owner-specific ethereal counts and end-turn Dark Embrace draw.");
 
-        var extra = Encounter<SludgeSpinner>("RAGE_MOVE");
-        ((AmbergrisPower)ModelDb.Power<AmbergrisPower>().ToMutable()).ApplyInternal(extra.Party[0].Creature, 1, true);
-        var extraState = KernelSession.Capture(extra.Combat);
-        Check(extraState.EndTurn(extra.Party[0], out _) && extraState.EndTurn(extra.Party[1], out _), "Extra-turn readiness remains per actor.");
-        Check(!extraState.EndTurn(extra.Party[2], out var extraBoundary) && extraBoundary == "extra-player-turn"
-            && !extraState.EnemyPhaseCompleted && extra.Party.All(p => p.Creature.CurrentHp == 100),
-            "Unsupported extra turns must stop explicitly before running an incorrect enemy phase.");
-        Console.WriteLine("PASS: P1-1 unresolved choice/extra-turn boundaries fail closed without live mutation.");
+        ExtraTurnBoundaries();
+    }
+
+    private static void ExtraTurnBoundaries()
+    {
+        // R2 2026-10-07: five production fault cycles RED1 -> exact source-byte
+        // restoration -> GREEN0; --kernel-rounds-only --extra-round-only with
+        // EnableKernelTests=true. Commands and hashes: extra-round-r2-results.json.
+        // Raw System.Exception messages:
+        // P1-1 extra-round: supported extra turn must settle at the finite default horizon
+        // P1-1 extra-round: extra horizon must skip native Rage damage and Strength growth while consuming its source
+        // P1-1 extra-round: extra-turn settlement must preserve the captured root and live source
+        // P1-1 extra-round: Paels extra horizon must consume the native once-per-combat source without running Rage
+        // P1-1 extra-round: unresolved extra preparation must fail before enemy execution and stay nonforkable
+        // The max2 participant check also retains the native subset property
+        // already guarded by LatestProjectionRepairScenarios and its roster R2.
+        void Check(bool value, string reason) { if (!value) throw new Exception("P1-1 extra-round: " + reason); }
+        var serial = 0;
+        (CombatState Combat, Player[] Party, MegaCrit.Sts2.Core.Entities.Creatures.Creature Enemy) Board()
+        {
+            var party = Enumerable.Range(0, 3).Select(i => Player.CreateForNewRun<Deprived>(UnlockState.all,
+                (ulong)(210 + serial * 3 + i))).ToArray();
+            serial++;
+            var combat = new CombatState(runState: RunState.CreateForTest(party, seed: "EXTRA-ROUND-" + serial));
+            foreach (var p in party)
+            {
+                p.ResetCombatState(); combat.AddPlayer(p);
+                p.Creature.SetMaxHpInternal(100); p.Creature.SetCurrentHpInternal(100);
+                p.PlayerCombatState!.Phase = PlayerTurnPhase.Play; p.PlayerCombatState.GainEnergy(3);
+            }
+            var enemy = combat.CreateCreature(ModelDb.Monster<SludgeSpinner>().ToMutable(), CombatSide.Enemy, "0");
+            combat.AddCreature(enemy); enemy.Monster!.SetUpForCombat();
+            enemy.Monster.SetMoveImmediate((MoveState)enemy.Monster.MoveStateMachine!.States["RAGE_MOVE"], true);
+            return (combat, party, enemy);
+        }
+
+        var extra = Board();
+        var ambergris = (AmbergrisPower)ModelDb.Power<AmbergrisPower>().ToMutable();
+        ambergris.ApplyInternal(extra.Party[0].Creature, 1, true);
+        Check(ambergris.ShouldTakeExtraTurn(extra.Party[0]) && !ambergris.ShouldTakeExtraTurn(extra.Party[1]),
+            "native Ambergris must grant its owner alone an extra turn");
+        var root = KernelSession.Capture(extra.Combat);
+        var rootText = root.PartyStateText();
+        var extraState = root.Fork();
+        Check(extraState.EndTurn(extra.Party[0], out _) && extraState.EndTurn(extra.Party[1], out _),
+            "extra-turn readiness remains per actor");
+        Check(extraState.EndTurn(extra.Party[2], out var reason) && reason.Length == 0
+            && extraState.EnemyPhaseCompleted && extraState.HorizonClosed && extraState.RoundsAdvanced == 0,
+            "supported extra turn must settle at the finite default horizon");
+        Check(extra.Party.All(p => extraState.Hp(p.Creature) == 100)
+            && extraState.Power<StrengthPower>(extra.Enemy) == 0
+            && extraState.Power<AmbergrisPower>(extra.Party[0].Creature) == 0,
+            "extra horizon must skip native Rage damage and Strength growth while consuming its source");
+        Check(!extraState.EndTurn(extra.Party[0], out _) && extra.Party.All(p => extraState.Hp(p.Creature) == 100)
+            && extraState.Power<StrengthPower>(extra.Enemy) == 0,
+            "closed extra horizon must not repeat settlement");
+        Check(root.PartyStateText() == rootText && ambergris.Amount == 1
+            && extra.Party.All(p => p.Creature.CurrentHp == 100),
+            "extra-turn settlement must preserve the captured root and live source");
+
+        var resumed = root.Fork();
+        foreach (var p in extra.Party) Check(resumed.EndTurn(p, 2, out reason), "supported extra continuation failed: " + reason);
+        Check(resumed.RoundsAdvanced == 1 && !resumed.HorizonClosed && !resumed.EnemyPhaseCompleted
+            && resumed.CanAct(extra.Party[0]) && extra.Party.Skip(1).All(resumed.IsReady)
+            && resumed.StateText(extra.Party[0]).StartsWith("turn=2;", StringComparison.Ordinal)
+            && extra.Party.Skip(1).All(p => resumed.StateText(p).StartsWith("turn=1;", StringComparison.Ordinal)),
+            "one extra continuation must advance and activate only its actual participant");
+
+        var paels = Board();
+        var eye = (PaelsEye)ModelDb.Relic<PaelsEye>().ToMutable(); paels.Party[0].AddRelicInternal(eye);
+        Check(eye.ShouldTakeExtraTurn(paels.Party[0]) && !eye.ShouldTakeExtraTurn(paels.Party[1]),
+            "native unused Paels Eye must grant its non-playing owner alone an extra turn");
+        var paelsRoot = KernelSession.Capture(paels.Combat);
+        var paelsText = paelsRoot.PartyStateText();
+        var paelsState = paelsRoot.Fork();
+        foreach (var p in paels.Party) Check(paelsState.EndTurn(p, out reason), "Paels extra horizon failed: " + reason);
+        Check(paelsState.HorizonClosed && paels.Party.All(p => paelsState.Hp(p.Creature) == 100)
+            && paelsState.Power<StrengthPower>(paels.Enemy) == 0
+            && paelsState.StateText(paels.Party[0]).Contains("PAELS_EYE/1/", StringComparison.Ordinal),
+            "Paels extra horizon must consume the native once-per-combat source without running Rage");
+        Check(paelsRoot.PartyStateText() == paelsText && !(bool)AccessTools.Field(typeof(PaelsEye), "_usedThisCombat").GetValue(eye)!
+            && paels.Party.All(p => p.Creature.CurrentHp == 100),
+            "Paels extra horizon must preserve captured and live relic state");
+
+        // A false preparer result remains an unresolved transaction. Native
+        // Ambergris is supported; it is not an example of an unknown source.
+        // Paels preparation can fail when exhaust hooks leave a pending choice.
+        // Inject only that contract result, not an invented vanilla extra power.
+        var unknown = Board();
+        var unknownRoot = KernelSession.Capture(unknown.Combat);
+        var unknownText = unknownRoot.PartyStateText();
+        var unknownState = unknownRoot.Fork();
+        var harmony = new Harmony("coopbots.extra-round.unknown-preparation");
+        var stateType = AccessTools.Property(typeof(KernelSession), "Combat").GetValue(unknownState)!.GetType();
+        harmony.Patch(AccessTools.Method(stateType, "TryPrepareExtraPlayerTurn"),
+            prefix: new HarmonyMethod(typeof(KernelRoundScenarios), nameof(UnresolvedExtraPreparation)));
+        try
+        {
+            Check(unknownState.EndTurn(unknown.Party[0], out _) && unknownState.EndTurn(unknown.Party[1], out _),
+                "unknown preparer must still wait for actual shared readiness");
+            Check(!unknownState.EndTurn(unknown.Party[2], out reason)
+                && reason.Contains("prepare-extra-player-turn", StringComparison.Ordinal)
+                && !unknownState.CanFork && !unknownState.EnemyPhaseCompleted && !unknownState.HorizonClosed
+                && unknown.Party.All(p => unknownState.Hp(p.Creature) == 100)
+                && unknownState.Power<StrengthPower>(unknown.Enemy) == 0,
+                "unresolved extra preparation must fail before enemy execution and stay nonforkable");
+        }
+        finally { harmony.UnpatchAll(harmony.Id); }
+        Check(unknownRoot.PartyStateText() == unknownText && unknown.Party.All(p => p.Creature.CurrentHp == 100),
+            "unresolved extra preparation must preserve root and live state");
+        Console.WriteLine("PASS: P1-1 native extra turns settle within the horizon; unresolved preparation stays isolated and explicit.");
+    }
+
+    private static bool UnresolvedExtraPreparation(ref bool __result, ref bool extraTurn, ref bool hasActiveEmotionChip)
+    {
+        extraTurn = false; hasActiveEmotionChip = false; __result = false;
+        return false;
     }
 }

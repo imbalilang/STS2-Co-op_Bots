@@ -42,37 +42,59 @@ internal static class PersistentPowerSupport
         Player player,
         int baseDraw)
     {
-        decimal result = Hook.ModifyHandDraw(combat, player, baseDraw, out _);
-        result = AdjustTurnBasedRelicHandDraw(combat, player, result);
+        // Upstream calls native Hook then subtracts the captured-turn relic bonus.
+        // We substitute the modeled relic at its native position in the hook order.
+        // User 2026-10-07: a frozen turn-1 root must not read the live owner's later
+        // turn (Ring of the Snake changed the same future draw from five to three).
+        // Do not adjust the final sum: that also moves a bonus past late modifiers.
+        decimal result = baseDraw;
+        if (CombatManager.Instance.IsOverOrEnding && !CombatManager.Instance.IsStarting)
+            return Math.Max(0, (int)result);
+        foreach (AbstractModel listener in combat.IterateHookListeners())
+        {
+            if (listener is RelicModel relic && IsProjectedHandDrawRelic(relic))
+            {
+                if (ReferenceEquals(relic.Owner, player))
+                {
+                    int turn = combat.GetPlayerTurnNumber(player);
+                    result += GetTurnBasedHandDrawContribution(relic, combat, turn)
+                        + combat.GetStatefulRelicHandDrawContribution(relic, player, turn);
+                }
+            }
+            else
+                result = listener.ModifyHandDraw(player, result);
+        }
+        // Native Hook dispatches all ordinary modifiers before the late pass.
+        foreach (AbstractModel listener in combat.IterateHookListeners())
+            result = listener.ModifyHandDrawLate(player, result);
         return Math.Max(0, (int)result);
     }
 
     public static int GetModifiedMaxEnergy(SimulatedCombatState combat, Player player)
     {
-        decimal result = Hook.ModifyMaxEnergy(combat, player, player.MaxEnergy);
-        result = AdjustTurnBasedRelicMaxEnergy(combat, player, result);
+        // The same native owner/turn dependency exists in Bread and Pael's Flesh.
+        // Evaluate those captured listeners in order, rather than correcting a
+        // value obtained from live PlayerCombatState after capture.
+        decimal result = player.MaxEnergy;
+        if (CombatManager.Instance.IsOverOrEnding && !CombatManager.Instance.IsStarting)
+            return Math.Max(0, (int)result);
+        foreach (AbstractModel listener in combat.IterateHookListeners())
+        {
+            if (listener is Bread or PaelsFlesh)
+            {
+                var relic = (RelicModel)listener;
+                if (ReferenceEquals(relic.Owner, player))
+                    result += GetTurnBasedMaxEnergyContribution(relic, combat.GetPlayerTurnNumber(player));
+            }
+            else
+                result = listener.ModifyMaxEnergy(player, result);
+        }
         return Math.Max(0, (int)result);
     }
 
-    private static decimal AdjustTurnBasedRelicHandDraw(
-        SimulatedCombatState combat,
-        Player player,
-        decimal result)
-    {
-        int rootTurn = combat.GetRootPlayerTurnNumber(player);
-        int simulatedTurn = combat.GetPlayerTurnNumber(player);
-        foreach (RelicModel relic in combat.RelicsOf(player).Where(static relic => !relic.IsMelted))
-        {
-            result -= GetTurnBasedHandDrawContribution(relic, combat, rootTurn);
-            result -= SimulatedCombatState.GetLiveStatefulRelicHandDrawContribution(
-                relic,
-                player,
-                rootTurn);
-            result += GetTurnBasedHandDrawContribution(relic, combat, simulatedTurn);
-            result += combat.GetStatefulRelicHandDrawContribution(relic, player, simulatedTurn);
-        }
-        return result;
-    }
+    private static bool IsProjectedHandDrawRelic(RelicModel relic)
+        => relic is BagOfPreparation or BigMushroom or BoomingConch
+            or RingOfTheDrake or RingOfTheSnake or Pendulum or Pocketwatch or PollinousCore;
 
     private static decimal GetTurnBasedHandDrawContribution(
         RelicModel relic,
@@ -90,24 +112,6 @@ internal static class PersistentPowerSupport
             RingOfTheSnake when turn <= 1 => relic.DynamicVars.Cards.BaseValue,
             _ => 0m,
         };
-
-    private static decimal AdjustTurnBasedRelicMaxEnergy(
-        SimulatedCombatState combat,
-        Player player,
-        decimal result)
-    {
-        int rootTurn = combat.GetRootPlayerTurnNumber(player);
-        int simulatedTurn = combat.GetPlayerTurnNumber(player);
-        if (rootTurn == simulatedTurn)
-            return result;
-
-        foreach (RelicModel relic in combat.RelicsOf(player).Where(static relic => !relic.IsMelted))
-        {
-            result -= GetTurnBasedMaxEnergyContribution(relic, rootTurn);
-            result += GetTurnBasedMaxEnergyContribution(relic, simulatedTurn);
-        }
-        return result;
-    }
 
     private static decimal GetTurnBasedMaxEnergyContribution(RelicModel relic, int turn)
         => relic switch
@@ -248,6 +252,13 @@ internal static class PersistentPowerSupport
         foreach (RampartPower rampart in combat.EffectivePowers().OfType<RampartPower>().ToArray())
         {
             if (rampart.Amount <= 0)
+                continue;
+            // CoopBots multiplayer port: RampartPower is a native SIDE-turn-start hook
+            // (AfterSideTurnStart -> CreatureCmd.GainBlock), so it grants once per player
+            // SIDE turn. This port drives that once per SEAT, which multiplied the grant by
+            // the table size; live 2026-10-06 read `E1.block expected={480} actual={120}`
+            // three times in TURRET_OPERATOR_WEAK (480 = 4 x RAMPART_POWER 120).
+            if (!combat.TryClaimRampartGrant(rampart.Owner, combat.RoundNumber))
                 continue;
             foreach (Creature enemy in combat.Enemies)
             {

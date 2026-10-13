@@ -19,6 +19,16 @@ internal static class PowerPredictionStateSupport
     {
         switch (target, source)
         {
+            // Upstream mirrors Afterimage's Before/After pair, but omits root
+            // capture. Only an actually empty original native pair can become
+            // owned empty CardPlay state; clone InitInternalData is no evidence.
+            // Native mutable power cloning initializes Data; only its real
+            // empty dictionary is evidence. Nonempty or absent data stays unknown.
+            case (AfterimagePower value, AfterimagePower original):
+                if (original.GetInternalData<AfterimagePower.Data>() is { } data
+                    && data.amountsForPlayedCards.Count == 0)
+                    _ = simulator.StateStore.GetReadOnly(value, static () => new CardPlayPairPredictionState());
+                break;
             case (DarkEmbracePower value, DarkEmbracePower original):
                 _ = simulator.StateStore.GetReadOnly(value, () => new DarkEmbracePredictionState(original));
                 break;

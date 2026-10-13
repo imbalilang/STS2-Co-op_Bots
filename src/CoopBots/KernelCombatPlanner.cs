@@ -12,7 +12,7 @@ namespace CoopBots;
 
 // Host game-thread scheduler. No live objects are read by a background worker.
 // Only one first action is returned; all subsequent actions are replanned.
-internal sealed class KernelCombatPlanner
+internal sealed partial class KernelCombatPlanner
 {
     internal enum Status { Pending, Ready, Fallback }
     /// <summary>
@@ -104,20 +104,24 @@ internal sealed class KernelCombatPlanner
     /// A potion the plan wants used, on whom, and why.
     /// </summary>
     /// <remarks>
-    /// There is deliberately NO choice field. A CHOOSER potion (Attack/Skill/Power/Colorless:
-    /// roll three cards, the player picks one, it is added to hand) is only HALF modelled — see
-    /// `CardGenerationPotionMirrors`, whose result says `AddsToHand: false` and whose docstring
-    /// says the generated cards are produced "without … applying combat piles and hooks".
-    /// `KernelTeamSearch` also builds the potion action with no `Choices`, so the search plans
-    /// the rest of the fight as if the bottle added NOTHING while the live game adds a card.
-    /// Measured live 2026-09-20 (`SLIMES_WEAK`): live hand +1 (`BLOODLETTING`), the plan's step 4
-    /// never replayed, eleven `plan step drift` lines that were all that one displacement, and
-    /// `plan step refused: card-left-hand` at step 12. A choice field here would only ever read
-    /// null until the capture side exists, so it is not carried — see §7 of AGENT.md.
+    /// Carry only choices captured and applied by the kernel transaction. Native
+    /// TouchOfInsanity selects from target.Player's hand (v0.111.0 OnUse); bottle
+    /// ownership and choice ownership can differ. Other chooser potions retain
+    /// their existing unmodelled boundary until their full chain is supported.
     /// </remarks>
-    internal sealed record PotionPlan(PotionModel Potion, Creature? Target, string Reason);
+    internal sealed record PotionPlan(PotionModel Potion, Creature? Target, string Reason,
+        IReadOnlyList<KernelChoice>? Choices = null)
+    {
+        public KernelTurnStartChoiceContract? TurnStartChoices { get; init; }
+        // Keep the existing physical three-argument constructor: reflection does
+        // not supply optional arguments. The full suite exposed its removal as
+        // "MissingMethodException: Constructor on type 'CoopBots.KernelCombatPlanner+PotionPlan' not found."
+        public PotionPlan(PotionModel potion, Creature? target, string reason)
+            : this(potion, target, reason, null) { }
+    }
     internal PotionPlan? ConfirmedPotion { get; private set; }
     internal Player? ConfirmedEndTurn { get; private set; }
+    internal KernelTurnStartChoiceContract? ConfirmedEndTurnChoices { get; private set; }
     private Player[] actorList = [];
     private KernelTeamSearch? search;
     // The capture the current search started from. Kept so a no-action verdict can
@@ -636,7 +640,7 @@ internal sealed class KernelCombatPlanner
         Mid,
         /// <summary>
         /// The shipped default, and what `Ultra` was before the ladder was re-cut: TopK 20 x 3
-        /// policies = 60 rollouts, every core but two, 3200 ms. Measured on the 2026-09-22 live
+        /// policies = 60 rollouts, at most six workers, 3200 ms. The legacy worker mapping on the 2026-09-22 live
         /// run it reached `rollouts=60` at p90 604 ms / max 1015 ms.
         /// </summary>
         High,
@@ -698,6 +702,34 @@ internal sealed class KernelCombatPlanner
         _ => 3200,                    // High: 60 is ~1.8 s, and the second pass may follow
     };
 
+    internal static int OpeningTournamentBudget(int baseBudget, bool boss, int round)
+        => baseBudget * (boss && round <= 1 ? 2 : 1);
+
+    /// <summary>
+    /// owner 2026-10-05：部分高价值场景允许更长思考时间——终幕 Boss（0-based act≥2）所有
+    /// 回合 ×3；其它 Boss 开幕 ×2、后续 ×1.5；精英 ×1.5；普通战斗不变。基数是
+    /// <see cref="TournamentDriveBudgetMs"/>（High=3200ms/趟，两趟共享 2×，所以终幕 Boss
+    /// 单次决策上限约 19.2s、其它 Boss 开幕约 12.8s）。这不是"更准的估价"，是允许搜索用
+    /// 更多时间比较候选；搜索仍按 slice 分帧，不阻塞渲染。
+    /// </summary>
+    internal static int HighValueTournamentBudget(int baseBudget, bool boss, bool elite, bool finalBoss, int round)
+    {
+        if (finalBoss) return baseBudget * 3;
+        if (boss) return round <= 1 ? baseBudget * 2 : baseBudget * 3 / 2;
+        if (elite) return baseBudget * 3 / 2;
+        return baseBudget;
+    }
+
+    private static int TournamentBudget(CombatState combat)
+    {
+        var room = combat.Encounter?.RoomType;
+        var boss = room == MegaCrit.Sts2.Core.Rooms.RoomType.Boss;
+        var elite = room == MegaCrit.Sts2.Core.Rooms.RoomType.Elite;
+        var finalBoss = boss && combat.Players.Any(p => p.RunState.CurrentActIndex >= 2);
+        return HighValueTournamentBudget(TournamentDriveBudgetMs, boss, elite, finalBoss,
+            combat.RoundNumber);
+    }
+
     /// <summary>
     /// Rollout workers. <see cref="TournamentPerf.Low"/> deliberately parks on the sliced single
     /// -threaded path: that tier exists to cost the renderer nothing, not to be fast.
@@ -706,8 +738,14 @@ internal sealed class KernelCombatPlanner
     {
         TournamentPerf.Low => 1,
         TournamentPerf.Mid => Math.Clamp(Environment.ProcessorCount / 4, 1, 4),
-        // High and Ultra both take everything the machine can spare: the candidate list, not the
-        // worker count, is what separates them.
+        // Upstream SearchPolicySnapshot.MaxDegreeOfParallelism is caller-configured;
+        // CombatBeamSolver.Phases clamps it to CPU count. CoopBots lobby High is local.
+        // Local: only High caps at six; other tiers, global pool, budgets and TopK stay unchanged.
+        // Why: owner 2026-10-09 authorized fixed-budget A10 performance experiments.
+        // v6 front-phase allocation1827MiB/GC2818.5ms motivates this arm; it does not prove a benefit.
+        TournamentPerf.High => Math.Clamp(Environment.ProcessorCount - 2, 1, 6),
+        // High caps concurrent native rollout work at six; Ultra retains its
+        // existing hardware allowance. Candidate counts and budgets stay tier-specific.
         _ => Math.Clamp(Environment.ProcessorCount - 2, 1, 16),
     };
     private const int ShadowTournamentTopK = 4;
@@ -882,6 +920,7 @@ internal sealed class KernelCombatPlanner
     {
         ConfirmedPotion = null;
         ConfirmedEndTurn = null;
+        ConfirmedEndTurnChoices = null;
     }
 
     /// <summary>
@@ -909,6 +948,7 @@ internal sealed class KernelCombatPlanner
             // stops a half-finished run from being resumed against a board that no longer exists.
             ClearTournament();
             ClearTournamentScript("new combat");
+            mixedProposal = null; mixedProposalReplay = null; mixedProposalClock = null;
             openingSearch = true;
             planCommitted = false;
             ContinuationSource = null;
@@ -1001,6 +1041,7 @@ internal sealed class KernelCombatPlanner
         decision = null;
         ConfirmedPotion = null;
         ConfirmedEndTurn = null;
+        ConfirmedEndTurnChoices = null;
 
         if (actors.Count == 0) { Reset(); return Status.Ready; }
         if (TournamentDrives(combat, actors))
@@ -1015,7 +1056,7 @@ internal sealed class KernelCombatPlanner
             // heartbeats at 45 s / 90 s / 135 s. Clearing it makes a decline cost one ordinary
             // search instead of a whole episode, which is what "fall back cheaply" has to mean.
             openingSearch = false;
-            var point = $"{combat.GetHashCode()}/{combat.RoundNumber}/{actionVersion}";
+            var point = TournamentDecisionPoint(combat, actionVersion);
             if (point != tournamentDeclined)
             {
                 // PENDING IS NOT DECLINED. The tournament is sliced, so it answers across
@@ -1168,7 +1209,7 @@ internal sealed class KernelCombatPlanner
                 rootCombat = combat; round = combat.RoundNumber; focus = manualFocus; queueVersion = actionVersion;
                 actorIds = actors.Select(p => p.NetId).ToArray();
                 stamp = KernelSession.CaptureLiveStamp(combat);
-                var root = KernelSession.Capture(combat);
+                var root = KernelCombatCapture.Capture(combat);
                 if (root.ProjectionDifferences.Count > 0)
                 {
                     // L0: the search is running from a simulator that does not reproduce
@@ -1617,6 +1658,7 @@ internal sealed class KernelCombatPlanner
                     }
                     noActionStamp = "";
                     ConfirmedEndTurn = first.Player;
+                    ConfirmedEndTurnChoices = first.TurnStartChoices;
                     CountDeployedPlan();
                     var endTurnBoundaries = search.TurnBoundaries;
                     var endTurnMetrics = evaluation!.Evaluate(final);
@@ -1681,7 +1723,8 @@ internal sealed class KernelCombatPlanner
                     // Hand over the LIVE bottle. Passing the plan's simulated model to
                     // PotionPlan would enqueue a use of an object the player does not hold.
                     ConfirmedPotion = new PotionPlan(livePotion, first.Target,
-                        $"kernel-plan:potion:{livePotion.Id.Entry},sequence:{result.Actions.Count},{result.StopReason}");
+                        $"kernel-plan:potion:{livePotion.Id.Entry},sequence:{result.Actions.Count},{result.StopReason}", first.Choices)
+                        { TurnStartChoices = first.TurnStartChoices };
                     // Keep the tail, exactly as the card path below does. A potion is a FREE
                     // action, so the remaining steps were computed against a board where it
                     // had already resolved — the old `Reset()` here threw them all away and
@@ -1736,7 +1779,7 @@ internal sealed class KernelCombatPlanner
                     Math.Max(1, metrics.Score - rootMetrics!.Score),
                     $"kernel-team,sequence:{result.Actions.Count},nodes:{result.ExpandedNodes},{result.StopReason}"
                         + (metrics.SoftFinish > 0 ? $",human-finish:{metrics.SoftFinish:F0}" : "")
-                        + (estimated ? ",estimated" : ""), first.Choices),
+                        + (estimated ? ",estimated" : ""), first.Choices) { TurnStartChoices = first.TurnStartChoices },
                     result.Actions.Count,
                     // The real projection, NOT zeroed when the line used an unmodelled hook.
                     // Zeroing it was our invention and it was load-bearing: TeamCoordinator
@@ -1841,7 +1884,7 @@ internal sealed class KernelCombatPlanner
             // (harmless — out of energy), cards were simulated and none beat
             // passing (an evaluation gap that quietly hands the bots to the weaker
             // legacy planner), or an unmodeled mechanic cut the search short.
-            var rootState = rootSession ?? KernelSession.Capture(combat);
+            var rootState = rootSession ?? KernelCombatCapture.Capture(combat);
             LastNoAction = ClassifyNoAction(rootState, actors, result);
             noActionKinds[LastNoAction] = noActionKinds.GetValueOrDefault(LastNoAction) + 1;
             ReportSearchLine($"search-complete: action=none/{LastNoAction}, wall={Environment.TickCount64 - planningStartMs}ms, "
@@ -1976,8 +2019,7 @@ internal sealed class KernelCombatPlanner
             // hand), so the diagnostic disagreed with the guard it exists to explain.
             var resolved = next.Card is not { } plannedCard
                 ? null
-                : KernelSession.FindLiveCardByKey(next.Player, next.CardStateKey, next.CardStateOccurrence)
-                    ?? (next.Player.PlayerCombatState?.Hand.Cards.Contains(plannedCard) == true ? plannedCard : null);
+                : KernelSession.ResolvePlannedCard(next.Player, plannedCard, next.CardStateKey, next.CardStateOccurrence, out _);
             var cardState = next.Card is null
                 ? "no-card"
                 : resolved is null
@@ -2019,8 +2061,14 @@ internal sealed class KernelCombatPlanner
     /// player's inventory at all.
     /// </remarks>
     private static PotionModel? FindLivePotion(Player player, PotionModel planned)
-        => player.Potions.FirstOrDefault(potion =>
-            string.Equals(potion.Id.Entry, planned.Id.Entry, StringComparison.Ordinal));
+        // A held captured original owns its physical slot, for ordinary bottles
+        // as well as Touch. Owner requested this narrow correction 2026-10-12.
+        // Preserve ordinary model-ID fallback only when that original is absent;
+        // Touch still requires its captured original and exact choice contract.
+        => player.Potions.FirstOrDefault(potion => ReferenceEquals(potion, planned))
+            ?? (KernelSession.RequiresPotionChoiceContract(planned) ? null
+                : player.Potions.FirstOrDefault(potion =>
+                    string.Equals(potion.Id.Entry, planned.Id.Entry, StringComparison.Ordinal)));
 
     /// <summary>
     /// Why the game says this card cannot be played at this target, in the field shape
@@ -2403,7 +2451,7 @@ internal sealed class KernelCombatPlanner
             //
             // The measurement stays: it is the only reading of "does the coming enemy
             // phase actually cost what the plan said", and it is worth a log line.
-            var risk = LiveEndTurnRisk.Evaluate(combat, actors, searchRounds);
+            var risk = LiveEndTurnRisk.Evaluate(combat, actors, searchRounds, KernelCombatCapture.SynchronousSeats(combat));
             if (!risk.Simulated)
             {
                 endTurnRiskUnsimulated++;
@@ -2417,6 +2465,7 @@ internal sealed class KernelCombatPlanner
                     + $"the plan expected {planProjectedDeaths} (hpLost={risk.HpLost:F0}); logged, not refused");
             }
             ConfirmedEndTurn = next.Player;
+            ConfirmedEndTurnChoices = next.TurnStartChoices;
             noActionStamp = "";
             planLastExecuted = planIndex;
             planIndex++;
@@ -2447,7 +2496,8 @@ internal sealed class KernelCombatPlanner
                 return false;
             }
             ConfirmedPotion = new PotionPlan(livePotion, next.Target,
-                $"kernel-plan:reuse,potion:{livePotion.Id.Entry},step:{planIndex + 1}/{result.Actions.Count}");
+                $"kernel-plan:reuse,potion:{livePotion.Id.Entry},step:{planIndex + 1}/{result.Actions.Count}", next.Choices)
+                { TurnStartChoices = next.TurnStartChoices };
             planLastExecuted = planIndex;
             planIndex++;
             noActionStamp = "";
@@ -2465,12 +2515,12 @@ internal sealed class KernelCombatPlanner
         // FindCardForDeployment does. Instance matching (`Hand.Cards.Contains`) failed for
         // generated cards: their planned CardModel is a simulated object that is never in
         // the live hand, so every step through a Shiv was refused as card-left-hand.
-        var card = KernelSession.FindLiveCardByKey(next.Player, next.CardStateKey, next.CardStateOccurrence);
-        if (card is null && next.Card is { } nextInstance
-            && next.Player.PlayerCombatState?.Hand.Cards.Contains(nextInstance) == true)
-            card = nextInstance;   // no key recorded on this action: fall back to the instance
+        // P0-SIM-2: the instance fallback now refuses a card whose state key moved away
+        // from the verified one; only keyless (`stateKey == ""`) actions fall back by object.
+        var card = KernelSession.ResolvePlannedCard(next.Player, next.Card, next.CardStateKey, next.CardStateOccurrence, out _);
         if (card is null) return false;
-        if (!card.CanPlayTargeting(next.Target)) return false;
+        var target = KernelSession.NormalizePlannedTarget(card.TargetType, KernelSession.ResolveCreature(next.Target, combat.Creatures));
+        if (!card.CanPlayTargeting(target)) return false;
 
         planLastExecuted = planIndex;
         planIndex++;
@@ -2478,8 +2528,8 @@ internal sealed class KernelCombatPlanner
         // line as everything else, so a plain grep over a log tells us how much of the
         // fight came from the kept plan versus a fresh search.
         decision = new TeamCombatPlanner.Decision(next.Player,
-            new(card, next.Target, 0.0,
-                $"kernel-plan:reuse,step:{planIndex}/{result.Actions.Count}", next.Choices),
+            new(card, target, 0.0,
+                $"kernel-plan:reuse,step:{planIndex}/{result.Actions.Count}", next.Choices) { TurnStartChoices = next.TurnStartChoices },
             result.Actions.Count - planIndex);
         return true;
     }
@@ -2523,26 +2573,118 @@ internal sealed class KernelCombatPlanner
     private TournamentPhase tournamentPhase;
     private TournamentRun? tournamentRun;
     private KernelPotionPlanAudit? tournamentPotionAudit;
+    private KernelPotionContinuationRun? tournamentPotionReplay;
+    private double tournamentBaselineComputeMs;
     private TournamentResult? tournamentFirstPass;
     private KernelSession? tournamentRoot;
     private IReadOnlyList<Player>? tournamentParty;
     private IReadOnlyList<Player>? tournamentActors;
     private TournamentOptions? tournamentOptions;
     private string? tournamentPoint;
+    private KernelDecisionRequest? tournamentRequest;
+    private long tournamentRootGeneration;
     private Stopwatch? tournamentWatch;
+    private bool tournamentOpeningReviewed;
+
+    internal static string TournamentDecisionPoint(CombatState combat, uint actionVersion)
+        => $"{combat.GetHashCode()}/{combat.RoundNumber}/{actionVersion}/{ControlKey(combat)}/{KernelInputObserver.Revision}";
+
+    // ---- B1 telemetry: what ONE tournament decision actually costs -------------------
+    //
+    // WHY THIS EXISTS. B1's acceptance criterion is "`gcPause / compute` into the single
+    // digits, and 4-seat A10 `wall` p90 clearly under budget", and until now the ONLY
+    // place that ratio was measured was `ReportSearch`, i.e. `KernelTeamSearch` — the
+    // segmented path. Measured 2026-10-01 on the newest live log
+    // (work/diagnosis-20261001-pyre/godot.log): `via=kernel` 920 times, of which
+    // `kernel-tournament` 909 and `kernel-segmented` 0. The gate was being quoted
+    // against a retired code path, so B1 had no reading on the search that actually
+    // drives the game — not a missing optimisation, a missing INSTRUMENT (R5c).
+    //
+    // WHAT IT MEASURES. One DECISION, not one `Advance`: the scope opens when the first
+    // tournament phase starts and closes when the decision is finished, so the two
+    // passes (cards, then potions) are counted together the way the logged
+    // `decision-ms` counts them. `compute` is the run's own accumulator, which is the
+    // same denominator `search-complete` uses; taking a stopwatch around the caller
+    // instead would fold every frame between slices into the ratio and make it
+    // uncomparable with the existing numbers (KernelTournament.ComputeMs says why).
+    private long tournamentStartedMs;
+    private TimeSpan tournamentGcPauseAtStart;
+    private long tournamentAllocatedAtStart;
+    private int tournamentScopes;
+    private double tournamentWallMs;
+    private double tournamentComputeMs;
+    private TimeSpan tournamentGcPause;
+
+    /// <summary>Open the measurement scope for one tournament decision.</summary>
+    private void BeginTournamentTelemetry()
+    {
+        AllocationProbe.RefreshEnabled();
+        tournamentStartedMs = Environment.TickCount64;
+        tournamentGcPauseAtStart = GC.GetTotalPauseDuration();
+        tournamentAllocatedAtStart = GC.GetTotalAllocatedBytes(precise: false);
+        tournamentScopes = 0;
+        tournamentWallMs = 0;
+        tournamentComputeMs = 0;
+    }
+
+    /// <summary>Add one finished run to the scope. Called once per pass.</summary>
+    private void ObserveTournamentRun(TournamentRun run)
+    {
+        tournamentScopes++;
+        tournamentComputeMs += run.ComputeMs;
+    }
+
+    /// <summary>
+    /// Close the scope and log the reading. Not throttled: one line per tournament
+    /// decision is the same cadence as `CoopBots tournament: decision-ms=`, which is
+    /// already one per decision, so this cannot flood a log the existing line does not.
+    /// </summary>
+    private void ReportTournamentCost(string what)
+    {
+        if (tournamentScopes == 0) return;
+        tournamentGcPause = GC.GetTotalPauseDuration() - tournamentGcPauseAtStart;
+        tournamentWallMs = Environment.TickCount64 - tournamentStartedMs;
+        var allocatedMb = (GC.GetTotalAllocatedBytes(precise: false) - tournamentAllocatedAtStart) / 1048576.0;
+        var compute = tournamentComputeMs;
+        var gcShare = compute <= 0 ? 0 : 100.0 * tournamentGcPause.TotalMilliseconds / compute;
+        Log.Info($"CoopBots tournament cost: {what}, passes={tournamentScopes}, "
+            + $"wall={tournamentWallMs:F0}ms, compute={compute:F0}ms, "
+            + $"gcPause={tournamentGcPause.TotalMilliseconds:F0}ms ({gcShare:F1}% of compute), "
+            + $"gen0={GC.CollectionCount(0)}, alloc={allocatedMb:F0}MB");
+        var allocation = AllocationProbe.ReportAndReset();
+        if (allocation.Length > 0) Log.Info("CoopBots alloc: " + allocation);
+        tournamentScopes = 0;
+        tournamentComputeMs = 0;
+    }
 
     /// <summary>Drop anything in flight. Called when the board moves and on a new fight.</summary>
-    private void ClearTournament()
+    private void ClearTournament(string reason = "decision finished or root changed")
     {
+        if (tournamentRequest is { } request)
+            Log.Info($"CoopBots decision request: generation={request.RootGeneration} reason={reason} "
+                + $"budget={request.BudgetMs} wall={request.ElapsedMs:F1}ms remaining={request.RemainingMs}ms "
+                + $"stop={request.StopReason} active={request.ActiveJobs} queued={request.QueuedJobs} "
+                + $"peakActive={request.PeakActiveJobs} completedJobs={request.CompletedJobs}");
+        tournamentRequest?.Cancel(reason);
+        tournamentRun?.Cancel(reason);
+        if (emergencyPotionPending)
+        {
+            emergencyPotionTrials?.Dispose(); emergencyPotionTrials = null;
+            emergencyPotionPending = false; emergencyPotionStamp = null;
+        }
+        tournamentRequest = null;
         tournamentPhase = TournamentPhase.Idle;
         tournamentRun = null;
         tournamentPotionAudit = null;
+        tournamentPotionReplay = null;
+        tournamentBaselineComputeMs = 0;
         tournamentFirstPass = null;
         tournamentRoot = null;
         tournamentParty = null;
         tournamentActors = null;
         tournamentOptions = null;
         tournamentWatch = null;
+        tournamentOpeningReviewed = false;
     }
 
     /// <summary>
@@ -2569,23 +2711,14 @@ internal sealed class KernelCombatPlanner
     /// </summary>
     private void AdoptTournamentScript(TournamentResult result, CombatState combat)
     {
-        if (result.FirstAction?.Potion is { } openingBottle && result.Record is not { Victory: true, Verified: true }
-            && KernelPotionOpportunity.LastChance(KernelSession.Capture(combat), openingBottle.Owner, combat.Players.ToArray(), result.Record))
-        {
-            // Re-read an actual last-chance bottle so another lifesaving effect
-            // remains available. A healthy party's loss many rounds away is not
-            // an emergency: preserve its joint card/potion plan to avoid stacking
-            // a new stun on top of a temporary control bottle just used.
-            ClearTournamentScript("replan after emergency potion");
-            ReportSearchLine("emergency potion: resolve before planning the next action");
-            return;
-        }
-        if (result.Script is { Count: > 1 } script
-            && result.ScriptAliveStates is { Count: > 1 } aliveStates
+        // Modeled bottles already have a native continuation. Preserve it even
+        // in an emergency; throwing it away caused a full search per bottle.
+        if (result.Script is { Count: > 0 } script
+            && result.ScriptAliveStates is { Count: > 0 } aliveStates
             && aliveStates.Count == script.Count
             // Both predictions or neither: a script adopted without its enemy prediction would
             // replay past a kill that did not happen, which is the defect this array exists for.
-            && result.ScriptEnemyStates is { Count: > 1 } enemyStates
+            && result.ScriptEnemyStates is { Count: > 0 } enemyStates
             && enemyStates.Count == script.Count
             && result.Record is not null)
         {
@@ -2594,10 +2727,13 @@ internal sealed class KernelCombatPlanner
             tournamentScriptIndex = 1;
             tournamentScriptCombat = combat;
             tournamentScriptRound = combat.RoundNumber;
+            victoryCheckedRound = combat.RoundNumber;
             tournamentReplanNextRound = result.JointNodes > 0
                 && result.Record is not { Victory: true, Verified: true };
             tournamentScriptAliveStates = aliveStates;
             tournamentScriptEnemyStates = result.ScriptEnemyStates;
+            CaptureMixedContinuation(tournamentRoot, combat, script);
+            StartRefinement(tournamentRoot, combat, script);
             ReportSearchLine($"tournament script cached: steps={script.Count} "
                 + $"ending={Describe(result.Record)}");
             return;
@@ -2611,10 +2747,15 @@ internal sealed class KernelCombatPlanner
         ReportSearchLine($"tournament script dropped: {reason}");
         tournamentScript = null;
         tournamentScriptRecord = null;
+        victoryReview = null; victoryReviewRoot = null; victoryReviewStamp = null; victoryCheckedRound = 0;
         tournamentScriptIndex = 0;
         tournamentScriptCombat = null;
         tournamentScriptAliveStates = null;
         tournamentScriptEnemyStates = null;
+        mixedContinuation = null;
+        ClearRefinement(reason);
+        shortVictory = null; shortVictoryStamp = null;
+        endTurnComparison = null; endTurnComparisonStamp = null;
     }
 
     private static ulong[] LivingSeats(CombatState combat)
@@ -2674,11 +2815,10 @@ internal sealed class KernelCombatPlanner
 
     private static string Name(Creature creature) => creature.Monster?.Id.Entry ?? "?";
 
-    // Reference equality, not a slot number: inside one combat the live Creature objects are
-    // the keys the simulator resolves against, so identity is what "the same enemy" means on
-    // both sides of this comparison.
+    // Captured creatures retain references; predicted summons have distinct objects.
+    // Match a summon by its unique combat ID and model, never model or slot alone.
     private static bool SameEnemies(Creature[] a, Creature[] b)
-        => a.Length == b.Length && a.All(enemy => b.Contains(enemy, ReferenceEqualityComparer.Instance));
+        => a.Length == b.Length && a.All(enemy => b.Any(other => KernelSession.SameCreature(enemy, other)));
 
     /// <summary>
     /// Whether the step's own enemy expectation still describes the live board. Named and
@@ -2706,6 +2846,12 @@ internal sealed class KernelCombatPlanner
             ClearTournamentScript("the combat changed");
             return false;
         }
+        TryAdoptRefinement(combat);
+        if (ReviewMixedInput(combat)) return false;
+        if (tournamentScript is null) return false;
+        if (ReviewVictoryAtRound(combat)) return false;
+        if (tournamentScript is null) return false;
+        script = tournamentScript!;
         if (tournamentReplanNextRound && combat.RoundNumber != tournamentScriptRound)
         {
             ClearTournamentScript("new round: reconsider a non-winning continuation with joint search");
@@ -2740,6 +2886,7 @@ internal sealed class KernelCombatPlanner
             ClearTournamentScript("exhausted");
             return false;
         }
+        if (CompareShortVictory(combat, actors)) return false;
         var next = script[tournamentScriptIndex];
         if (!actors.Contains(next.Player) || !next.Player.Creature.IsAlive)
         {
@@ -2758,13 +2905,12 @@ internal sealed class KernelCombatPlanner
                 // The step is valid; only its submission is gated on the humans' end-turn.
                 return false;
             }
-            if (next.Player.PlayerCombatState!.Hand.Cards.Any(c => c.Type == CardType.Attack && c.CanPlay())
-                && KernelSession.Capture(combat).HasBeneficialAttack(next.Player))
-            {
-                ClearTournamentScript("end-turn would leave a useful payable attack; replan from live hand");
-                return false;
-            }
+            // Verified wins keep their line. Losing ends get one bounded,
+            // cached comparison against actual round settlement (2026-10-04).
+            if (tournamentScriptRecord is not { Verified: true, Victory: true }
+                && CompareLosingEndTurn(combat, next.Player)) return false;
             ConfirmedEndTurn = next.Player;
+            ConfirmedEndTurnChoices = next.TurnStartChoices;
             noActionStamp = "";
             tournamentScriptIndex++;
             tournamentDriven++;
@@ -2789,7 +2935,8 @@ internal sealed class KernelCombatPlanner
                 return false;
             }
             ConfirmedPotion = new PotionPlan(livePotion, next.Target,
-                $"kernel-tournament-script:potion:{livePotion.Id.Entry},step:{stepLabel}");
+                $"kernel-tournament-script:potion:{livePotion.Id.Entry},step:{stepLabel}", next.Choices)
+                { TurnStartChoices = next.TurnStartChoices };
             noActionStamp = "";
             tournamentScriptIndex++;
             tournamentDriven++;
@@ -2802,23 +2949,32 @@ internal sealed class KernelCombatPlanner
             return false;
         }
         if (!actors.Contains(next.Player)) { ClearTournamentScript("the cached step's seat is inactive"); return false; }
-        var card = KernelSession.FindLiveCardByKey(next.Player, next.CardStateKey, next.CardStateOccurrence);
-        if (card is null && next.Card is { } instance
-            && next.Player.PlayerCombatState?.Hand.Cards.Contains(instance) == true)
+        // P0-SIM-2: the step is only the VERIFIED step when the resolved card's live state
+        // key still equals the planned one. `card-state-changed` names a card that is in
+        // hand (same object) but was upgraded / re-costed / enchanted since verification.
+        var card = KernelSession.ResolvePlannedCard(next.Player, next.Card, next.CardStateKey, next.CardStateOccurrence, out var resolveRefusal);
+        if (card is null)
         {
-            card = instance;
+            ClearTournamentScript($"the planned card is no longer playable: reason={resolveRefusal} card={next.Card.Id.Entry} "
+                + $"energy={next.Player.PlayerCombatState?.Energy} key={next.CardStateKey} occurrence={next.CardStateOccurrence} "
+                + $"hand={string.Join(',', next.Player.PlayerCombatState?.Hand.Cards.Select(c => c.Id.Entry) ?? [])}");
+            return false;
         }
-        if (card is null || !card.CanPlayTargeting(next.Target))
+        var target = KernelSession.NormalizePlannedTarget(card.TargetType, KernelSession.ResolveCreature(next.Target, combat.Creatures));
+        if (!card.CanPlayTargeting(target))
         {
-            ClearTournamentScript($"the planned card is no longer playable: card={next.Card.Id.Entry} found={card is not null} energy={next.Player.PlayerCombatState?.Energy} target={next.Target?.CombatId} hand={string.Join(',', next.Player.PlayerCombatState?.Hand.Cards.Select(c => c.Id.Entry) ?? [])}");
+            ClearTournamentScript($"the planned card is no longer playable: card={next.Card.Id.Entry} "
+                + $"energy={next.Player.PlayerCombatState?.Energy} target={next.Target?.CombatId} resolvedTarget={target?.CombatId} "
+                + $"type={card.TargetType} key={next.CardStateKey} occurrence={next.CardStateOccurrence} "
+                + $"hand={string.Join(',', next.Player.PlayerCombatState?.Hand.Cards.Select(c => c.Id.Entry) ?? [])}");
             return false;
         }
         tournamentScriptIndex++;
         tournamentDriven++;
         decision = new TeamCombatPlanner.Decision(next.Player,
-            new(card, next.Target, 0.0,
+            new(card, target, 0.0,
                 $"kernel-tournament-script:step:{tournamentScriptIndex}/{script.Count}",
-                next.Choices),
+                next.Choices) { TurnStartChoices = next.TurnStartChoices },
             script.Count - tournamentScriptIndex);
         ReportSearchLine($"tournament script: play {card.Id.Entry} step {stepLabel}");
         return true;
@@ -2829,9 +2985,12 @@ internal sealed class KernelCombatPlanner
     {
         if (tournamentPhase == TournamentPhase.Idle)
         {
+            tournamentWatch ??= Stopwatch.StartNew();
+            tournamentRequest ??= new KernelDecisionRequest(++tournamentRootGeneration,
+                checked(2 * TournamentBudget(combat)), TournamentParallelism);
             // C replans after every live action. rootSession belongs to the segmented
             // search and can describe an already-played hand or a previous combat.
-            var root = KernelSession.Capture(combat);
+            var root = KernelCombatCapture.Capture(combat);
             if (root is null) return false;
             // A `pending-choice` board cannot be forked at all (KernelSession.Fork refuses an
             // incomplete action), so the tournament cannot run on it. Say so and decline —
@@ -2861,14 +3020,30 @@ internal sealed class KernelCombatPlanner
                 MaxDegreeOfParallelism: TournamentParallelism,
                 Objective: KernelPotionPolicy.Objective,
                 ContinuationActors: combat.Players.Where(p => actors.Contains(p) || AutoPilot.Drives(p.NetId)).ToArray(),
-                EnableJointSearch: true);
+                EnableJointSearch: true) { Request = tournamentRequest };
             tournamentPhase = TournamentPhase.NoPotions;
+            // The DECISION starts here, before the first pass, so both passes land in one
+            // reading. The constructor below does real work too (`FirstActions` forks and
+            // scores every legal opening), and it happens inside this scope on purpose.
+            BeginTournamentTelemetry();
         }
+        if (ReplayMixedProposal()) return true;
         var options = tournamentPhase == TournamentPhase.NoPotions
             ? tournamentOptions!
-            : tournamentOptions! with { IncludePotions = true, PotionsOnly = true };
+            : tournamentOptions! with { IncludePotions = true, PotionsOnly = true,
+                ReferenceResult = tournamentPotionReplay?.Result ?? tournamentFirstPass };
+        // Both passes share one decision allowance. Cheap reference replays
+        // replace repeated card searches and unused baseline time goes to the
+        // actual potion comparison.
+        var passBudget = TournamentBudget(combat);
+        var remainingBudget = tournamentPhase == TournamentPhase.NoPotions ? passBudget
+            : Math.Max(1, (int)(2 * passBudget - tournamentBaselineComputeMs
+                - (tournamentPotionReplay?.ComputeMs ?? 0)));
+        if (tournamentRequest is { } request)
+            remainingBudget = tournamentPhase == TournamentPhase.NoPotions
+                ? Math.Min(passBudget, request.RemainingMs) : request.RemainingMs;
         tournamentRun = new TournamentRun(tournamentRoot!, tournamentParty!, tournamentActors!,
-            options, TournamentDriveBudgetMs);
+            options, remainingBudget);
         tournamentPasses++;
         return true;
     }
@@ -2876,16 +3051,40 @@ internal sealed class KernelCombatPlanner
     private bool TryPotionOpportunity(CombatState combat, IReadOnlyList<Player> actors,
         TerminalRecord? forecast, IReadOnlyList<KernelTeamSearch.Action>? plan = null)
     {
+        // OWNER RULE 2026-10-05: round one of a boss encounter spends EVERY usable bottle before
+        // the first card, so the party can never reach the loss screen still holding one. It
+        // bypasses both gates below (the stale-plan guard and the full-belt/predicted-death
+        // gate) on purpose: the point is to make "died with potions unused" unrepresentable, not
+        // to decide whether the bottle is worth it. Spending is once per bottle — each use clears
+        // the script and re-captures, so the next tick picks the next one and the loop ends.
+        var bossOpening = combat.RoundNumber <= 1
+            && combat.Encounter?.RoomType == MegaCrit.Sts2.Core.Rooms.RoomType.Boss;
+        var comparedPlan = plan is { Count: > 0 } && (tournamentRun?.Done == true
+            || tournamentScriptRecord is not null && tournamentScript is { } cached
+                && tournamentScriptAliveStates?.Count == cached.Count
+                && tournamentScriptEnemyStates?.Count == cached.Count);
+        // A real compared plan owns modeled bottles. Incomplete/stale script
+        // fragments do not suppress the established full-belt rescue policy.
+        // Avoid a fresh native capture on every cached card solely to rediscover
+        // that the remaining modeled bottles have already been compared.
+        if (!bossOpening && comparedPlan && !KernelPotionOpportunity.HasUnmodeledFullBelt(actors))
+            // A compared WIPE/cutoff is not proof that every bottle is useless.
+            // The legacy full-belt / un-compared last-chance policies below keep
+            // their immediate dispatch; only the cached fast return needs rescue.
+            return TryEmergencyPotion(combat, actors, forecast, plan);
         var party = combat.Players.ToArray();
-        if (!actors.Any(p => p.Potions.Any() && (KernelPotionOpportunity.HasFullBelt(p)
-            || KernelPotionOpportunity.PredictedDeath(p, party, forecast)))) return false;
-        var root = KernelSession.Capture(combat);
+        if (!bossOpening && !actors.Any(p => p.Potions.Any() && (KernelPotionOpportunity.HasFullBelt(p)
+            || KernelPotionOpportunity.PredictedDeath(p, party, forecast))))
+            return TryEmergencyPotion(combat, actors, forecast, plan);
+        var root = KernelCombatCapture.Capture(combat);
         if (!root.CanFork) return false;
-        var choice = KernelPotionOpportunity.Choose(root, actors, party, forecast, plan);
-        if (choice is null) return false;
+        var choice = KernelPotionOpportunity.Choose(root, actors, party, forecast, plan, comparedPlan, bossOpening, tournamentRequest);
+        if (choice is null) return !bossOpening && TryEmergencyPotion(combat, actors, forecast, plan);
+        emergencyPotionTrials?.Dispose(); emergencyPotionTrials = null; emergencyPotionPending = false;
         var potion = choice.Action.Potion!;
         ClearTournamentScript($"potion opportunity: {choice.Reason}");
-        ConfirmedPotion = new PotionPlan(potion, choice.Action.Target, choice.Reason);
+        ConfirmedPotion = new PotionPlan(potion, choice.Action.Target, choice.Reason, choice.Action.Choices)
+            { TurnStartChoices = choice.Action.TurnStartChoices };
         noActionStamp = "";
         tournamentDriven++;
         ReportSearchLine($"potion opportunity: {potion.Id.Entry} {choice.Reason}");
@@ -2905,10 +3104,38 @@ internal sealed class KernelCombatPlanner
                 ClearTournament();
                 tournamentPoint = point;
                 tournamentWatch = Stopwatch.StartNew();
+                // Every native trial for this decision shares this deadline,
+                // including potion rescue and cached-line reviews before the
+                // ordinary tournament passes. Capture/JIT remain atomic.
+                tournamentRequest = new(++tournamentRootGeneration,
+                    checked(2 * TournamentBudget(combat)), TournamentParallelism);
+            }
+
+            // The existing boundary contract must renew or retire this
+            // forecast before any bottle comparison can price its old ending.
+            // This uses the same foreground request; the emitter's later call
+            // remains idempotent and the human-input review below still runs.
+            if (ReferenceEquals(tournamentScriptCombat, combat)) TryAdoptRefinement(combat);
+
+            if (!tournamentOpeningReviewed)
+            {
+                // A settled human action can invalidate the old forecast even
+                // when it did not alter ActionQueueSet's version. Renew the
+                // plan's evidence before pricing bottles against that forecast.
+                // The review and any subsequent search spend this same request.
+                if (ReviewMixedInput(combat)) return TournamentOutcome.Pending;
+                tournamentOpeningReviewed = true;
                 if (TryPotionOpportunity(combat, actors,
                     ReferenceEquals(tournamentScriptCombat, combat) ? tournamentScriptRecord : null,
                     ReferenceEquals(tournamentScriptCombat, combat) ? tournamentScript?.Skip(tournamentScriptIndex).ToArray() : null))
                     return FinishTournament(TournamentOutcome.Decided);
+                if (emergencyPotionPending) return TournamentOutcome.Pending;
+            }
+
+            if (emergencyPotionPending)
+            {
+                if (ResumeEmergencyPotion(combat)) return FinishTournament(TournamentOutcome.Decided);
+                if (emergencyPotionPending) return TournamentOutcome.Pending;
             }
 
             while (true)
@@ -2926,14 +3153,13 @@ internal sealed class KernelCombatPlanner
                 {
                     var step = tournamentScriptIndex + 1;
                     var total = tournamentScript!.Count;
-                    var indexBefore = tournamentScriptIndex;
                     if (TryEmitFromTournamentScript(combat, actors, humansFinished, out decision))
                     {
                         Log.Info($"CoopBots tournament: script step {step}/{total} "
                             + "followed without a fresh search");
                         return FinishTournament(TournamentOutcome.Decided);
                     }
-                    if (tournamentScript is not null && tournamentScriptIndex == indexBefore)
+                    if (tournamentScript is not null)
                     {
                         // The step is VALID but cannot be submitted yet — an end-turn whose
                         // seat has to wait for the humans. Keep the line and park; a fresh
@@ -2942,10 +3168,21 @@ internal sealed class KernelCombatPlanner
                     }
                     // The step was refused and the script cleared. Fall through and re-search.
                 }
+                if (tournamentPhase == TournamentPhase.Potions && tournamentRun is null)
+                {
+                    tournamentPotionReplay ??= new KernelPotionContinuationRun(tournamentRoot!, tournamentParty!,
+                        tournamentActors!, tournamentFirstPass!, Math.Max(50, TournamentBudget(combat) / 4), request: tournamentRequest);
+                    if (!tournamentPotionReplay.Advance(TimeSpan.FromMilliseconds(TournamentSliceMs)))
+                        return TournamentOutcome.Pending;
+                    tournamentComputeMs += tournamentPotionReplay.ComputeMs;
+                    Log.Info($"CoopBots potion comparison: replayed={tournamentPotionReplay.Completed} "
+                        + $"compute={tournamentPotionReplay.ComputeMs:F0}ms preserved-reference=true");
+                }
                 if (tournamentRun is null && !BeginTournamentPhase(combat, actors, humansFinished))
                 {
                     return FinishTournament(TournamentOutcome.Declined);
                 }
+                if (tournamentRun is null) return TournamentOutcome.Pending;
                 // ONE FRAME'S WORTH. This is the whole point of the slicing: return to the
                 // caller without the animation having missed a frame.
                 if (!tournamentRun!.Advance(TimeSpan.FromMilliseconds(TournamentSliceMs)))
@@ -2954,19 +3191,31 @@ internal sealed class KernelCombatPlanner
                 }
 
                 var result = tournamentRun.Result!;
+                // Request identity is evidence ownership, not a game-action
+                // refusal. An old root's result cannot be deployed by retagging
+                // its generation number after a human changes the actual board.
+                if (tournamentRequest is not { } currentRequest || currentRequest.IsCancelled
+                    || !result.IsFor(currentRequest))
+                {
+                    Log.Info("CoopBots tournament: abandoned result from a cancelled or different request");
+                    ClearTournament("result request no longer current");
+                    return TournamentOutcome.Pending;
+                }
                 if (tournamentPhase == TournamentPhase.Potions)
                 {
-                    tournamentPotionAudit ??= new KernelPotionPlanAudit(tournamentRoot!, tournamentParty!, result);
+                    tournamentPotionAudit ??= new KernelPotionPlanAudit(tournamentRoot!, tournamentParty!, result, tournamentRequest);
                     if (!tournamentPotionAudit.Advance(TimeSpan.FromMilliseconds(TournamentSliceMs))) return TournamentOutcome.Pending;
                     result = tournamentPotionAudit.Result!;
                     if (tournamentPotionAudit.Removed)
                         Log.Info("CoopBots potion: removed redundant opening bottle after replaying the same card plan without it");
                 }
+                ObserveTournamentRun(tournamentRun);
                 Log.Info($"CoopBots joint search: phase={tournamentPhase} nodes={result.JointNodes} "
-                    + $"prefixes={result.JointPrefixes} maxActions={result.JointMaxActions} selected={result.JointSelected} "
+                    + $"prefixes={result.JointPrefixes} maxActions={result.JointMaxActions} selected={result.JointSelected} {result.JointDiagnostics} "
                     + $"potions={result.Record?.ResourcesConsumed ?? 0}");
                 if (tournamentPhase == TournamentPhase.NoPotions)
                 {
+                    tournamentBaselineComputeMs = tournamentRun.ComputeMs;
                     tournamentFirstPass = result;
                     if (KernelPotionPolicy.WorthComparing(tournamentRoot!, tournamentActors!, tournamentParty!, result.Record))
                     {
@@ -2999,19 +3248,30 @@ internal sealed class KernelCombatPlanner
                     Log.Info($"CoopBots tournament: potion pass — "
                         + $"noPotion={Describe(firstPass)} withPotion={Describe(result.Record)} "
                         + $"took={better} druggedFirst={result.FirstAction?.Potion?.Id.Entry ?? "none"} "
-                        + $"hadPotions={(tournamentParty!.Any(p => tournamentRoot!.UsablePotions(p).Count > 0) ? "yes" : "no")} "
+                        // `hadPotions` must mean "a bottle the SEARCH could have picked", not
+                        // "some bottle exists". It used to count every usable potion, and under
+                        // the old gate it was possible for every bottle to be a CHOOSER potion
+                        // and still log `hadPotions=yes`. Live 2026-10-05 act-3 boss: three passes
+                        // logged `paths=0/N … druggedFirst=none hadPotions=yes`, and there was no
+                        // way to tell that the seats only held bottles `CanModelPotion` refuses.
+                        // `usableBottles` keeps the raw count beside it, so the two together say
+                        // "3 bottles, 0 the kernel can simulate".
+                        + $"hadPotions={(tournamentParty!.Any(p => tournamentRoot!.UsablePotions(p).Any(KernelSession.CanModelPotion)) ? "yes" : "no")} "
+                        + $"usableBottles={tournamentParty!.Sum(p => tournamentRoot!.UsablePotions(p).Count)} "
                         + $"immediateBenefit={immediateBenefit:F1} "
                         + $"enemyHp={firstPass?.RemainingEnemyHp}->{result.Record?.RemainingEnemyHp} "
                         + $"survival={firstPass?.RoundsSurvived}->{result.Record?.RoundsSurvived}");
                     if (!better) result = tournamentFirstPass!;
                 }
 
-                // A losing result must not bury every bottle behind its cached
-                // card sequence. Even a useful bottle that cannot win alone is
-                // deployed now; the next live capture can spend another.
+                // Modeled bottles have already received native comparisons.
+                // Preserve that card/bottle script, including losing lines.
+                // Unmodeled full-belt choices still resolve live before capture.
                 if (result.FirstAction?.Potion is null
                     && TryPotionOpportunity(combat, actors, result.Record, result.Script))
                     return FinishTournament(TournamentOutcome.Decided);
+                if (emergencyPotionPending) return TournamentOutcome.Pending;
+                if (emergencyPotionRepaired) { emergencyPotionRepaired = false; continue; }
                 var next = result.FirstAction;
                 if (next is null)
                 {
@@ -3034,9 +3294,14 @@ internal sealed class KernelCombatPlanner
                 AdoptTournamentScript(result, combat);
                 if (next.EndTurn)
                 {
+                    // Route fresh and cached EndTurn through the same sliced
+                    // comparison. Adoption normally assumes action zero played.
+                    if (tournamentScript is not null)
+                    { tournamentScriptIndex = 0; return TournamentOutcome.Pending; }
                     ConfirmedEndTurn = next.Player;
+                    ConfirmedEndTurnChoices = next.TurnStartChoices;
                     tournamentDriven++;
-                    return FinishTournament(TournamentOutcome.Decided);   // ConfirmedEndTurn is the decision
+                    return FinishTournament(TournamentOutcome.Decided);
                 }
                 if (next.Potion is { } chosenPotion)
                 {
@@ -3046,19 +3311,19 @@ internal sealed class KernelCombatPlanner
                     // and the planner can ACT on one.
                     ConfirmedPotion = new PotionPlan(chosenPotion, next.Target,
                         $"tournament:rollouts={result.Rollouts},predicted="
-                        + (result.Record is null ? "?" : result.Record.Victory ? "VICTORY" : "not-a-win"));
+                        + (result.Record is null ? "?" : result.Record.Victory ? "VICTORY" : "not-a-win"), next.Choices)
+                        { TurnStartChoices = next.TurnStartChoices };
                     tournamentDriven++;
                     Log.Info($"CoopBots tournament: uses potion {chosenPotion.Id.Entry} on "
                         + $"{next.Target?.CombatId} rollouts={result.Rollouts}");
                     return FinishTournament(TournamentOutcome.Decided);
                 }
-                var card = KernelSession.FindLiveCardByKey(next.Player, next.CardStateKey, next.CardStateOccurrence);
-                if (card is null && next.Card is { } instance
-                    && next.Player.PlayerCombatState?.Hand.Cards.Contains(instance) == true) card = instance;
-                if (card is null || !card.CanPlayTargeting(next.Target))
+                var card = KernelSession.ResolvePlannedCard(next.Player, next.Card, next.CardStateKey, next.CardStateOccurrence, out var resolveRefusal);
+                var target = card is null ? next.Target : KernelSession.NormalizePlannedTarget(card.TargetType, KernelSession.ResolveCreature(next.Target, combat.Creatures));
+                if (card is null || !card.CanPlayTargeting(target))
                 {
                     Log.Info($"CoopBots tournament: declined — "
-                        + $"{(card is null ? "live-card-not-found" : "live-target-unplayable")}");
+                        + $"{(card is null ? resolveRefusal : "live-target-unplayable")}");
                     return FinishTournament(TournamentOutcome.Declined);
                 }
                 var ending = result.Record is null ? "?"
@@ -3066,14 +3331,14 @@ internal sealed class KernelCombatPlanner
                     : result.Record.Verified ? "WIPE" : result.Record.CutoffReason;
                 tournamentDriven++;
                 decision = new TeamCombatPlanner.Decision(next.Player,
-                    new(card, next.Target, 0.0,
+                    new(card, target, 0.0,
                         $"tournament:rollouts={result.Rollouts},cutoffs={result.Cutoffs},predicted={ending}",
-                        next.Choices),
+                        next.Choices) { TurnStartChoices = next.TurnStartChoices },
                     // The first card, but now backed by the winning line's tail when one
                     // exists. PlannedCards only feeds the choice-plan sync, so this is the
                     // number of steps downstream code should expect from the cached script.
                     result.Script?.Count ?? 1);
-                Log.Info($"CoopBots tournament: plays {CardLabel(card)} on {next.Target?.CombatId} "
+                Log.Info($"CoopBots tournament: plays {CardLabel(card)} on {target?.CombatId} "
                     + $"predicted={ending} hp={string.Join('/', result.Record?.PostCombatHp ?? [])} "
                     + $"rollouts={result.Rollouts} stop={result.StopReason}");
                 return FinishTournament(TournamentOutcome.Decided);
@@ -3081,7 +3346,16 @@ internal sealed class KernelCombatPlanner
         }
         catch (Exception error)
         {
-            Log.Info($"CoopBots tournament: falling back for this tick — {error.GetType().Name}: {error.Message}");
+            // LOG THE STACK, NOT JUST THE MESSAGE. A bare `NullReferenceException:
+            // Object reference not set to an instance of an object.` is a name and no
+            // location, and this catch spans the whole tournament — capture, the joint
+            // search, the ordinary rollouts, the potion audit and deployment all sit
+            // inside it. Measured live 2026-10-02 (final boss, 24 consecutive decisions):
+            // every decision in that fight logged exactly that message and was declined,
+            // so the whole boss was played by the legacy planner and the log could not
+            // say which of those five stages threw. One line per decision, and only when
+            // something is already wrong, so this cannot flood a healthy log.
+            Log.Info($"CoopBots tournament: falling back for this tick — {error}");
             return FinishTournament(TournamentOutcome.Declined);
         }
     }
@@ -3096,6 +3370,10 @@ internal sealed class KernelCombatPlanner
     {
         Log.Info($"CoopBots tournament: decision-ms={tournamentWatch?.Elapsed.TotalMilliseconds:F1} "
             + $"(sliced {TournamentSliceMs}ms/frame)");
+        // The B1 reading. `decision-ms` above is wall time and so cannot separate "the
+        // search is expensive" from "the frame was stolen by a collection"; this line is
+        // the one that can, and it is the ratio B1 is actually gated on.
+        ReportTournamentCost(outcome.ToString().ToLowerInvariant());
         ClearTournament();
         tournamentPoint = null;
         return outcome;

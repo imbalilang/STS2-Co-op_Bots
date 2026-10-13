@@ -1,5 +1,11 @@
 """Import authorized upstream source, excluding mod startup, UI and automation."""
 from pathlib import Path
+from kernel_class_power_adaptations import apply_class_power_adaptations
+from kernel_relic_choice_adaptations import apply_relic_choice_adaptations
+from kernel_power_fork_adaptations import write_power_fork_support
+from kernel_decision_consistency_adaptations import apply_decision_consistency_adaptations
+from kernel_frozen_hook_adaptations import apply_frozen_hook_adaptations
+from kernel_temporary_stat_adaptations import apply_temporary_stat_adaptations
 import hashlib, json, argparse
 root=Path(__file__).resolve().parents[1]
 source=root/'CombatSolver-0.33.9/src'
@@ -314,9 +320,15 @@ for path in sorted(files):
             if adapted[start:end] != change['old']:
                 raise RuntimeError(f'P1 adaptation context mismatch: {relative}')
             adapted = adapted[:start] + change['new'] + adapted[end:]
+    adapted = apply_class_power_adaptations(relative.as_posix(), adapted)
+    adapted = apply_relic_choice_adaptations(relative.as_posix(), adapted)
+    adapted = apply_decision_consistency_adaptations(relative.as_posix(), adapted)
+    adapted = apply_frozen_hook_adaptations(relative.as_posix(), adapted)
+    adapted = apply_temporary_stat_adaptations(relative.as_posix(), adapted)
     target=dest/relative; target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(adapted,encoding='utf-8')
     manifest.append({'path':relative.as_posix(),'upstream_sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
+manifest.extend(write_power_fork_support(dest))
 sessions=source/'Runtime/SolverControllerSessions.cs'
 session_text=sessions.read_text(encoding='utf-8-sig')
 progress=session_text[session_text.index('internal sealed class SearchProgressDisplayState'):session_text.index('internal sealed class SolverCombatSession')]

@@ -1,0 +1,737 @@
+{
+  "Engine/Common/PredictedCard.cs": {
+    "base_sha256": "96511f8a91996855d14dae7c436baf1c7483eb83b9696bbb8374876882957671",
+    "target_sha256": "96b9ee8e1f63f0a45276dc3427d4c7dbc20c652d9f368b71606d140e0c54e9b7",
+    "source": "CoopBots enabled-only B1 allocation diagnostics; exact 0.41 clone/cache/observer ordering preserved. User 2026-10-09 fixed-budget A10 authorization. Physical C# caller/initial/shared R2 each RED1/exact six-source+six-artifact restore GREEN0; proof work/architecture-refactor-20261009/fixed-budget-performance-v3/b1-caller-preview-execution-v1/r2/proof.json. Python target guard RED: B1 import guard: corrupt initial-detach phase was admitted (0->1->0); prep immutable evidence retained.",
+    "changes": [
+      {
+        "start": 76,
+        "end": 76,
+        "old": "",
+        "new": "using CoopBots.Kernel;\n"
+      },
+      {
+        "start": 3359,
+        "end": 3544,
+        "old": "                preview = PredictionUtils.CloneCardStateForSimulation(_previewStorage.Original);\n                _previewStorage = new PreviewStorage(_previewStorage.Original, preview);",
+        "new": "                using (AllocationProbe.Measure(AllocationProbe.Phase.PreviewInitialDetach))\n                {\n                    preview = PredictionUtils.CloneCardStateForSimulation(_previewStorage.Original);\n                    _previewStorage = new PreviewStorage(_previewStorage.Original, preview);\n                }"
+      },
+      {
+        "start": 3727,
+        "end": 3895,
+        "old": "                preview = PredictionUtils.CloneCardStateForSimulation(preview);\n                _previewStorage = new PreviewStorage(_previewStorage.Original, preview);",
+        "new": "                using (AllocationProbe.Measure(AllocationProbe.Phase.PreviewSharedDetach))\n                {\n                    preview = PredictionUtils.CloneCardStateForSimulation(preview);\n                    _previewStorage = new PreviewStorage(_previewStorage.Original, preview);\n                }"
+      },
+      {
+        "start": 5640,
+        "end": 5640,
+        "old": "",
+        "new": "        using var allocation = AllocationProbe.Measure(AllocationProbe.Phase.CardFork);\n"
+      }
+    ]
+  },
+  "Engine/Common/SimCardPile.cs": {
+    "base_sha256": "18f958d0bb2614c6f98975c03a33cbbca62ca1806aaebf7b2280d67c92019b86",
+    "target_sha256": "0860783d1601a720a3a9b0145d8b2f12d61a7b0df99615486ef9c9242856b25c",
+    "source": "Unchanged production input captured before latest-run repair; preserve registered existing host support.",
+    "changes": [
+      {
+        "start": 74,
+        "end": 74,
+        "old": "",
+        "new": "using CoopBots.Kernel;\n"
+      },
+      {
+        "start": 2420,
+        "end": 2420,
+        "old": "",
+        "new": "        using var allocation = AllocationProbe.Measure(AllocationProbe.Phase.PileFork);\n"
+      }
+    ]
+  },
+  "Engine/InCombat/Simulation/CombatPredictionSimulator.cs": {
+    "base_sha256": "3987b9215eb8773bb8642c72321b5d3fe0b3099a290df238bd37b58e7bc70299",
+    "target_sha256": "94156166f545ccce08a749505a7e34c56cc0b42f717f410fafbc6dea4b04f7a3",
+    "source": "Unchanged production input captured before latest-run repair; preserve registered existing host support.",
+    "changes": [
+      {
+        "start": 184,
+        "end": 184,
+        "old": "",
+        "new": "using CoopBots.Kernel;\n"
+      },
+      {
+        "start": 5711,
+        "end": 5711,
+        "old": "",
+        "new": "        using var allocation = AllocationProbe.Measure(AllocationProbe.Phase.Fork);\n"
+      },
+      {
+        "start": 5925,
+        "end": 6052,
+        "old": "        CombatPredictionState state = State.Fork(context);\n        PredictionStateStore stateStore = StateStore.Fork(context);\n",
+        "new": "        CombatPredictionState state;\n        using (AllocationProbe.Measure(AllocationProbe.Phase.StateFork)) state = State.Fork(context);\n        PredictionStateStore stateStore;\n        using (AllocationProbe.Measure(AllocationProbe.Phase.StoreFork)) stateStore = StateStore.Fork(context);\n"
+      },
+      {
+        "start": 6173,
+        "end": 6236,
+        "old": "        CombatPredictionHistory history = History.Fork(trace);\n",
+        "new": "        CombatPredictionHistory history;\n        using (AllocationProbe.Measure(AllocationProbe.Phase.HistoryFork)) history = History.Fork(trace);\n"
+      }
+    ]
+  },
+  "Engine/InCombat/Simulation/CombatPredictionState.cs": {
+    "base_sha256": "bdcab68eac6bae0deae96ee2050a3ac3f01dce1c3a01c1b565202e0592630704",
+    "target_sha256": "c96d485a751c8e58c62b51b74eea9642c8079c06a8aef9c1d41fa2a61e54eda2",
+    "source": "Unchanged production input captured before latest-run repair; preserve registered existing host support.",
+    "changes": [
+      {
+        "start": 186,
+        "end": 186,
+        "old": "",
+        "new": "using CoopBots.Kernel;\n"
+      },
+      {
+        "start": 8616,
+        "end": 8686,
+        "old": "        ICombatState combatState = forkableCombatState.Fork(context);\n",
+        "new": "        ICombatState combatState;\n        using (AllocationProbe.Measure(AllocationProbe.Phase.CombatStateFork)) combatState = forkableCombatState.Fork(context);\n"
+      }
+    ]
+  },
+  "Prediction/CorePowerSupport.cs": {
+    "base_sha256": "4549f8e8b42104a73d8923e398c1bc32be3997d345d42723bb3a24943693a731",
+    "target_sha256": "5e1329d7b85ea71c85b96adc6e77101361cc7423167fab823dee070b0078bfe0",
+    "source": "Unchanged production input captured before latest-run repair; preserve registered existing host support.",
+    "changes": [
+      {
+        "start": 0,
+        "end": 0,
+        "old": "",
+        "new": "using MegaCrit.Sts2.Core.Logging;\n"
+      },
+      {
+        "start": 593,
+        "end": 593,
+        "old": "",
+        "new": "\n/// <summary>\n/// Pay-out multiplier the simulation must apply to every gold GAIN, keyed by NetId.\n/// </summary>\n/// <remarks>\n/// The live game pays gold through <c>PlayerCmd.GainGold</c>, which the CoopBots layer\n/// patches to TRIPLE a Cheated bot's payout (<c>BotGoldCheatPatch</c>). The simulator does\n/// not go through that command — it pays via <c>SimulatedCombatState.GainPlayerGold</c> —\n/// so without this the two sides disagree threefold for every Cheated seat, and any plan\n/// containing a gold-gain card (e.g. HandOfGreed) drifts on <c>field=gold</c> the moment\n/// it resolves.\n///\n/// The rule itself lives in the CoopBots layer (BotRegistry), which this assembly must not\n/// reference, so it arrives as a registered function. The default is 1x, which is what\n/// every non-Cheated table sees.\n/// </remarks>\npublic static class SimulatedGoldGain\n{\n    public static Func<ulong, int> MultiplierResolver { get; set; } = static _ => 1;\n\n    internal static int MultiplierFor(ulong netId) => Math.Max(0, MultiplierResolver(netId));\n}\n"
+      },
+      {
+        "start": 6256,
+        "end": 6318,
+        "old": "                int gold = card.DynamicVars[\"Gold\"].IntValue;\n",
+        "new": "                // Must match what the live game actually pays the player, cheat included:\n                // PlayerCmd.GainGold triples a Cheated bot's payout before it lands, and a\n                // plan that prices the untripled number drifts on `field=gold` as soon as\n                // it resolves. See SimulatedGoldGain.\n                int gold = card.DynamicVars[\"Gold\"].IntValue\n                    * SimulatedGoldGain.MultiplierFor(card.Owner.NetId);\n"
+      },
+      {
+        "start": 22212,
+        "end": 22212,
+        "old": "",
+        "new": "    // Throttle for the steam-eruption pending-choice diagnostic below.\n    private static long nextSteamEruptionLogAt;\n\n"
+      },
+      {
+        "start": 28474,
+        "end": 28474,
+        "old": "",
+        "new": "            {\n                // NAME IT. This `return false` is what turns \"a line that KILLS the boss\" into a\n                // boundary, and it is measured: live 2026-09-20 (4 BOT A10, WATERFALL_GIANT_BOSS)\n                // the fight carried `boundaries=end-turn:round-pending-choice×749`, ran 25 rounds\n                // and 64 scripts, and the run was lost — because the search could never see a line\n                // that resolves the fight, so its best usable line was \"survive the next five\n                // rounds\". That is the \"the bot refuses to kill so it will not die\" the user\n                // observed; it is a truncated tree, not a scoring preference (a probe over\n                // KernelTeamSearch with a deliberately catastrophic victory score still committed\n                // to the 12-action winning line).\n                if (Environment.TickCount64 >= nextSteamEruptionLogAt)\n                {\n                    nextSteamEruptionLogAt = Environment.TickCount64 + 10_000;\n                    Log.Info($\"CoopBots kernel: steam-eruption transition left a pending choice \"\n                        + $\"(turnStart={combat.PendingTurnStartChoiceDescription}, \"\n                        + $\"knowledgeDemon={combat.PendingKnowledgeDemonChoice?.GetType().Name ?? \"none\"}); \"\n                        + \"the death settlement fails closed here, so every line that kills this boss \"\n                        + \"becomes a boundary and the search cannot see one that resolves the fight\");\n                }\n"
+      },
+      {
+        "start": 28504,
+        "end": 28504,
+        "old": "",
+        "new": "            }\n"
+      }
+    ]
+  },
+  "Prediction/PredictionCoverage.cs": {
+    "base_sha256": "365370667ada4d8d5b180ca5ce3731bba1c9acc5ace2b6422ac9b55146972956",
+    "target_sha256": "b14701f39952b86776c32b352116145f8ffa09a298e4761d60bc1b4b13add029",
+    "source": "Unchanged production input captured before latest-run repair; preserve registered existing host support.",
+    "changes": [
+      {
+        "start": 297,
+        "end": 297,
+        "old": "",
+        "new": "using CoopBots.Kernel;\n"
+      },
+      {
+        "start": 482,
+        "end": 482,
+        "old": "",
+        "new": "        using var allocation = AllocationProbe.Measure(AllocationProbe.Phase.Coverage);\n"
+      }
+    ]
+  },
+  "Search/SimulatedCombatState.Fork.cs": {
+    "base_sha256": "4679253a6d67a279bc62146b8f9c59e3a889f8a27adc7c97084c4bfb5d9f03ce",
+    "target_sha256": "03a9c568679664701a387a3007f7bbf1f3b20a460ab1a560a65c66ae51f615ba",
+    "source": "Current-DLL multiplayer native history window: own-turn pending and effective shared current are distinct; actual dead, Ambergris, later normal, enemy-side native controls. User fixed-budget A10 authorization; actual R2/source/artifact receipts state-diagnostics/p0-history-domain-v12/r2/proof.json. The 0.41 predecessor and earlier adapter layer order remain exact.",
+    "changes": [
+      {
+        "start": 99,
+        "end": 99,
+        "old": "",
+        "new": "Entities.Creatures;\nusing MegaCrit.Sts2.Core."
+      },
+      {
+        "start": 105,
+        "end": 105,
+        "old": "",
+        "new": ";\nusing CoopBots.Kernel"
+      },
+      {
+        "start": 364,
+        "end": 364,
+        "old": "",
+        "new": "ForkableList<Creature> allies, enemies, knownEnemies, escapedCreatures;\n        using (AllocationProbe.Measure(AllocationProbe.Phase.SimLists))\n        {\n            allies = _allies.Fork();\n            enemies = _enemies.Fork();\n            knownEnemies = _knownEnemies.Fork();\n            escapedCreatures = _escapedCreatures.Fork();\n        }\n        "
+      },
+      {
+        "start": 427,
+        "end": 428,
+        "old": "_",
+        "new": ""
+      },
+      {
+        "start": 434,
+        "end": 441,
+        "old": ".Fork()",
+        "new": ""
+      },
+      {
+        "start": 455,
+        "end": 456,
+        "old": "_",
+        "new": ""
+      },
+      {
+        "start": 463,
+        "end": 470,
+        "old": ".Fork()",
+        "new": ""
+      },
+      {
+        "start": 484,
+        "end": 485,
+        "old": "_",
+        "new": ""
+      },
+      {
+        "start": 497,
+        "end": 504,
+        "old": ".Fork()",
+        "new": ""
+      },
+      {
+        "start": 518,
+        "end": 519,
+        "old": "_",
+        "new": ""
+      },
+      {
+        "start": 535,
+        "end": 542,
+        "old": ".Fork()",
+        "new": ""
+      },
+      {
+        "start": 3758,
+        "end": 3758,
+        "old": "",
+        "new": "historyCourseAttackWindows = _historyCourseAttackWindows is null ? null : new(_historyCourseAttackWindows),\n            _"
+      },
+      {
+        "start": 5145,
+        "end": 5145,
+        "old": "",
+        "new": "using (AllocationProbe.Measure(AllocationProbe.Phase.SimPowers))\n        {\n            "
+      },
+      {
+        "start": 5191,
+        "end": 5191,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5193,
+        "end": 5193,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5289,
+        "end": 5289,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5361,
+        "end": 5361,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5398,
+        "end": 5398,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5400,
+        "end": 5400,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5463,
+        "end": 5463,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5465,
+        "end": 5465,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5535,
+        "end": 5535,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5566,
+        "end": 5566,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5619,
+        "end": 5619,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5719,
+        "end": 5719,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5756,
+        "end": 5756,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5758,
+        "end": 5758,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5799,
+        "end": 5799,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5801,
+        "end": 5801,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5939,
+        "end": 5939,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5948,
+        "end": 5948,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 5983,
+        "end": 5983,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6061,
+        "end": 6061,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6098,
+        "end": 6098,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6100,
+        "end": 6100,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6153,
+        "end": 6153,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6155,
+        "end": 6155,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6249,
+        "end": 6249,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6320,
+        "end": 6320,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6357,
+        "end": 6357,
+        "old": "",
+        "new": "    }\n        "
+      },
+      {
+        "start": 6360,
+        "end": 6360,
+        "old": "",
+        "new": "        using (AllocationProbe.Measure(AllocationProbe.Phase.SimCards))\n        {\n    "
+      },
+      {
+        "start": 6414,
+        "end": 6414,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6416,
+        "end": 6416,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6532,
+        "end": 6532,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6610,
+        "end": 6610,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6612,
+        "end": 6612,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6707,
+        "end": 6707,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6748,
+        "end": 6748,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6758,
+        "end": 6758,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6760,
+        "end": 6760,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6842,
+        "end": 6842,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 6943,
+        "end": 6943,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7000,
+        "end": 7000,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7089,
+        "end": 7089,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7194,
+        "end": 7194,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7242,
+        "end": 7242,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7244,
+        "end": 7244,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7309,
+        "end": 7309,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7349,
+        "end": 7349,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7458,
+        "end": 7458,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7555,
+        "end": 7555,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7604,
+        "end": 7604,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7707,
+        "end": 7707,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7774,
+        "end": 7774,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7776,
+        "end": 7776,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7860,
+        "end": 7860,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7899,
+        "end": 7899,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7966,
+        "end": 7966,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 7968,
+        "end": 7968,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8041,
+        "end": 8041,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8043,
+        "end": 8043,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8126,
+        "end": 8126,
+        "old": "",
+        "new": "        }"
+      },
+      {
+        "start": 8127,
+        "end": 8127,
+        "old": "",
+        "new": "\n        using (AllocationProbe.Measure(AllocationProbe.Phase.SimMisc))\n        {\n    "
+      },
+      {
+        "start": 8183,
+        "end": 8183,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8185,
+        "end": 8185,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8307,
+        "end": 8307,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8379,
+        "end": 8379,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8381,
+        "end": 8381,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8461,
+        "end": 8461,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8502,
+        "end": 8502,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8512,
+        "end": 8512,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8514,
+        "end": 8514,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8569,
+        "end": 8569,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8571,
+        "end": 8571,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8690,
+        "end": 8690,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8762,
+        "end": 8762,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8764,
+        "end": 8764,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8843,
+        "end": 8843,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 8884,
+        "end": 8884,
+        "old": "",
+        "new": "    }\n            "
+      },
+      {
+        "start": 8897,
+        "end": 8897,
+        "old": "",
+        "new": "        using (AllocationProbe.Measure(AllocationProbe.Phase.SimHookCaches))\n    "
+      }
+    ]
+  },
+  "Search/SimulatedCombatState.TurnStartChoices.cs": {
+    "base_sha256": "bb6453121f65ee73c911d2dadf675cba6637845fa3e73cda2ee73f52c392f2fb",
+    "target_sha256": "98751d6d548d67d842d5b76027c125d44ee7fe79e234e723e10686f6a114c2ee",
+    "source": "Unchanged production input captured before latest-run repair; preserve registered existing host support.",
+    "changes": [
+      {
+        "start": 618,
+        "end": 618,
+        "old": "",
+        "new": "    /// <summary>\n    /// Names the pending turn-start choice for diagnostics (uses the same fields as the\n    /// exception message above). Needed because a SteamEruption phase transition leaves one\n    /// behind and the death settlement then fails closed — see CorePowerSupport's\n    /// `TryTriggerSteamEruptionDeath` call site — so a line that KILLS the boss becomes a\n    /// boundary and the search can never see a line that resolves the fight.\n    /// </summary>\n    public string PendingTurnStartChoiceDescription\n        => PendingTurnStartChoice is { } pending ? Describe(pending) : \"none\";\n\n"
+      }
+    ]
+  },
+  "Prediction/PowerPredictionStateSupport.cs": {
+    "base_sha256": "dfdfa06d964214502c62437bda66e37abe1de812164fb2e0d558147b7e89be74",
+    "target_sha256": "c42d6f65b417d477e153626dfd8536aa4d629116abf97f2e4455d2c44f36c5cc",
+    "source": "Finite native Afterimage empty-pair root capture. Existing Before/After mirrors and native nonempty refusal remain unchanged. Rebased on frozen-v12; actual focused/R2 evidence work/v12-afterimage-native-20261011-v1.",
+    "changes": [
+      {
+        "start": 822,
+        "end": 822,
+        "old": "",
+        "new": "\n            // Upstream mirrors Afterimage's Before/After pair, but omits root\n            // capture. Only an actually empty original native pair can become\n            // owned empty CardPlay state; clone InitInternalData is no evidence.\n            // Native mutable power cloning initializes Data; only its real\n            // empty dictionary is evidence. Nonempty or absent data stays unknown.\n            case (AfterimagePower value, AfterimagePower original):\n                if (original.GetInternalData<AfterimagePower.Data>() is { } data\n                    && data.amountsForPlayedCards.Count == 0)\n                    _ = simulator.StateStore.GetReadOnly(value, static () => new CardPlayPairPredictionState());\n                break;"
+      }
+    ]
+  }
+}

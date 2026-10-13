@@ -42,6 +42,37 @@ internal static class EventHandlers
         ["COLOSSAL_FLOWER"] = new ColossalFlowerHandler(),
         ["SLIPPERY_BRIDGE"] = new SlipperyBridgeHandler(),
         ["ROOM_FULL_OF_CHEESE"] = new RoomFullOfCheeseHandler(),
+        ["PUNCH_OFF"] = new PunchOffHandler(),
+        ["DOORS_OF_LIGHT_AND_DARK"] = new DoorsOfLightAndDarkHandler(),
+        // T3: events whose options are a resource trade. These use EventTrade's one
+        // unit system instead of the option ids' (absent) wording.
+        ["SUNKEN_STATUE"] = new SunkenStatueHandler(),
+        ["SUNKEN_TREASURY"] = new SunkenTreasuryHandler(),
+        ["JUNGLE_MAZE_ADVENTURE"] = new JungleMazeAdventureHandler(),
+        ["THIS_OR_THAT"] = new ThisOrThatHandler(),
+        ["UNREST_SITE"] = new UnrestSiteHandler(),
+        ["WELLSPRING"] = new WellspringHandler(),
+        // T2: the random reward is read from the game's own generator on a cloned
+        // RNG, so the choice is between what each setting will actually give.
+        ["BATTLEWORN_DUMMY"] = new BattlewornDummyHandler(),
+        ["BRAIN_LEECH"] = new BrainLeechHandler(),
+        // T4: paying a curse or a permanent cost for a benefit.
+        ["LOST_WISP"] = new LostWispHandler(),
+        ["SPIRIT_GRAFTER"] = new SpiritGrafterHandler(),
+        ["DROWNING_BEACON"] = new DrowningBeaconHandler(),
+        // The three events the live logs actually met most often among the unmodelled.
+        ["SELF_HELP_BOOK"] = new SelfHelpBookHandler(),
+        ["WELCOME_TO_WONGOS"] = new WelcomeToWongosHandler(),
+        ["STONE_OF_ALL_TIME"] = new StoneOfAllTimeHandler(),
+        // A gold-for-deck-edits menu whose removal options carry no hover tip.
+        ["ZEN_WEAVER"] = new ZenWeaverHandler(),
+        // A fixed net-negative relic on one option, priced flat by owner decision.
+        ["ROUND_TEA_PARTY"] = new RoundTeaPartyHandler(),
+        // Three deck edits whose options carry no usable tag or tip.
+        ["WOOD_CARVINGS"] = new WoodCarvingsHandler(),
+        // The map is a Quest card: unplayable in combat, and its whole payoff is
+        // the gold and the guaranteed treasure node it buys out of combat.
+        ["THE_LEGENDS_WERE_TRUE"] = new LegendsWereTrueHandler(),
     };
 
     /// <summary>Registered handlers, for the drift check against the baked ids.</summary>
@@ -72,6 +103,27 @@ internal static class EventHandlers
         }
     }
 
+    /// <summary>
+    /// A handler's one-line account of the decision, or "" when it has none. Kept
+    /// here so a new handler can be explained without editing the log call site.
+    /// </summary>
+    internal static string Explain(Player player, EventModel model)
+    {
+        if (model is AncientEventModel ancient) return AncientOptionValue.Explain(player, ancient);
+        if (Handlers.TryGetValue(model.Id.Entry, out var handler) && handler is IEventTradeExplainer explainer)
+        {
+            try { return explainer.Explain(player, model); } catch { return ""; }
+        }
+        return model switch
+        {
+            RoomFullOfCheese => RoomFullOfCheeseHandler.Explain(player, model),
+            RelicTrader => RelicTraderHandler.Explain(player, model),
+            PunchOff => $"team-min-hp={PunchOffHandler.WeakestHealth(player):P0} challenge-reserve=80%",
+            DoorsOfLightAndDark => DoorsOfLightAndDarkHandler.Explain(player, model),
+            _ => "",
+        };
+    }
+
     // Only selectable options: a locked exit must read as "no such option", not
     // as a choice the handler can make.
     internal static int IndexOf(EventModel eventModel, string textSuffix)
@@ -85,6 +137,13 @@ internal static class EventHandlers
         }
         return -1;
     }
+}
+
+internal static class RelicTraderHandler
+{
+    internal static string Explain(Player player, EventModel model) => string.Join(";", model.CurrentOptions
+        .Where(o => !o.IsLocked && !o.WasChosen)
+        .Select(o => o.TextKey.Split('.').Last() + ":" + EventTrade.Grants(player, model, o).Detail));
 }
 
 /// <summary>
@@ -191,9 +250,157 @@ internal sealed class MorphicGroveHandler : IEventSpecialHandler
     {
         var loner = EventHandlers.IndexOf(eventModel, "LONER");
         var group = EventHandlers.IndexOf(eventModel, "GROUP");
+        if (eventModel is MorphicGrove && group >= 0 && loner >= 0)
+        {
+            var value = Building.TransformPlan.EventValue(player, eventModel, eventModel.CurrentOptions[group]);
+            var gain = (double)eventModel.DynamicVars.MaxHp.BaseValue;
+            return value > EventTrade.MaxHpChanged(gain) + EventTrade.Healed(player, gain) ? group : loner;
+        }
         if (player.Gold <= SpareGold) return group >= 0 ? group : loner >= 0 ? loner : null;
         return loner >= 0 ? loner : null;
     }
+}
+
+/// <summary>
+/// ROUND_TEA_PARTY offers two relics: ENJOY_TEA hands over RoyalPoison (FIXED,
+/// not random — EnjoyTea runs RelicCmd.Obtain<RoyalPoison>) plus a full heal, and
+/// PICK_FIGHT costs one hit for a random relic. RoyalPoison damages its owner for
+/// 4 unblockable on every combat's first turn, so over a run it is a large net
+/// loss, and before this both options priced at the bare 5.0 — the tie fell to
+/// page order and every seat took the poison (measured live 2026-10-01).
+///
+/// OWNER DECISION 2026-10-01: do not model it. Price the poison option flat and
+/// always take the fight while it is survivable; the only reason to accept the
+/// poison is a fight that would kill, which is the same rule the other traps
+/// follow. The ranking line therefore shows ENJOY_TEA at 5.0-100 = -95.
+/// </summary>
+internal sealed class RoundTeaPartyHandler : IEventSpecialHandler, IEventTradeExplainer
+{
+    /// Flat price of the RoyalPoison option: a deliberate placeholder, not a
+    /// measurement. Its job is to lose to a survivable PICK_FIGHT every time.
+    internal const double PoisonOptionPenalty = -100;
+
+    public IReadOnlyList<string> OptionIds => ["CONTINUE_FIGHT", "ENJOY_TEA", "PICK_FIGHT"];
+
+    public int? Choose(Player player, EventModel eventModel)
+    {
+        var fight = EventHandlers.IndexOf(eventModel, "PICK_FIGHT");
+        var tea = EventHandlers.IndexOf(eventModel, "ENJOY_TEA");
+        // The follow-up page after PICK_FIGHT has only CONTINUE_FIGHT.
+        if (fight < 0)
+        {
+            var cont = EventHandlers.IndexOf(eventModel, "CONTINUE_FIGHT");
+            if (cont >= 0) return cont;
+            return tea >= 0 ? tea : null;
+        }
+        // Take the hit unless it would actually kill. This is the whole rule: the
+        // poison option is priced flat, so the fight wins whenever it is legal.
+        if (eventModel.CurrentOptions[fight].WillKillPlayer?.Invoke(player) == true)
+            return tea >= 0 ? tea : null;
+        return fight;
+    }
+
+    public string Explain(Player player, EventModel model)
+        => $"enjoy_tea={PoisonOptionPenalty:F0}(固有RoyalPoison:每战首回合自伤4) pick_fight=可承受则取";
+}
+
+/// <summary>
+/// WOOD_CARVINGS offers three deck edits and the generic scorer priced NONE of
+/// them correctly. BIRD and TORUS transform one BASIC starter into a fixed named
+/// card, but the game tags them with the RESULT's hover tip rather than
+/// StaticHoverTip.Transform, so the effect-blind transform detector misses them
+/// and they were priced as free additions of a card that is often a NEGATIVE
+/// addition. SNAKE enchants any card with Slither, whose hover tip carries an
+/// EnchantmentModel and is therefore invisible to EventTrade.Grants.
+///
+/// Measured live 2026-10-01: all four seats chose SNAKE at exactly 5.0 (the bare
+/// base), beating BIRD 3.8/3.4/3.5/-1.5 and TORUS 2.7/2.2/1.8/-1.4 — SNAKE won by
+/// default, not by merit, and the enchant was then applied to a 1-cost card, which
+/// Slither makes strictly WORSE (cost 1 → expected 1.5).
+/// </summary>
+internal sealed class WoodCarvingsHandler : IEventSpecialHandler, IEventTradeExplainer
+{
+    public IReadOnlyList<string> OptionIds => ["BIRD", "SNAKE", "SNAKE_LOCKED", "TORUS"];
+
+    internal static (double Bird, double Snake, double Torus) Price(Player player, EventModel model)
+    {
+        return (Building.FixedTransform.WoodValue(player, "PECK"), EventTrade.BestSlitherGain(player),
+            Building.FixedTransform.WoodValue(player, "TORIC_TOUGHNESS"));
+    }
+
+    public int? Choose(Player player, EventModel eventModel)
+    {
+        var bird = EventHandlers.IndexOf(eventModel, "BIRD");
+        var snake = EventHandlers.IndexOf(eventModel, "SNAKE");
+        var torus = EventHandlers.IndexOf(eventModel, "TORUS");
+        var (birdValue, snakeValue, torusValue) = Price(player, eventModel);
+        int? best = null;
+        var bestValue = double.NegativeInfinity;
+        // Walk the LIVE page so a tie cannot be settled by this method's order.
+        foreach (var (index, value) in new[] { (bird, birdValue), (snake, snakeValue), (torus, torusValue) })
+            if (index >= 0 && !EnchantmentEventPolicy.ShouldAvoid(player, eventModel, eventModel.CurrentOptions[index])
+                && value > bestValue) { bestValue = value; best = index; }
+        return best;
+    }
+
+    public string Explain(Player player, EventModel model)
+    {
+        var (bird, snake, torus) = Price(player, model);
+        return $"bird={bird:F1} snake={snake:F1} torus={torus:F1}";
+    }
+}
+
+/// <summary>
+/// ZEN_WEAVER is a pure gold-for-deck-edits menu: pay for two Enlightenment
+/// (BREATHING_TECHNIQUES), for one card removed (EMOTIONAL_AWARENESS), or for two
+/// removed (ARACHNID_ACUPUNCTURE). Only the Enlightenment option carries a hover
+/// tip; the two removal options carry NONE, so the generic scorer gave all three
+/// the same base 5.0 and the page order decided which edit the party bought —
+/// measured live 2026-09-30, all four seats took EMOTIONAL_AWARENESS with no
+/// number behind the choice. Both sides are now priced in the one unit.
+/// </summary>
+internal sealed class ZenWeaverHandler : IEventSpecialHandler, IEventTradeExplainer
+{
+    public IReadOnlyList<string> OptionIds =>
+        ["ARACHNID_ACUPUNCTURE", "BREATHING_TECHNIQUES", "EMOTIONAL_AWARENESS", "LOCKED"];
+
+    // Option id -> (cost DynamicVar, cards the deck sheds).
+    private static readonly (string Option, string CostVar, int Removed)[] Choices =
+    [
+        ("BREATHING_TECHNIQUES", "BreathingTechniquesCost", 0),
+        ("EMOTIONAL_AWARENESS", "EmotionalAwarenessCost", 1),
+        ("ARACHNID_ACUPUNCTURE", "ArachnidAcupunctureCost", 2),
+    ];
+
+    internal static double Price(Player player, EventModel model, string option, string costVar, int removed)
+    {
+        var index = EventHandlers.IndexOf(model, option);
+        if (index < 0) return double.NegativeInfinity;
+        // What the option hands over (Enlightenment is on the hover tips) plus the
+        // cards it lets the deck shed, minus the gold it costs.
+        var granted = EventTrade.Grants(player, model, model.CurrentOptions[index]).Value;
+        var shed = removed > 0 ? EventTrade.BestRemoval(player, removed) : 0;
+        return granted + shed - EventTrade.Gold(EventTrade.Var(model, costVar));
+    }
+
+    public int? Choose(Player player, EventModel eventModel)
+    {
+        int? best = null;
+        var bestValue = double.NegativeInfinity;
+        // Walk the LIVE page so the result cannot depend on the order this method
+        // happens to list the three choices in.
+        foreach (var (option, costVar, removed) in Choices)
+        {
+            var index = EventHandlers.IndexOf(eventModel, option);
+            if (index < 0) continue;
+            var value = Price(player, eventModel, option, costVar, removed);
+            if (value > bestValue) { bestValue = value; best = index; }
+        }
+        return best;
+    }
+
+    public string Explain(Player player, EventModel model)
+        => string.Join(" ", Choices.Select(c => $"{c.Option}={Price(player, model, c.Option, c.CostVar, c.Removed):F1}"));
 }
 
 /// <summary>
@@ -275,30 +482,12 @@ internal sealed class ColossalFlowerHandler : IEventSpecialHandler
 }
 
 /// <summary>
-/// Slippery Bridge removes one card from the deck. Its first pick is always a
-/// non-Basic card (the event draws from exactly that pool), and it offers two
-/// ways to answer: OVERCOME removes the card it picked, while HOLD_ON deals
-/// 3, then 4, then 5 ... unblockable, unpowered damage and rerolls onto
-/// another card.
-///
-/// Neither option id carries any wording, so the generic scorer prices both at
-/// 5.0, and the index tie-break then takes whichever is listed first — which is
-/// always OVERCOME. That is what happened to all four seats of the 2026-09-25
-/// A5 run, and the pick is never filler: the event goes out of its way to hand
-/// you a card you chose. The party lost TACTICIAN, MOLTEN_FIST, FLAME_BARRIER
-/// and BULLET_TIME, each of them picked one to six floors earlier, and reached
-/// the act-1 boss on 11/12/13/15-card decks with three upgrades between them.
-///
-/// The card OVERCOME would take is the model behind its own hover tip, so this
-/// needs no private event state: hold on while that card is one the deck wants
-/// to keep, and let go as soon as the reroll lands on filler.
+/// Bounded native-qualified candidate: value the actual physical card removed at each
+/// already-supported, finite reroll endpoint and pay every preceding hold.
+/// This is a bounded policy estimate, not a complete event/win-rate solver.
 /// </summary>
-internal sealed class SlipperyBridgeHandler : IEventSpecialHandler
+internal sealed class SlipperyBridgeHandler : IEventSpecialHandler, IEventTradeExplainer
 {
-    // A hold has to leave this share of Max HP behind. The hit grows with every
-    // hold, so this is also what stops the loop on a deck whose rerolls keep
-    // landing on cards worth keeping rather than cycling back to a Basic.
-    // Same floor as AbyssalBathsHandler, for the same reason.
     private const double HoldOnHealthFloor = 0.35;
 
     public IReadOnlyList<string> OptionIds =>
@@ -307,50 +496,114 @@ internal sealed class SlipperyBridgeHandler : IEventSpecialHandler
 
     public int? Choose(Player player, EventModel eventModel)
     {
-        if (eventModel is not SlipperyBridge) return null;
+        if (eventModel is not SlipperyBridge bridge) return null;
         var overcome = EventHandlers.IndexOf(eventModel, "OVERCOME");
         if (overcome < 0) return null;
+        if (AtRisk(bridge.CurrentOptions[overcome]) is not { } atRisk) return null;
 
-        // Without the card the option would take there is nothing to weigh. An
-        // unfamiliar shape defers to the generic scorer rather than stalling.
-        if (AtRisk(eventModel.CurrentOptions[overcome]) is not { } atRisk) return null;
+        var deck = player.Deck.Cards.ToArray();
+        var physical = deck.Any(card => ReferenceEquals(card, atRisk));
+        var protectedRisk = physical && Protected(atRisk, deck);
+        if (IsFiller(atRisk) && !protectedRisk) return overcome;
 
-        // Taking filler is the point of the event: a Strike or a Defend is
-        // replaceable, and a curse or status is dead weight. The event cannot
-        // offer an Eternal one, so anything it does offer is safe to give up.
-        if (IsFiller(atRisk)) return overcome;
-
-        var holdOn = HoldOnIndex(eventModel);
+        var holdOn = HoldOnIndex(bridge);
         if (holdOn < 0) return overcome;
-        var option = eventModel.CurrentOptions[holdOn];
-        // The hit is unblockable and unpowered, and it grows with every hold:
-        // never trade the player's life for a card.
+        var option = bridge.CurrentOptions[holdOn];
         if (option.WillKillPlayer?.Invoke(player) == true) return overcome;
-        var cost = HoldOnCost(eventModel);
+        var cost = HoldOnCost(bridge);
         if (cost <= 0 || player.Creature.CurrentHp - cost < player.Creature.MaxHp * HoldOnHealthFloor)
             return overcome;
-        return holdOn;
+
+        // A missing physical instance is not a zero-valued removal. Preserve
+        // the prior bounded safe-hold fallback; never substitute a same-ID copy.
+        if (!physical || !ReferenceEquals(bridge.Owner, player)) return holdOn;
+        var outcomes = PricedOutcomes(player, bridge, option, atRisk, deck, cost);
+        if (outcomes.Count <= 1) return holdOn;
+        if (CoopBots.Building.ConstructionDecision.AwaitingValues) return -1;
+
+        // The existing removal planner protects the last block/aoe/energy/draw
+        // role while any unprotected endpoint is available. The HP floor and
+        // growing cumulative charge still bound how far this handler may hold.
+        var best = outcomes.OrderBy(outcome => outcome.Protected)
+            .ThenByDescending(outcome => outcome.Value)
+            .ThenBy(outcome => outcome.Holds)
+            .First();
+        return best.Holds == 0 ? overcome : holdOn;
     }
 
-    /// <summary>
-    /// The cards a removal can only improve.
-    /// </summary>
+    public string Explain(Player player, EventModel model)
+    {
+        if (model is not SlipperyBridge bridge) return "";
+        var overcome = EventHandlers.IndexOf(bridge, "OVERCOME");
+        var holdOn = HoldOnIndex(bridge);
+        if (overcome < 0 || AtRisk(bridge.CurrentOptions[overcome]) is not { } atRisk) return "bridge unreadable-risk";
+        var deck = player.Deck.Cards.ToArray();
+        if (!deck.Any(card => ReferenceEquals(card, atRisk)) || !ReferenceEquals(bridge.Owner, player))
+            return "bridge physical-reference-unavailable bounded-legacy-fallback";
+        // Choose and Explain run in the same construction delegate. A cheap
+        // terminal decision must not schedule deck simulations just to log it.
+        if (IsFiller(atRisk) && !Protected(atRisk, deck)) return $"bridge risk={atRisk.Id.Entry} unprotected-filler";
+        if (holdOn < 0) return $"bridge risk={atRisk.Id.Entry} no-hold";
+        var option = bridge.CurrentOptions[holdOn];
+        if (option.WillKillPlayer?.Invoke(player) == true) return $"bridge risk={atRisk.Id.Entry} lethal-hold";
+        var cost = HoldOnCost(bridge);
+        if (cost <= 0 || player.Creature.CurrentHp - cost < player.Creature.MaxHp * HoldOnHealthFloor)
+            return $"bridge risk={atRisk.Id.Entry} health-floor";
+        var outcomes = PricedOutcomes(player, bridge, option, atRisk, deck, cost);
+        return "bridge bounded-endpoints=" + string.Join(";", outcomes.Select(outcome =>
+            $"{outcome.Card.Id.Entry}+{outcome.Card.CurrentUpgradeLevel}:holds={outcome.Holds},hp={outcome.HealthCost},"
+            + $"remove={outcome.RemovalValue:F2},net={outcome.Value:F2},protected={outcome.Protected}"));
+    }
+
+    private readonly record struct RemovalOutcome(CardModel Card, int Holds, int HealthCost,
+        double RemovalValue, double Value, bool Protected);
+
+    private static IReadOnlyList<RemovalOutcome> PricedOutcomes(Player player, SlipperyBridge bridge,
+        EventOption holdOn, CardModel atRisk, IReadOnlyList<CardModel> deck, int firstCost)
+    {
+        var outcomes = new List<RemovalOutcome>();
+        void Add(CardModel card, int holds, int hp)
+        {
+            var removal = CoopBots.Building.BuildValue.RemoveForDecision(card, player, deck).Total;
+            if (!double.IsFinite(removal)) throw new InvalidOperationException("Bridge removal price is not finite");
+            outcomes.Add(new(card, holds, hp, removal, removal - EventTrade.HealthLost(hp), Protected(card, deck)));
+        }
+        Add(atRisk, 0, 0);
+        if (firstCost <= 0) return outcomes;
+        // Existing Foreseer facade preserves actual deck references, uses a
+        // cloned event RNG, and applies native skipped/type/filter/fallback rules.
+        // Its already-configured preview count is the sole horizon; no new search
+        // pool or construction precision is introduced here.
+        var preview = CoopBots.Kernel.OutOfCombatPredictions.EventOption(bridge, holdOn).Cards;
+        var paid = 0;
+        for (var index = 0; index < preview.Count; index++)
+        {
+            // Native HoldOn increases the next HpLoss by one after every paid
+            // choice. Every candidate is a removal AFTER all these payments.
+            paid = checked(paid + firstCost + index);
+            if (player.Creature.CurrentHp - paid < player.Creature.MaxHp * HoldOnHealthFloor
+                || player.Creature.CurrentHp <= paid) break;
+            var card = preview[index];
+            if (!card.IsRemovable || !deck.Any(held => ReferenceEquals(held, card))) break;
+            Add(card, index + 1, paid);
+        }
+        return outcomes;
+    }
+
+    private static bool Protected(CardModel card, IReadOnlyList<CardModel> deck)
+        => BotShopPlanner.IsNeverRemoved(card) || CoopBots.Building.BuildValue.RemovalProtection(card, deck).Protected;
+
     internal static bool IsFiller(CardModel card)
-        => card.Rarity == CardRarity.Basic
+        => (card.IsBasicStrikeOrDefend && card.CurrentUpgradeLevel == 0
+            && card.Enchantment is null && card.GetEnchantedReplayCount() <= 0)
             || card.Type is CardType.Curse or CardType.Status;
 
-    // The option the event rebuilds after each hold still carries the card it
-    // would remove as a hover tip — that is the game's own statement of what is
-    // at stake, and it needs no private field to read.
+    // The real hover tip retains its mutable card; CanonicalModel discards the
+    // upgrade, enchantment, physical duplicate and exact Deck reference.
     private static CardModel? AtRisk(EventOption overcome)
-    {
-        foreach (var tip in overcome.HoverTips)
-            if (tip.CanonicalModel is CardModel card) return card;
-        return null;
-    }
+        => overcome.HoverTips.OfType<MegaCrit.Sts2.Core.HoverTips.CardHoverTip>()
+            .Select(tip => tip.Card).FirstOrDefault();
 
-    // A hold always rebuilds the page ("pages.HOLD_ON_n.options.HOLD_ON_m"), so
-    // the id is matched rather than an index that shifts with the hold count.
     private static int HoldOnIndex(EventModel eventModel)
     {
         for (var index = 0; index < eventModel.CurrentOptions.Count; index++)
@@ -363,9 +616,6 @@ internal sealed class SlipperyBridgeHandler : IEventSpecialHandler
         return -1;
     }
 
-    // The event publishes the next hold's damage into "HpLoss" before it builds
-    // the page, so this is the hit the player is about to take — not a guess at
-    // the 3 + holds formula, which would drift if the event ever changed it.
     private static int HoldOnCost(EventModel eventModel)
     {
         try { return eventModel.DynamicVars["HpLoss"].IntValue; }

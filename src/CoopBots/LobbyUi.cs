@@ -211,8 +211,11 @@ public static class LobbyUi
             // A lobby that outlived its panel can still raise one more event on
             // the way out; the panel only ever paints the lobby it is bound to.
             if (!ReferenceEquals(bound, lobby)) return;
-            foreach (var child in roster.GetChildren())
+            // Removing a child shifts the remaining indices. Keep removing the
+            // first one, in the original order, without a temporary native Array.
+            while (roster.GetChildCount() > 0)
             {
+                var child = roster.GetChild(0);
                 roster.RemoveChild(child);
                 child.QueueFree();
             }
@@ -292,9 +295,8 @@ public static class LobbyUi
         difficultySelect.ItemSelected += _ => Refresh();
         perfSelect.ItemSelected += index =>
         {
-            // A local, per-machine choice. The tournament runs on the host, so this is not
-            // synchronised — the host's tier is the one the table gets, and every seat is a bot
-            // here anyway, so there is nobody to disagree with.
+            // Combat planning runs on the host. Construction precision is also
+            // shared with peers by ConstructionPerfSync before replicated choices.
             var tiers = Enum.GetValues<KernelCombatPlanner.TournamentPerf>();
             KernelCombatPlanner.Perf = tiers[Math.Clamp((int)index, 0, tiers.Length - 1)];
             Refresh();
@@ -332,7 +334,7 @@ public static class LobbyUi
     /// </summary>
     private static string PerfLabel(bool zh, KernelCombatPlanner.TournamentPerf tier) => tier switch
     {
-        KernelCombatPlanner.TournamentPerf.Low => zh ? "低 · 不抢核" : "Low · no extra threads",
+        KernelCombatPlanner.TournamentPerf.Low => zh ? "低 · 流畅优先" : "Low · smoother play",
         KernelCombatPlanner.TournamentPerf.Mid => zh ? "中" : "Medium",
         KernelCombatPlanner.TournamentPerf.Ultra => zh ? "超高 · 全候选" : "Ultra · every candidate",
         _ => zh ? "高 · 推荐" : "High · recommended",
@@ -342,17 +344,17 @@ public static class LobbyUi
     private static string PerfDescribe(bool zh, KernelCombatPlanner.TournamentPerf tier) => tier switch
     {
         KernelCombatPlanner.TournamentPerf.Low => zh
-            ? "12 个剧本；不开工作线程，每帧只用 6ms"
-            : "12 rollouts; no worker threads, 6 ms of each frame",
+            ? "战斗：12 个剧本、分帧计算；构筑：1 个后台线程、4 次采样、精简搜索"
+            : "Combat: 12 sliced rollouts; deck: 1 worker, 4 samples, compact search",
         KernelCombatPlanner.TournamentPerf.Mid => zh
-            ? "24 个剧本；约用四分之一的核"
-            : "24 rollouts; about a quarter of the cores",
+            ? "战斗：24 个剧本；构筑：最多 2 个后台线程、8 次采样"
+            : "Combat: 24 rollouts; deck: up to 2 workers, 8 samples",
         KernelCombatPlanner.TournamentPerf.Ultra => zh
-            ? "不截断候选 —— 每一张能出的牌都演算一遍；最贵，也最可能看出卡顿"
-            : "No candidate cap — every legal first action is rolled out; the most expensive",
+            ? "战斗：全部候选；构筑：最多 4 个后台线程、24 次采样、更宽搜索；计算开销最高"
+            : "Combat: every candidate; deck: up to 4 workers, 24 samples, wider search; highest CPU cost",
         _ => zh
-            ? "60 个剧本；除两个核外全用（2026-09-22 实测 p90 604ms / max 1015ms）"
-            : "60 rollouts; every core but two (measured 2026-09-22: p90 604 ms, max 1015 ms)",
+            ? "战斗：60 个剧本；构筑：最多 4 个后台线程、16 次采样；预留主线程所在物理核"
+            : "Combat: 60 rollouts; deck: up to 4 workers, 16 samples; reserve main-thread physical core",
     };
 
     private static HBoxContainer Row(string label, Control control)

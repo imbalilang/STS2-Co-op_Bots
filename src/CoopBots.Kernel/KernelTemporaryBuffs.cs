@@ -12,6 +12,10 @@ internal enum TemporaryBuffTiming
     Block,
     /// <summary>Subsequent cards of any type are what consume it (Oblivion).</summary>
     Cards,
+    /// <summary>Subsequent skill cards consume this turn's repeat effect.</summary>
+    Skill,
+    /// <summary>Subsequent attacks consume a finite repeat counter.</summary>
+    AttackRepeat,
 }
 
 /// <summary>
@@ -37,6 +41,8 @@ internal static class KernelTemporaryBuffs
             => TemporaryBuffTiming.Attack,
         "FADE" or "ANTICIPATE" => TemporaryBuffTiming.Block,
         "OBLIVION" => TemporaryBuffTiming.Cards,
+        "BURST" => TemporaryBuffTiming.Skill,
+        "ONE_TWO_PUNCH" => TemporaryBuffTiming.AttackRepeat,
         _ => null,
     };
 
@@ -45,7 +51,7 @@ internal static class KernelTemporaryBuffs
     /// holding it is strictly better than spending it now.
     /// </summary>
     internal static bool IsPureSetup(CardModel card) => card.Id.Entry is
-        "CONCOCT" or "COORDINATE" or "FADE" or "ANTICIPATE" or "OBLIVION";
+        "CONCOCT" or "COORDINATE" or "FADE" or "ANTICIPATE" or "OBLIVION" or "BURST" or "ONE_TWO_PUNCH";
 
     /// <summary>Whether the card can be aimed at a teammate (so target choice matters).</summary>
     internal static bool IsAllyTarget(CardModel card) => card.TargetType == TargetType.AnyAlly;

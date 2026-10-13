@@ -24,8 +24,8 @@ internal static class CombatTargetExtensions
                 [.. combatState.Enemies.Where(creature => creature.IsAlive)],
             TargetType.AnyPlayer =>
                 [.. combatState.PlayerCreatures.Where(creature => creature.IsAlive)],
-            TargetType.AnyAlly =>
-                [.. combatState.PlayerCreatures.Where(creature => creature != self && creature.IsAlive)],
+            TargetType.AnyAlly => combatState.PlayerCreatures.Count(creature => creature.IsAlive) > 1
+                ? [.. combatState.PlayerCreatures.Where(creature => creature.IsAlive)] : [],
             _ => [],
         };
     }

@@ -88,10 +88,17 @@ public sealed partial class KernelSession
 
     public int Power<T>(Creature target) where T : PowerModel => Combat.GetAmount<T>(target);
 
+    internal bool HasEnemyCardReactions => Combat.EffectivePowers().Any(p => Enemies.Contains(p.Owner)
+        && p.GetType().GetMethod(nameof(PowerModel.AfterCardPlayed))?.DeclaringType != typeof(PowerModel));
+
     internal KernelSession WithoutEnemyVulnerable()
+        => WithEnemyVulnerableFrom(null);
+
+    internal KernelSession WithEnemyVulnerableFrom(KernelSession? reference)
     {
         var copy = Fork();
-        foreach (var enemy in copy.Enemies) copy.Combat.SetAmount<VulnerablePower>(enemy, 0);
+        foreach (var enemy in copy.Enemies)
+            copy.Combat.SetAmount<VulnerablePower>(enemy, reference?.Power<VulnerablePower>(enemy) ?? 0);
         return copy;
     }
 
@@ -101,22 +108,64 @@ public sealed partial class KernelSession
     {
         using var isolation = SimulationNotificationIsolation.Enter();
         var card = simulator.State.FindCard(source)!;
-        var owner = simulator.State.GetPlayerCombatState(source.Owner);
+        var owner = simulator.State.GetPlayerCombatState(card.Preview.Owner);
         return (card.GetEnergyCostWithModifiers(simulator, owner), card.GetStarCostWithModifiers(simulator, owner));
     }
 
     // A cheap ordering hint, not a substitute for resolving CardBranches. Read
     // branch-local costs, variables and damage hooks (Strength, Weak, Vulnerable,
-    // Paper Phrog, etc.). Bespoke attacks without a Damage variable get no hint.
+    // Paper Phrog, etc.). Bully's stack conversion uses the branch-local registry
+    // shared with simulation. Other calculated attacks retain their existing
+    // ordering path; widening this hint changes unrelated investment decisions.
     internal int AttackDamageHint(CardModel source, Creature target)
     {
         using var isolation = SimulationNotificationIsolation.Enter();
         var card = simulator.State.FindCard(source);
         if (card is null || card.Preview.Type != CardType.Attack) return 0;
         var damage = card.Preview.DynamicVars.Values.OfType<DamageVar>().Sum(v => v.BaseValue);
+        if (card.Preview is MegaCrit.Sts2.Core.Models.Cards.Bully)
+            foreach (var calculated in card.Preview.DynamicVars.Values.OfType<CalculatedDamageVar>())
+                if (CalculatedVarSpecRegistry.TryCalculate(calculated, simulator, card, target, out var amount))
+                    damage += amount;
         if (damage <= 0) return 0;
-        return Math.Max(0, (int)HookMirrors.ModifyDamage(simulator, target, source.Owner.Creature,
+        return Math.Max(0, (int)HookMirrors.ModifyDamage(simulator, target, card.Preview.Owner.Creature,
             damage, ValueProp.Move, card, null));
+    }
+
+    // Both initial candidate pruning and rollout ordering use this path. Area
+    // attacks need the same branch-local hooks as individually targeted attacks.
+    internal (double Damage, bool Lethal) AttackHint(CardModel source, Creature? target)
+    {
+        var area = source.Type == CardType.Attack && source.TargetType == TargetType.AllEnemies;
+        if (area)
+        {
+            var damage = Enemies.Sum(e => Math.Min(Hp(e) + Block(e), AttackDamageHint(source, e)));
+            return (damage, Enemies.Any(e => AttackDamageHint(source, e) >= Hp(e) + Block(e)));
+        }
+        var hit = target is not null && source.Type == CardType.Attack ? AttackDamageHint(source, target)
+            : source.DynamicVars.Values.OfType<DamageVar>().Sum(v => (double)v.BaseValue);
+        return (hit, hit > 0 && target is not null && hit >= Hp(target) + Block(target));
+    }
+
+    // Ordering only: surplus block is valuable when it persists or feeds a
+    // payable Body Slam. Otherwise score the damage this block can prevent.
+    internal double UsefulBlockHint(CardModel source, Creature? target)
+    {
+        using var isolation = SimulationNotificationIsolation.Enter();
+        var card = simulator.State.FindCard(source);
+        var recipient = target?.Player ?? CardOwner(source);
+        if (card is null) return 0;
+        var amount = card.Preview.DynamicVars.Values.OfType<BlockVar>().Sum(v => v.BaseValue);
+        if (amount <= 0) return 0;
+        var gain = Math.Max(0, (double)HookMirrors.ModifyBlock(simulator, recipient.Creature,
+            amount, ValueProp.Move, card, null, out _));
+        var persistent = Combat.EffectivePowers().Any(p => p.Owner == recipient.Creature
+            && p.Amount > 0 && p.GetType().Name is "BarricadePower" or "BlurPower");
+        var slam = Hand(recipient).Any(c => c.GetType().Name == "BodySlam" && CanPlay(c)
+            && AttackCosts(c).Energy + (CardOwner(source) == recipient ? AttackCosts(source).Energy : 0) <= Energy(recipient));
+        if (persistent || slam) return gain;
+        var threat = Threat(recipient);
+        return Math.Min(gain, Math.Max(0, threat.HpLoss - threat.DirectHpLoss));
     }
     /// <summary>The Knowledge Demon curse counter this branch has reached.</summary>
     public int KnowledgeDemonCurseCounter(Creature source) => Combat.GetKnowledgeDemonCurseCounter(source);
@@ -146,7 +195,7 @@ public sealed partial class KernelSession
         // reading the live value here guaranteed `field=turn` drift on the first step past
         // every crossing. See KernelSession.TurnNumber.
         return ContinuationStamp.CapturePredicted(
-            player, simulator, TurnNumber, forecast, rootTurnNumber).StateText;
+            player, simulator, Combat.GetPlayerTurnNumber(player), forecast, Combat.GetRootPlayerTurnNumber(player)).StateText;
     }
     public bool SandpitDeath(Creature target) => Combat.EffectivePowers().OfType<SandpitPower>()
         .Any(p => p.Target == target && p.Amount <= 1 && Hp(p.Owner) > 0);
@@ -155,6 +204,48 @@ public sealed partial class KernelSession
     public double SandpitReserve(Creature target) => Combat.EffectivePowers().OfType<SandpitPower>()
         .Where(p => p.Target == target && Hp(p.Owner) > 0)
         .Sum(p => p.Amount switch { <= 1 => 30.0, 2 => 12, 3 => 3, _ => 0 });
+
+    /// <summary>
+    /// The live card's mutable-state key, the same identity <see cref="FindLiveCardByKey"/>
+    /// resolves a planned step against. Exposed so deployment can re-assert that the
+    /// object it found is still in the state the plan was verified against.
+    /// </summary>
+    public static string LiveCardStateKey(CardModel card) => CardChoiceSupport.ChoiceCardKey(card);
+
+    /// <summary>Per-seat sandpit countdowns, "0" for a seat with no live pit.</summary>
+    /// <remarks>
+    /// P0-SIM-2 diagnostics: the adopted-VICTORY log has to show the boundary and the live
+    /// board side by side, or the next false victory costs another full triage.
+    /// </remarks>
+    public static string SandpitCountdowns(CombatState state, IReadOnlyList<Player> party)
+        => FormatSandpitCountdowns(state.Creatures.SelectMany(creature => creature.Powers), party);
+    public string SandpitCountdowns(IReadOnlyList<Player> party)
+        => FormatSandpitCountdowns(Combat.EffectivePowers(), party);
+    private static string FormatSandpitCountdowns(IEnumerable<PowerModel> powers, IReadOnlyList<Player> party)
+    {
+        SandpitPower[] pits = powers.OfType<SandpitPower>().Where(pit => pit.Amount > 0).ToArray();
+        return string.Join(",", party.Select(seat => pits
+            .Where(pit => ReferenceEquals(pit.Target, seat.Creature))
+            .Select(pit => (int?)pit.Amount).Min() ?? 0));
+    }
+
+    /// <summary>
+    /// Targeted powers as an order-independent identity set, (owner,type,target)=amount.
+    /// P0-SIM-2's adoption guard uses it to compare the validated boundary with the live
+    /// board even when a caller supplied a rendered text from elsewhere.
+    /// </summary>
+    public static string TargetedPowerState(CombatState state)
+        => FormatTargetedPowers(state.Creatures.SelectMany(creature => creature.Powers));
+    public string TargetedPowerState()
+        => FormatTargetedPowers(Combat.EffectivePowers());
+    private static string FormatTargetedPowers(IEnumerable<PowerModel> powers)
+        => string.Join(",", powers
+            .Where(power => power.Amount != 0 && power.Target is not null)
+            .OrderBy(power => power.Owner.CombatId)
+            .ThenBy(power => power.Id.Entry, StringComparer.Ordinal)
+            .ThenBy(power => power.Target!.CombatId)
+            .Select(power => $"{power.Owner.CombatId}:{power.Id.Entry}={power.Amount}@{power.Target!.CombatId}"));
+
     public double IntentHit(Creature enemy, Creature target, decimal raw)
     {
         using var isolation = SimulationNotificationIsolation.Enter();
@@ -170,13 +261,7 @@ public sealed partial class KernelSession
     /// credited against rounds the enemy has not taken yet.
     /// </summary>
     public int RestorableStrength(Creature enemy)
-    {
-        var restore = 0;
-        foreach (var power in Combat.EffectivePowers().OfType<TemporaryStrengthPower>())
-            if (power.Owner == enemy && power.Amount > 0)
-                restore += power.TypeForCurrentAmount == PowerType.Buff ? -power.Amount : power.Amount;
-        return restore;
-    }
+        => AfterTemporaryStatExpiry([enemy]).Power<StrengthPower>(enemy) - Power<StrengthPower>(enemy);
     public double EndPlating(Creature target)
     {
         using var isolation = SimulationNotificationIsolation.Enter();
@@ -193,23 +278,10 @@ public sealed partial class KernelSession
     // once as a spent card and again as a smaller hypothetical future engine.
     internal double PersistentValue(Player player, int incoming, int hits, KernelSession reference)
     {
-        using var isolation = SimulationNotificationIsolation.Enter();
-        // These are scheduled one-time resources, not permanent scaling.
-        // Use the same energy/card units as the tactical state value, discounted
-        // until the next round; the lifecycle consumes each effect exactly once.
-        var scheduled = Power<EnergyNextTurnPower>(player.Creature) * 3 * .9
-            + Power<DrawCardsNextTurnPower>(player.Creature) * .7 * .9;
-        var powers = Combat.EffectivePowers().Where(p => p.Owner == player.Creature
-            && p is not EnergyNextTurnPower and not DrawCardsNextTurnPower
-            && StrategicEffectMirrors.Contributes(p, player.Creature)).ToArray();
-        if (powers.Length == 0) return scheduled;
-        var requirements = powers.Aggregate(StrategicEffectRequirements.None,
-            (requirements, power) => requirements | StrategicEffectModel.Requirements(power));
-        var pcs = reference.simulator.State.GetPlayerCombatState(player);
-        var cards = pcs.DiscardPile.Cards.Concat(pcs.DrawPile.Cards).Concat(pcs.Hand.Cards).ToArray();
-        var context = StrategicEffectContext.Build(cards, reference.Enemies.Sum(reference.Hp), incoming, hits, requirements);
-        return scheduled + powers.Sum(p => (double)StrategicEffectModel.Evaluate(p, context).RetentionValue);
+        var residual = AfterTemporaryStatExpiry([player.Creature]);
+        return residual.PersistentValueAfterTemporaryStatExpiry(player, incoming, hits, reference);
     }
 
     internal int CardsPlayedThisTurn(Player player) => Combat.GetCardsPlayedThisTurn(player.Creature);
+    internal int TurnNumberFor(Player player) => Combat.GetPlayerTurnNumber(player);
 }

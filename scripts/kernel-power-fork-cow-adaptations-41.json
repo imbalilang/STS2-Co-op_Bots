@@ -1,0 +1,49 @@
+{
+  "Search/SimulatedCombatState.Fork.cs": {
+    "base_sha256": "f6c0478a00a063f6123f080d30dd8e2119ce153b2c1cd928c65889678815e2e5",
+    "changes": [
+      {
+        "old": "        if (_addedPowerInstances is not null)\n        {\n            List<PowerModel> addedPowerInstances = new(_addedPowerInstances.Count);\n            foreach (PowerModel power in _addedPowerInstances)\n                addedPowerInstances.Add(ForkPower(power, context));\n            fork._addedPowerInstances = addedPowerInstances;\n        }\n        if (_rootMultiInstancePowerClones is not null)\n        {\n            fork._rootMultiInstancePowerClones = new(\n                _rootMultiInstancePowerClones.Count,\n                ReferenceEqualityComparer.Instance);\n            foreach ((PowerModel source, PowerModel clone) in _rootMultiInstancePowerClones)\n                fork._rootMultiInstancePowerClones.Add(source, context.RemapOrSelf(clone));\n        }\n        if (_powers is not null)\n        {\n            fork._powers = new Dictionary<(MegaCrit.Sts2.Core.Entities.Creatures.Creature Owner, Type Type), PowerModel>(\n                _powers.Count,\n                _powers.Comparer);\n            foreach (((MegaCrit.Sts2.Core.Entities.Creatures.Creature owner, Type type), PowerModel power) in _powers)\n                fork._powers.Add((owner, type), ForkPower(power, context));\n        }\n        if (_powerListenerOrder is not null)\n            fork._powerListenerOrder = _powerListenerOrder.Select(context.RequireRemap).ToList();\n\n",
+        "new": "        if (_addedPowerInstances is not null)\n        {\n            fork._addedPowerInstances = new List<PowerModel>(_addedPowerInstances);\n            foreach (PowerModel power in fork._addedPowerInstances)\n                SharePowerWith(fork, power);\n        }\n        if (_rootMultiInstancePowerClones is not null)\n        {\n            fork._rootMultiInstancePowerClones = new(\n                _rootMultiInstancePowerClones,\n                ReferenceEqualityComparer.Instance);\n            foreach (PowerModel clone in fork._rootMultiInstancePowerClones.Values)\n                SharePowerWith(fork, clone);\n        }\n        if (_powers is not null)\n        {\n            fork._powers = new Dictionary<(MegaCrit.Sts2.Core.Entities.Creatures.Creature Owner, Type Type), PowerModel>(\n                _powers,\n                _powers.Comparer);\n            foreach (PowerModel power in fork._powers.Values)\n                SharePowerWith(fork, power);\n        }\n        if (_powerListenerOrder is not null)\n        {\n            fork._powerListenerOrder = new List<PowerModel>(_powerListenerOrder);\n            foreach (PowerModel power in fork._powerListenerOrder)\n                SharePowerWith(fork, power);\n        }\n\n"
+      },
+      {
+        "old": "            foreach ((var power, PredictedCard card) in _nightmareSelections)\n                fork._nightmareSelections.Add(context.RemapOrSelf(power), ForkCard(card, context));",
+        "new": "            foreach ((var power, PredictedCard card) in _nightmareSelections)\n            {\n                fork._nightmareSelections.Add(power, ForkCard(card, context));\n                SharePowerWith(fork, power);\n            }"
+      },
+      {
+        "old": "            foreach ((var power, int amount) in _orbitEnergyRemainders)\n                fork._orbitEnergyRemainders.Add(context.RemapOrSelf(power), amount);",
+        "new": "            foreach ((var power, int amount) in _orbitEnergyRemainders)\n            {\n                fork._orbitEnergyRemainders.Add(power, amount);\n                SharePowerWith(fork, power);\n            }"
+      },
+      {
+        "old": "            foreach ((var power, bool active) in _paleBlueDotActivated)\n                fork._paleBlueDotActivated.Add(context.RemapOrSelf(power), active);",
+        "new": "            foreach ((var power, bool active) in _paleBlueDotActivated)\n            {\n                fork._paleBlueDotActivated.Add(power, active);\n                SharePowerWith(fork, power);\n            }"
+      }
+    ]
+  },
+  "Search/SimulatedCombatState.cs": {
+    "base_sha256": "cbac89a000e6f50d8ec064701fc2292799bd24cafb6110c174f31cf380725f99",
+    "changes": [
+      {
+        "old": "    private PowerModel GetMutablePowerInstance(PowerModel power)\n    {\n        if (_addedPowerInstances?.Contains(power) == true)\n            return power;\n        if (_rootMultiInstancePowerClones?.TryGetValue(power, out PowerModel? rootClone) == true)\n            return rootClone;\n\n        if (_rootMultiInstancePowers.Contains(power))\n        {\n            rootClone = PredictionUtils.CloneModelForSimulation(power);\n            rootClone._owner = power.Owner;\n            rootClone._applier = power.Applier;\n            rootClone._target = power.Target;\n            rootClone._amount = power.Amount;\n            (_addedPowerInstances ??= []).Add(rootClone);\n            (_rootMultiInstancePowerClones ??= new(ReferenceEqualityComparer.Instance)).Add(power, rootClone);\n            InvalidateHookListeners();\n            return rootClone;\n        }\n\n        (Creature, Type) key = (power.Owner, power.GetType());\n        if (_powers != null && _powers.TryGetValue(key, out PowerModel? simulated))\n            return simulated;\n\n        simulated = PredictionUtils.CloneModelForSimulation(power);\n        simulated._owner = power.Owner;\n        simulated._applier = power.Applier;\n        simulated._target = power.Target;\n        simulated._amount = power.Amount;\n        (_powers ??= []).Add(key, simulated);\n        UpdatePowerListenerOrder(simulated, 0, simulated._amount);\n        InvalidateHookListeners();\n        return simulated;\n    }\n\n",
+        "new": "    private PowerModel GetMutablePowerInstance(PowerModel power)\n    {\n        if (_addedPowerInstances?.Contains(power) == true)\n            return EnsureOwnedPower(power);\n        if (_rootMultiInstancePowerClones?.TryGetValue(power, out PowerModel? rootClone) == true)\n            return EnsureOwnedPower(rootClone);\n        if (_powers is not null\n            && _powers.TryGetValue((power.Owner, power.GetType()), out PowerModel? mapped)\n            && ReferenceEquals(mapped, power))\n            return EnsureOwnedPower(power);\n\n        if (_rootMultiInstancePowers.Contains(power))\n        {\n            rootClone = PredictionUtils.CloneModelForSimulation(power);\n            rootClone._owner = power.Owner;\n            rootClone._applier = power.Applier;\n            rootClone._target = power.Target;\n            rootClone._amount = power.Amount;\n            (_addedPowerInstances ??= []).Add(rootClone);\n            (_rootMultiInstancePowerClones ??= new(ReferenceEqualityComparer.Instance)).Add(power, rootClone);\n            InvalidateHookListeners();\n            return rootClone;\n        }\n\n        (Creature, Type) key = (power.Owner, power.GetType());\n        if (_powers != null && _powers.TryGetValue(key, out PowerModel? simulated))\n            return EnsureOwnedPower(simulated);\n\n        simulated = PredictionUtils.CloneModelForSimulation(power);\n        simulated._owner = power.Owner;\n        simulated._applier = power.Applier;\n        simulated._target = power.Target;\n        simulated._amount = power.Amount;\n        (_powers ??= []).Add(key, simulated);\n        UpdatePowerListenerOrder(simulated, 0, simulated._amount);\n        InvalidateHookListeners();\n        return simulated;\n    }\n\n"
+      },
+      {
+        "old": "            return _powers[key];",
+        "new": "            return EnsureOwnedPower(_powers[key]);"
+      }
+    ]
+  },
+  "Engine/InCombat/Simulation/CombatPredictionSimulator.cs": {
+    "base_sha256": "45f36c4e70a298a444b74bfd54d24a8b361e1fd8d6c7b5fb508ef3b5b4e0c43d",
+    "changes": [
+      {
+        "old": "        History = new CombatPredictionHistory(_trace);\n",
+        "new": "        History = new CombatPredictionHistory(_trace);\n        if (State.CombatState is SimulatedCombatState attachedState)\n            attachedState.AttachStateStore(StateStore);\n"
+      },
+      {
+        "old": "        PredictionStateStore stateStore = StateStore.Fork(context);\n",
+        "new": "        PredictionStateStore stateStore = StateStore.Fork(context);\n        if (state.CombatState is SimulatedCombatState forkedState)\n            forkedState.AttachStateStore(stateStore);\n"
+      }
+    ]
+  }
+}

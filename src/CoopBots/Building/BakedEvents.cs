@@ -23,6 +23,13 @@ internal static class BakedEvents
 {
     internal const string Source = "https://spire-codex.com/api/events";
 
+    // Three option ids were added by hand on 2026-09-29 after diffing this table
+    // against the INSTALLED build's own localisation keys (SlayTheSpire2.pck):
+    // COLORFUL_PHILOSOPHERS/EQUALITY, LOST_WISP/CLAIM_LOCKED,
+    // SPIRALING_WHIRLPOOL/REACH_IN. A missing id here is not cosmetic: the drift
+    // guard rejects a handler that names an id the table lacks, so the event could
+    // never be modelled. Re-check the diff after any game or codex update.
+
     internal static readonly Dictionary<string, string[]> OptionIds = new(StringComparer.Ordinal)
     {
         ["ABYSSAL_BATHS"] = ["ABSTAIN", "EXIT_BATHS", "IMMERSE", "LINGER"],
@@ -32,7 +39,7 @@ internal static class BakedEvents
         ["BRAIN_LEECH"] = ["RIP", "SHARE_KNOWLEDGE"],
         ["BUGSLAYER"] = ["EXTERMINATION", "SQUASH"],
         ["BYRDONIS_NEST"] = ["EAT", "TAKE"],
-        ["COLORFUL_PHILOSOPHERS"] = ["DEFECT", "IRONCLAD", "NECROBINDER", "REGENT", "SILENT"],
+        ["COLORFUL_PHILOSOPHERS"] = ["DEFECT", "EQUALITY", "IRONCLAD", "NECROBINDER", "REGENT", "SILENT"],
         ["COLOSSAL_FLOWER"] = ["EXTRACT_CURRENT_PRIZE_1", "EXTRACT_CURRENT_PRIZE_2", "EXTRACT_INSTEAD", "POLLINOUS_CORE", "REACH_DEEPER_1", "REACH_DEEPER_2"],
         ["CRYSTAL_SPHERE"] = ["PAYMENT_PLAN", "UNCOVER_FUTURE"],
         ["DENSE_VEGETATION"] = ["FIGHT", "REST", "TRUDGE_ON"],
@@ -45,7 +52,7 @@ internal static class BakedEvents
         ["HUNGRY_FOR_MUSHROOMS"] = ["BIG_MUSHROOM", "FRAGRANT_MUSHROOM"],
         ["INFESTED_AUTOMATON"] = ["STUDY", "TOUCH_CORE"],
         ["JUNGLE_MAZE_ADVENTURE"] = ["JOIN_FORCES", "SOLO_QUEST"],
-        ["LOST_WISP"] = ["CLAIM", "SEARCH"],
+        ["LOST_WISP"] = ["CLAIM", "CLAIM_LOCKED", "SEARCH"],
         ["LUMINOUS_CHOIR"] = ["OFFER_TRIBUTE", "OFFER_TRIBUTE_LOCKED", "REACH_INTO_THE_FLESH"],
         ["MORPHIC_GROVE"] = ["GROUP", "LONER"],
         ["POTION_COURIER"] = ["GRAB_POTIONS", "RANSACK"],
@@ -58,7 +65,7 @@ internal static class BakedEvents
         ["SAPPHIRE_SEED"] = ["EAT", "PLANT"],
         ["SELF_HELP_BOOK"] = ["NO_OPTIONS", "READ_ENTIRE_BOOK", "READ_ENTIRE_BOOK_LOCKED", "READ_PASSAGE", "READ_PASSAGE_LOCKED", "READ_THE_BACK", "READ_THE_BACK_LOCKED"],
         ["SLIPPERY_BRIDGE"] = ["HOLD_ON_0", "HOLD_ON_1", "HOLD_ON_2", "HOLD_ON_3", "HOLD_ON_4", "HOLD_ON_5", "HOLD_ON_6", "HOLD_ON_LOOP", "OVERCOME"],
-        ["SPIRALING_WHIRLPOOL"] = ["DRINK", "OBSERVE"],
+        ["SPIRALING_WHIRLPOOL"] = ["DRINK", "OBSERVE", "REACH_IN"],
         ["SPIRIT_GRAFTER"] = ["LET_IT_IN", "REJECTION"],
         ["STONE_OF_ALL_TIME"] = ["LIFT", "LIFT_LOCKED", "PUSH", "PUSH_LOCKED"],
         ["SUNKEN_STATUE"] = ["DIVE_INTO_WATER", "GRAB_SWORD"],
@@ -81,5 +88,18 @@ internal static class BakedEvents
         ["WHISPERING_HOLLOW"] = ["GOLD", "HUG"],
         ["WOOD_CARVINGS"] = ["BIRD", "SNAKE", "SNAKE_LOCKED", "TORUS"],
         ["ZEN_WEAVER"] = ["ARACHNID_ACUPUNCTURE", "BREATHING_TECHNIQUES", "EMOTIONAL_AWARENESS", "LOCKED"],
+    };
+
+    // Events whose options are NOT static ids: their "pages.INITIAL.options.X" keys
+    // are synthesised at runtime from a pool (X is a relic id for the blessing
+    // events), so no static list can exist and the drift guard has nothing to check.
+    // Named here rather than silently omitted: measured live 2026-09-29, NEOW ran
+    // every start and the other two also appeared, and a reviewer asking "which
+    // events are unguarded" must get an answer instead of an empty set.
+    internal static readonly HashSet<string> PoolBasedEvents = new(StringComparer.Ordinal)
+    {
+        "NEOW",     // blessing: one relic per option, drawn from the run-start pool
+        "OROBAS",   // option ids come from a relic pool (only its *_LOCKED key is static)
+        "PAEL",
     };
 }

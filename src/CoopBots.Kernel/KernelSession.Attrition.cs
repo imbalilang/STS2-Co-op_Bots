@@ -12,7 +12,10 @@ namespace CoopBots.Kernel;
 
 public sealed partial class KernelSession
 {
-    public sealed record TurnThreat(double HandDamage, double DirectHpLoss, double AttackDamage, double HpLoss);
+    public sealed record TurnThreat(double HandDamage, double DirectHpLoss, double AttackDamage, double HpLoss)
+    {
+        public double LateDamage { get; init; }
+    }
 
     // Bounded ranking estimate, not a substitute for EndTurn's actual lifecycle.
     // Card amounts/props mirror CardOnTurnEndInHandMirrors.HandleDamage/HpLoss;
@@ -44,10 +47,15 @@ public sealed partial class KernelSession
             else damage += hit;
         }
         var incoming = CurrentAttacks().Sum(a => IntentHit(a.Enemy, creature, a.Raw) * a.Repeats);
+        // Native DisintegrationPower.AfterSideTurnEndLate and its mirror both
+        // deal Unpowered damage AFTER end-turn block, BEFORE enemy attacks.
+        // It is blockable; do not classify it as direct HP loss.
+        var late = Math.Max(0, (int)HookMirrors.ModifyDamage(simulator, creature, creature,
+            Power<DisintegrationPower>(creature), ValueProp.Unpowered, null, null));
         var block = Block(creature);
         var loss = direct + Math.Max(0, damage - block)
-            + Math.Max(0, incoming - Math.Max(0, block - damage) - EndPlating(creature));
-        return new(damage, direct, incoming, loss);
+            + Math.Max(0, late + incoming - Math.Max(0, block - damage) - EndPlating(creature));
+        return new(damage, direct, incoming, loss) { LateDamage = late };
     }
 
     internal int UsefulHandCount(Player player)

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Reflection;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Commands;
@@ -47,6 +47,16 @@ internal static class BotRewardDriver
             var reward = set.Rewards[index];
             try
             {
+                // Synthetic Offer already executes deterministically on every
+                // peer (the same as SelectRewardForPlayer below). Use the native
+                // discard command here; enqueueing a second network action from
+                // every peer would duplicate the discard. Local UI uses an action.
+                if (reward is PotionReward { Potion: { } incoming }
+                    && BotPotionInventory.Replacement(set.Player, incoming) is { } old)
+                {
+                    Log.Info(BotPotionInventory.Describe(set.Player, old, incoming));
+                    await PotionCmd.Discard(old);
+                }
                 var task = (Task)SelectReward.Invoke(synchronizer, new object[] { set.Player, index })!;
                 await task;
             }
@@ -92,6 +102,27 @@ internal static class BotRewardDriver
             ? PlayerChoiceResult.FromIndex(null)
             : PlayerChoiceResult.FromIndex(index);
 
+    /// <summary>
+    /// A card-reward answer, including the Pael's Wing SACRIFICE alternative. A skip
+    /// becomes sacrifice progress when the seat holds the Wing and the reward offers
+    /// it; the alternative index the game expects is <c>cards.Count + alternativeIndex</c>
+    /// (see <c>CardReward.OnSelect</c>).
+    /// </summary>
+    internal static PlayerChoiceResult CardRewardChoice(Player player, CardReward reward, int index)
+    {
+        if (index >= 0) return IndexChoiceOrSkip(index, reward.Cards.Count());
+        if (!player.Relics.Any(relic => relic is MegaCrit.Sts2.Core.Models.Relics.PaelsWing))
+            return PlayerChoiceResult.FromIndex(null);
+        var alternatives = MegaCrit.Sts2.Core.Entities.CardRewardAlternatives.CardRewardAlternative.Generate(reward);
+        var decision = BotBrain.ApplySkipPolicy(player, index, alternatives.Select(candidate => candidate.OptionId).ToList());
+        if (decision.AlternativeId is not { } alternativeId) return PlayerChoiceResult.FromIndex(null);
+        var sacrifice = alternatives.ToList().FindIndex(candidate => string.Equals(
+            candidate.OptionId, alternativeId, StringComparison.OrdinalIgnoreCase));
+        return sacrifice < 0
+            ? PlayerChoiceResult.FromIndex(null)
+            : PlayerChoiceResult.FromIndex(reward.Cards.Count() + sacrifice);
+    }
+
     /// <summary>What a reward is, in one token, for a log that has to name what was lost.</summary>
     private static string Describe(Reward reward)
     {
@@ -130,7 +161,7 @@ internal static class BotRewardDriver
             && ActiveCardRewards.TryGetValue(player.NetId, out var reward))
         {
             var cards = reward.Cards.ToList();
-            return IndexChoiceOrSkip(BotBrain.ChooseCardReward(player, cards), cards.Count);
+            return CardRewardChoice(player, reward, BotBrain.ChooseCardReward(player, cards));
         }
 
         if (declaringNames.Any(name => name.Contains("MendRestSiteOption", StringComparison.Ordinal)))
@@ -142,6 +173,23 @@ internal static class BotRewardDriver
         Log.Warn($"CoopBots encountered an unknown remote choice for bot {player.NetId}; selecting index 0.");
         return PlayerChoiceResult.FromIndex(0);
     }
+
+    internal static Task<PlayerChoiceResult> ChoiceForWaitAsync(Player player)
+    {
+        // Classify the native caller before any await unwinds its stack.
+        if (new StackTrace().GetFrames().Any(frame =>
+                frame.GetMethod()?.DeclaringType?.FullName?.Contains(nameof(CardReward), StringComparison.Ordinal) == true)
+            && ActiveCardRewards.TryGetValue(player.NetId, out var reward))
+            return RewardChoiceAsync(player, reward);
+        return Task.FromResult(ChoiceForWait(player));
+    }
+    private static async Task<PlayerChoiceResult> RewardChoiceAsync(Player player, CardReward reward)
+    {
+        var cards = reward.Cards.ToList();
+        var index = await BotBrain.ChooseCardRewardAsync(player, cards);
+        return CardRewardChoice(player, reward, index);
+    }
+    internal static CardReward? ActiveReward(ulong player) => ActiveCardRewards.GetValueOrDefault(player);
 }
 
 [HarmonyPatch(typeof(RewardsSet), nameof(RewardsSet.Offer))]
@@ -178,7 +226,7 @@ internal static class BotRemoteChoicePatch
     {
         if (!AutoPilot.Drives(player.NetId))
             return true;
-        __result = Task.FromResult(BotRewardDriver.ChoiceForWait(player));
+        __result = BotRewardDriver.ChoiceForWaitAsync(player);
         return false;
     }
 }

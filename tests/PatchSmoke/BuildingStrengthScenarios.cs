@@ -42,13 +42,13 @@ internal static class BuildingStrengthScenarios
         // Defence-quality improvement must reduce addition size pressure
         for (var i = 0; i < 9; i++) player.Deck.AddInternal(combat.CreateCard<Prepared>(player));
         var offeredDraw = BuildValue.AddDetailed(backflip, player);
-        if (!offeredDraw.LegacyReason.Contains("relief:1.00"))
-            throw new Exception("Net draw must relieve addition size pressure in a Prepared-heavy deck: " + offeredDraw.LegacyReason);
+        if (!offeredDraw.Reason.Contains("deck-strength:"))
+            throw new Exception("Net draw must relieve addition size pressure in a Prepared-heavy deck: " + offeredDraw.Reason);
         var offeredBlock = BuildValue.AddDetailed(combat.CreateCard<FlameBarrier>(player), player);
         if (!offeredBlock.DeckFit)
-            throw new Exception("Defence-quality improvement must count as fit in the final addition scorer: " + offeredBlock.LegacyReason);
-        if (!offeredBlock.LegacyReason.Contains("relief:"))
-            throw new Exception("Defence-quality improvement must reduce addition size pressure: " + offeredBlock.LegacyReason);
+            throw new Exception("Defence-quality improvement must count as fit in the final addition scorer: " + offeredBlock.Reason);
+        if (!offeredBlock.Reason.Contains("deck-strength:"))
+            throw new Exception("Defence-quality improvement must reduce addition size pressure: " + offeredBlock.Reason);
         Console.WriteLine($"PASS: quality gaps reach final addition/skip terms (draw={offeredDraw.Total:F2}, block={offeredBlock.Total:F2}).");
         Console.WriteLine("PASS: defence quality and net hand advantage reach the building scorer.");
     }

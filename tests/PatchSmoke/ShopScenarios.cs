@@ -40,6 +40,9 @@ internal static class ShopScenarios
         // baseline actually values. Team-support valuation is still covered by
         // the reward-path team-fit probes in BuildValueScenarios; this check is
         // about the shop's card-purchase mechanics.
+        // The purchase mechanics need a real deck that can use draw/energy.
+        for (var i = 0; i < 5; i++) bot.Deck.AddInternal(state.CreateCard<StrikeIronclad>(bot));
+        for (var i = 0; i < 4; i++) bot.Deck.AddInternal(state.CreateCard<DefendIronclad>(bot));
         var card = state.CreateCard<Adrenaline>(bot);
         var entry = new MerchantCardEntry(bot, inventory, Array.Empty<CardModel>(), CardType.Skill);
         typeof(MerchantCardEntry).GetProperty("CreationResult")!.SetValue(entry, new CardCreationResult(card));
@@ -85,6 +88,8 @@ internal static class ShopScenarios
             var copyHuman = Player.CreateForNewRun<Deprived>(UnlockState.all, human.NetId);
             var copyState = RunState.CreateForTest(new[] { copyHuman, copyBot }, seed: "SHOP");
             copyBot.Gold = 200; copyHuman.Gold = 123; copyBot.Creature.SetCurrentHpInternal(50);
+            for (var i = 0; i < 5; i++) copyBot.Deck.AddInternal(copyState.CreateCard<StrikeIronclad>(copyBot));
+            for (var i = 0; i < 4; i++) copyBot.Deck.AddInternal(copyState.CreateCard<DefendIronclad>(copyBot));
             var copyRoom = new MerchantRoom(); copyState.PushRoom(copyRoom);
             var copyInventory = new MerchantInventory(copyBot); copyRoom.Inventories.Add(copyInventory);
             var copyEntry = new MerchantCardEntry(copyBot, copyInventory, Array.Empty<CardModel>(), CardType.Skill);
@@ -130,16 +135,31 @@ internal static class ShopScenarios
             typeof(T).GetProperty("Model")!.SetValue(item, model);
             return item;
         }
-        var potionEntry = Stock<MerchantPotionEntry>(ModelDb.Potion<BlockPotion>().ToMutable(), 30);
+        // Owner policy 2026-10-04: outside the third-layer last shop only Fruit
+        // Juice and Fairy in a Bottle are legal potion purchases. Keep the real
+        // buy path covered with the allowed bottle, not an arbitrary Block Potion.
+        var potionEntry = Stock<MerchantPotionEntry>(ModelDb.Potion<FruitJuice>().ToMutable(), 30);
         ((List<MerchantPotionEntry>)inventory.PotionEntries).Add(potionEntry);
         bot.Gold = 300; bot.Creature.SetCurrentHpInternal(20);
-        Check(Index(Choose()) == 1, "Low-health bot should buy a supported defensive potion with an open slot.");
+        Check(Index(Choose()) == 1, "Fruit Juice is always an allowed shop potion with an open slot.");
+        // LIVE 2026-09-29, floor 25 shop (reproduced twice, second time on a reload of the
+        // same save): seat 127...3217 carried SOZU with an EMPTY two-slot belt, so the
+        // planner offered DEXTERITY_POTION, and the game refused the purchase —
+        // PotionCmd.TryToProcure -> Hook.ShouldProcurePotion -> Sozu returns false for its
+        // owner. The refusal then faulted the shop driver and the whole party sat in the
+        // shop. Never offer a shelf potion the seat cannot procure.
+        var sozu = ModelDb.Relic<Sozu>().ToMutable();
+        bot.AddRelicInternal(sozu);
+        typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(entry, 1000);
+        Check(Index(Choose()) == -1, "A SOZU owner must never be offered a shelf potion; the game refuses its procurement.");
+        typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(entry, 40);
+        bot.RemoveRelicInternal(sozu);
         var potionMessage = new BotShopMessage { Sequence = 9, Bot = bot.NetId, Entry = 1, Removal = -1, Price = 30,
             Gold = bot.Gold, Key = potionEntry.Model!.Id.Entry, State = Fingerprint(), Location = message.Location };
         property.SetValue(RunManager.Instance, RuntimeHelpers.GetUninitializedObject(typeof(RewardSynchronizer)));
         try
         {
-            Check(Execute(potionMessage) && bot.Gold == 270 && bot.Potions.Any(p => p is BlockPotion) && !potionEntry.IsStocked,
+            Check(Execute(potionMessage) && bot.Gold == 270 && bot.Potions.Any(p => p is FruitJuice) && !potionEntry.IsStocked,
                 "Real potion purchase fills the bot's slot and charges its own balance.");
             var relicEntry = Stock<MerchantRelicEntry>(ModelDb.Relic<BagOfMarbles>().ToMutable(), 120);
             inventory.AddRelicEntry(relicEntry);
@@ -207,7 +227,7 @@ internal static class ShopScenarios
         var lateInventory = new MerchantInventory(lateBot); lateRoom.Inventories.Add(lateInventory);
         lateBot.ResetCombatState();
         lateBot.Creature.SetMaxHpInternal(80); lateBot.Creature.SetCurrentHpInternal(80);
-        lateBot.Gold = 500;
+        lateBot.Gold = 10000;
         foreach (var make in new Func<CardModel>[]
                  {
                      () => lateRun.CreateCard<Bash>(lateBot), () => lateRun.CreateCard<Anger>(lateBot),
@@ -220,19 +240,23 @@ internal static class ShopScenarios
         var lateCard = lateRun.CreateCard<ShrugItOff>(lateBot);
         var lateEntry = new MerchantCardEntry(lateBot, lateInventory, Array.Empty<CardModel>(), CardType.Attack);
         typeof(MerchantCardEntry).GetProperty("CreationResult")!.SetValue(lateEntry, new CardCreationResult(lateCard));
-        // Priced just above break-even: inside the last-act discount, outside the
-        // ordinary margin, so exactly one of the two acts buys it.
-        var worth = Math.Max(0, CoopBots.Building.BuildValue.Add(lateCard, lateBot).Total)
+        // Owner 2026-10-04: the 10,000-gold fixture must now spend in BOTH acts.
+        // Scarce cash still preserves the early-act bar (OwnerPolicyScenarios),
+        // and the independent depth factors remain pinned below.
+        double Worth() => Math.Max(0, BotShopPlanner.PermanentValue(CoopBots.Building.BuildValue.Add(lateCard, lateBot), lateBot))
             * BotShopPlanner.GoldPerDeckValue;
+        var worth = Worth();
         var lateCost = (int)Math.Ceiling(worth / 0.9);
         typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(lateEntry, lateCost);
         ((List<MerchantCardEntry>)lateInventory.CharacterCardEntries).Add(lateEntry);
         if (worth <= 0) throw new Exception("The late-act shop probe needs a card worth buying.");
         SetAct(lateRun, 0);
-        Check(ChooseLate() is null, "An act-1 shop must still save past a break-even item.");
+        typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(lateEntry, (int)Math.Ceiling(Worth() / .9));
+        Check(Index(ChooseLate()) == 0, "An act-1 shop with 10,000 gold must convert spare cash into a beneficial item.");
         SetAct(lateRun, 2);
+        typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(lateEntry, (int)Math.Ceiling(Worth() / .9));
         Check(Index(ChooseLate()) == 0, "The last act must spend gold it can no longer use on a break-even item.");
-        Console.WriteLine("PASS: endgame gold is priced as terminal: the last act buys a break-even item the early act saves past.");
+        Console.WriteLine("PASS: surplus gold buys beneficial items in both the early and last act.");
 
         // SHOPS BUY DECK, NOT BOTTLES. The user's rule from their own play is "shop almost
         // never buys a potion, only removals and key cards", and the reviewed act-1 run is
@@ -257,6 +281,8 @@ internal static class ShopScenarios
         bottleBot.Gold = 45;
         var bottleRoom = new MerchantRoom(); bottleRun.PushRoom(bottleRoom);
         var bottleInventory = new MerchantInventory(bottleBot); bottleRoom.Inventories.Add(bottleInventory);
+        for (var i = 0; i < 5; i++) bottleBot.Deck.AddInternal(bottleRun.CreateCard<StrikeIronclad>(bottleBot));
+        for (var i = 0; i < 4; i++) bottleBot.Deck.AddInternal(bottleRun.CreateCard<DefendIronclad>(bottleBot));
         var deckCard = bottleRun.CreateCard<Adrenaline>(bottleBot);
         var deckEntry = new MerchantCardEntry(bottleBot, bottleInventory, Array.Empty<CardModel>(), CardType.Skill);
         typeof(MerchantCardEntry).GetProperty("CreationResult")!.SetValue(deckEntry, new CardCreationResult(deckCard));
@@ -309,8 +335,9 @@ internal static class ShopScenarios
             throw new Exception("A whitelisted relic must count as priced.");
         if (!CoopBots.HumanCoopAdvisor.RelicPriced(probeBrimstone, bot))
             throw new Exception("A relic with a modelled downside must count as priced, so it stays refused.");
-        if (CoopBots.HumanCoopAdvisor.RelicValue(probeStrawberry, bot).Score != 0)
-            throw new Exception("The specimen relic must still be worth zero on the value chain itself.");
+        // Owner 2026-10-04 explicitly replaced the old zero prior with a low positive prior.
+        if (CoopBots.HumanCoopAdvisor.RelicValue(probeStrawberry, bot).Score <= 0)
+            throw new Exception("An unmodelled relic must have a positive prior on the value chain itself.");
         Console.WriteLine("PASS: an unmodelled relic is distinguishable from one modelled as worthless.");
 
         // CORE CARD vs REMOVAL. A starter removal converts its deck points to a very
@@ -328,6 +355,7 @@ internal static class ShopScenarios
                 .SetValue(buyer, ModelDb.Character<Ironclad>());
             var run = RunState.CreateForTest(new[] { buyer }, seed: seed);
             buyer.ResetCombatState();
+            buyer.MaxEnergy = 3;
             buyer.Creature.SetMaxHpInternal(80); buyer.Creature.SetCurrentHpInternal(80);
             buyer.Gold = 200;
             var shopRoom = new MerchantRoom(); run.PushRoom(shopRoom);
@@ -360,9 +388,12 @@ internal static class ShopScenarios
             $"a missing signature of the recognised route must get a core premium, got {routePremium:F1}.");
         Check(!string.IsNullOrEmpty(routeName),
             "the premium must name the route that paid it, or the log cannot explain the purchase.");
+        routeBot.Gold = 100; // One purchase: compare the shared model without pair ordering.
         var routeChoice = Index(ChooseFor(routeShop));
-        Check(routeChoice == routeStock.IndexOf(routeCore),
-            "a build-defining card of the recognised route must beat a starter removal at the same price.");
+        var corePoints = BotShopPlanner.PermanentValue(CoopBots.Building.BuildValue.Add(routeCoreCard, routeBot), routeBot);
+        var removePoints = routeBot.Deck.Cards.Where(c => c.IsRemovable).Max(c => BotShopPlanner.RemovalValue(c, routeBot));
+        Check(routeChoice == routeStock.IndexOf(corePoints > removePoints ? routeCore : routeRemoval),
+            "route membership must not override the common buy/remove strength comparison.");
 
         var plainShop = ShopWithDeck("SHOP-CORE-PLAIN", (p, run) =>
         {
@@ -370,14 +401,17 @@ internal static class ShopScenarios
             for (var i = 0; i < 4; i++) p.Deck.AddInternal(run.CreateCard<DefendIronclad>(p));
         }, out var plainBot, out var plainCore, out var plainRemoval);
         var plainStock = plainShop.AllEntries.ToList();
+        plainBot.Gold = 100; // Compare one purchase, like the route fixture above.
         var plainCoreCard = plainCore.CreationResult!.Card;
         var plainPremium = CoopBots.Building.Archetypes.CorePremium(CoopBots.Building.CardProfile.Of(plainCoreCard),
             plainCoreCard, plainBot.Deck.Cards.ToList(), plainBot, out _);
         Check(plainPremium == 0,
             "a card with no recognised route must not receive a core premium.");
         var plainChoice = Index(ChooseFor(plainShop));
-        Check(plainChoice == plainStock.IndexOf(plainRemoval),
-            "without a recognised route the same card must not get the core premium; the removal wins.");
-        Console.WriteLine("PASS: the shop pays a route-core premium that lets the build-defining card beat a starter removal.");
+        var plainCardPoints = BotShopPlanner.PermanentValue(CoopBots.Building.BuildValue.Add(plainCoreCard, plainBot), plainBot);
+        var plainRemovePoints = plainBot.Deck.Cards.Where(c => c.IsRemovable).Max(c => BotShopPlanner.RemovalValue(c, plainBot));
+        Check(plainChoice == plainStock.IndexOf(plainCardPoints > plainRemovePoints ? plainCore : plainRemoval),
+            "without a route, the actual purchase must still follow the common card/removal score");
+        Console.WriteLine("PASS: route membership does not override the common card/removal purchase score.");
     }
 }

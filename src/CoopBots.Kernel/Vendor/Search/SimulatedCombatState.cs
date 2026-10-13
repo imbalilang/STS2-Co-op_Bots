@@ -203,6 +203,11 @@ internal sealed partial class SimulatedCombatState
     private ForkableDictionary<Creature, int>? _aeonglassAdditionalStrength;
     private ForkableDictionary<Creature, int>? _aeonglassWitherUpgradeCount;
     private ForkableDictionary<Creature, bool>? _nemesisShouldApplyIntangible;
+    // CoopBots multiplayer port: RampartPower grants once per player SIDE turn, but this
+    // port drives that turn start once per SEAT; the claim keeps a four-seat table at one
+    // grant. Keyed by owner and compared against RoundNumber, so no reset hook is needed;
+    // FORKABLE so a branch that grants cannot leak into a sibling.
+    private ForkableDictionary<Creature, int>? _rampartGrantedRound;
     private ForkableDictionary<Creature, int>? _tenderCardsPlayed;
     private ForkableDictionary<Creature, int>? _attacksPlayedThisTurn;
     private ForkableDictionary<Creature, int>? _shivsPlayedThisTurn;
@@ -640,7 +645,17 @@ internal sealed partial class SimulatedCombatState
             return 0;
         }
         bool instanced = incoming.InstanceType == MegaCrit.Sts2.Core.Entities.Powers.PowerInstanceType.Instanced;
-        if (instanced || GetAmount<T>(target) == 0)
+        bool firstApplication = instanced || GetAmount<T>(target) == 0;
+        // Native PowerCmd.Apply scales only a newly acquired enemy power.
+        // An existing instance goes through ModifyAmount with the unscaled offset.
+        if (firstApplication && Players.Count > 1 && target.Side == CombatSide.Enemy
+            && incoming.ShouldScaleInMultiplayer)
+            amount = ScaleFirstEnemyPowerAmount(incoming, target, amount, applier);
+        // Native Plating.AfterApplied records the multiplayer decrement even
+        // when its amount uses Plating's distinct (2 * party - 1) scaling.
+        if (firstApplication && target.Side == CombatSide.Enemy && incoming is PlatingPower)
+            incoming.DynamicVars["Decrement"].BaseValue = Players.Count;
+        if (firstApplication)
             beforeApplied?.Invoke(amount);
         PowerModel simulated;
         if (instanced)
@@ -655,9 +670,11 @@ internal sealed partial class SimulatedCombatState
         }
         int previousAmount = simulated._amount;
         simulated._amount = Math.Clamp(simulated._amount + amount, -999_999_999, 999_999_999);
-        // A newly applied player duration skips its first tick; stacking never renews it.
+        // Native PowerCmd.Apply marks a newly applied player debuff, even
+        // when that Power does not consume duration ticks (temporary stat wrappers).
+        // Stacking never renews the marker; TickDuration's consumer set is unchanged.
         if (previousAmount == 0 && simulated._amount != 0 && target.Side == CombatSide.Player
-            && PowerLifecycleSupport.UsesNativeDurationSkip(typeof(T)))
+            && simulated.Type == PowerType.Debuff)
             simulated.SkipNextDurationTick = true;
         UpdatePowerListenerOrder(simulated, previousAmount, simulated._amount);
         InvalidateHookListenersForAmountTransition(previousAmount, simulated._amount);
@@ -692,10 +709,32 @@ internal sealed partial class SimulatedCombatState
             ((StringVar)flanking.DynamicVars["Applier"]).StringValue = _playerNames[applyingPlayer];
         }
         afterAmountChanged?.Invoke(amount, simulated);
+        // Native TankPower.AfterApplied: one Guarded instance per living ally,
+        // retaining the Tank owner as applier so death removes only its instances.
+        if (previousAmount == 0 && simulated._amount > 0 && simulated is TankPower)
+            foreach (var ally in Players.Where(p => p.Creature != target && p.Creature.Side == target.Side
+                && CanReceivePredictedPowers(p.Creature)))
+                AddPowerInstance<GuardedPower>(ally.Creature, simulated._amount, target);
         if (previousAmount == 0 && simulated._amount != 0 && simulated is PhantomBladesPower phantom)
             PhantomBladesPowerMirrors.AfterApplied(phantom, _predictionState
                 ?? throw new InvalidOperationException("Phantom blades requires attached branch card state."));
         return applied;
+    }
+
+    private static readonly ConcurrentDictionary<Type, bool> UsesDefaultPowerScaling = new();
+
+    private int ScaleFirstEnemyPowerAmount(PowerModel power, Creature target, int amount, Creature? applier)
+    {
+        // The native default reads RunState.CurrentActIndex. Its live run may
+        // have advanced after root capture, so use the captured act for that
+        // default. Native overrides (Artifact/Plating/Skittish/Slippery) read
+        // their supplied combat's party size and preserve their distinct rules.
+        bool usesDefault = UsesDefaultPowerScaling.GetOrAdd(power.GetType(), static type =>
+            type.GetMethod(nameof(PowerModel.GetScaledAmountForMultiplayer))!.DeclaringType == typeof(PowerModel));
+        decimal scaled = usesDefault
+            ? amount * Players.Count * MultiplayerScalingModel.GetMultiplayerScaling(Encounter, _currentActIndex)
+            : power.GetScaledAmountForMultiplayer(this, applier, amount, target, CurrentPowerCardSource);
+        return (int)scaled;
     }
 
     public void ApplyPower(Type powerType, Creature target, int amount, Creature? applier = null)
@@ -846,9 +885,13 @@ internal sealed partial class SimulatedCombatState
     private PowerModel GetMutablePowerInstance(PowerModel power)
     {
         if (_addedPowerInstances?.Contains(power) == true)
-            return power;
+            return EnsureOwnedPower(power);
         if (_rootMultiInstancePowerClones?.TryGetValue(power, out PowerModel? rootClone) == true)
-            return rootClone;
+            return EnsureOwnedPower(rootClone);
+        if (_powers is not null
+            && _powers.TryGetValue((power.Owner, power.GetType()), out PowerModel? mapped)
+            && ReferenceEquals(mapped, power))
+            return EnsureOwnedPower(power);
 
         if (_rootMultiInstancePowers.Contains(power))
         {
@@ -865,7 +908,7 @@ internal sealed partial class SimulatedCombatState
 
         (Creature, Type) key = (power.Owner, power.GetType());
         if (_powers != null && _powers.TryGetValue(key, out PowerModel? simulated))
-            return simulated;
+            return EnsureOwnedPower(simulated);
 
         simulated = PredictionUtils.CloneModelForSimulation(power);
         simulated._owner = power.Owner;
@@ -969,7 +1012,7 @@ internal sealed partial class SimulatedCombatState
         (Creature, Type) key = (target, typeof(T));
         bool captured = _powers != null && _powers.TryGetValue(key, out _);
         if (captured && _powers![key].Amount != 0)
-            return _powers[key];
+            return EnsureOwnedPower(_powers[key]);
 
         // A removed power is acquired as a fresh native instance, including its private
         // counters and turn-start amount. The old instance remains owned by prior hooks.
@@ -1070,74 +1113,52 @@ internal sealed partial class SimulatedCombatState
         where T : PowerModel
         where TStat : PowerModel
     {
-        bool alreadyApplied = GetAmount<T>(creature) != 0;
-        int applied = ApplyWithBeforeApplied<T>(creature, amount, applier,
-            value => Apply<TStat>(creature, sign * value, applier));
-        if (alreadyApplied && applied != 0)
-            Apply<TStat>(creature, sign * applied, applier);
+        ApplyWithBeforeApplied<T>(creature, amount, applier,
+            value => Apply<TStat>(creature, sign * value, applier),
+            (offset, power) =>
+            {
+                // Match TemporaryDexterity/Focus.AfterPowerAmountChanged,
+                // including a modified request when the wrapper is at its cap.
+                if (offset != power.Amount)
+                    Apply<TStat>(creature, sign * offset, applier);
+            });
     }
 
     public void ApplyAnticipate(Creature creature, int amount, Creature? applier)
-    {
-        int before = GetAmount<AnticipatePower>(creature);
-        Apply<AnticipatePower>(creature, amount, applier);
-        int applied = GetAmount<AnticipatePower>(creature) - before;
-        if (applied <= 0)
-            return;
-        Apply<DexterityPower>(creature, applied, applier);
-    }
+        => ApplyTemporaryDexterity<AnticipatePower>(creature, amount, applier);
 
     public void RestoreTemporaryDexterity()
-    {
-        foreach (IGrouping<Creature, TemporaryDexterityPower> group in EffectivePowers()
-                     .OfType<TemporaryDexterityPower>()
-                     .Where(static power => power.Amount > 0)
-                     .GroupBy(static power => power.Owner)
-                     .ToArray())
-        {
-            Creature creature = group.Key;
-            int amount = group.Sum(static power => power.Amount);
-            Apply<DexterityPower>(creature, -amount);
-            foreach (TemporaryDexterityPower power in group)
-                SetPowerAmount(power, 0);
-        }
-    }
+        => RestoreTemporaryDexterity(Players.Select(player => player.Creature));
+
+    public void RestoreTemporaryDexterity(IEnumerable<Creature> participants)
+        => RestoreTemporaryStats(participants, static power => power is TemporaryDexterityPower);
 
     public void RestoreTemporaryStrength(IEnumerable<Creature> participants)
-    {
-        HashSet<Creature> participantSet = participants.ToHashSet();
-        foreach (TemporaryStrengthPower power in EffectivePowers()
-                     .OfType<TemporaryStrengthPower>()
-                     .Where(power => participantSet.Contains(power.Owner) && power.Amount > 0)
-                     .ToArray())
-        {
-            int strengthDelta = power.TypeForCurrentAmount == PowerType.Buff
-                ? -power.Amount
-                : power.Amount;
-            SetPowerAmount(power, 0);
-            Apply<StrengthPower>(power.Owner, strengthDelta, power.Owner);
-        }
-    }
+        => RestoreTemporaryStats(participants, static power => power is TemporaryStrengthPower);
 
     public void RestoreTemporaryFocus()
+        => RestoreTemporaryStats(Players.Select(player => player.Creature), static power => power is TemporaryFocusPower);
+
+    // Native AfterSideTurnEnd visits the acquired Powers in hook-listener order.
+    // All three families compete for the same Artifact charges; grouping by
+    // stat (or aggregating wrappers) can preserve the wrong permanent residual.
+    public void RestoreTemporaryStats(IEnumerable<Creature> participants)
+        => RestoreTemporaryStats(participants, static power =>
+            power is TemporaryStrengthPower or TemporaryDexterityPower or TemporaryFocusPower);
+
+    private void RestoreTemporaryStats(IEnumerable<Creature> participants, Func<PowerModel, bool> include)
     {
-        foreach (Creature creature in Creatures)
+        var owners = participants.ToHashSet();
+        foreach (var power in EffectivePowers().Where(power => power.Amount > 0
+                     && owners.Contains(power.Owner) && include(power)).ToArray())
         {
-            int amount = GetAmount<HotfixPower>(creature)
-                + GetAmount<SynchronizePower>(creature)
-                + GetAmount<FocusedStrikePower>(creature);
-            if (amount > 0)
+            int delta = power.TypeForCurrentAmount == PowerType.Buff ? -power.Amount : power.Amount;
+            SetPowerAmount(power, 0);
+            switch (power)
             {
-                Apply<FocusPower>(creature, -amount);
-                SetAmount<HotfixPower>(creature, 0);
-                SetAmount<SynchronizePower>(creature, 0);
-                SetAmount<FocusedStrikePower>(creature, 0);
-            }
-            int focusLoss = GetAmount<HyperbeamFocusDownPower>(creature);
-            if (focusLoss > 0)
-            {
-                Apply<FocusPower>(creature, focusLoss);
-                SetAmount<HyperbeamFocusDownPower>(creature, 0);
+                case TemporaryStrengthPower: Apply<StrengthPower>(power.Owner, delta, power.Owner); break;
+                case TemporaryDexterityPower: Apply<DexterityPower>(power.Owner, delta, power.Owner); break;
+                case TemporaryFocusPower: Apply<FocusPower>(power.Owner, delta, power.Owner); break;
             }
         }
     }
@@ -1186,6 +1207,19 @@ internal sealed partial class SimulatedCombatState
         if (TurnStartRelicSupport.TriggerAfterPlayerTurnStart(simulator, this, player, choices))
             return true;
         return false;
+    }
+
+    /// <summary>
+    /// CoopBots multiplayer port: true at most once per (Rampart power owner, round), so
+    /// the per-seat turn-start driver cannot multiply the native once-per-side grant.
+    /// </summary>
+    public bool TryClaimRampartGrant(Creature owner, int round)
+    {
+        _rampartGrantedRound ??= new ForkableDictionary<Creature, int>();
+        if (_rampartGrantedRound.TryGetValue(owner, out var claimed) && claimed == round)
+            return false;
+        _rampartGrantedRound[owner] = round;
+        return true;
     }
 
     public bool ShouldClearBlock(Creature owner)
@@ -2083,7 +2117,11 @@ internal sealed partial class SimulatedCombatState
             _ = GetCardsDiscardedThisTurn(creature);
             _ = GetCreatureAttacksThisTurn(creature);
             _ = GetCardsExhaustedThisTurn(creature);
-            _ = GetSkillCardsPlayedThisTurn(creature);
+            // Smoggy's generated-skill normalization uses the played-skill
+            // membership, not just the captured count. Seed both from native
+            // history while the root is captured; later forks read owned data.
+            if (GetSkillCardsPlayedThisTurn(creature) > 0)
+                (_skillsPlayedThisTurn ??= []).Add(creature);
             _ = GetCardsPlayedThisTurn(creature);
             _ = GetCardPlaySeriesStartedThisTurn(creature);
             _ = GetZeroCostAttackStartsThisTurn(creature);
@@ -2102,9 +2140,15 @@ internal sealed partial class SimulatedCombatState
             _ = GetStarsGainedThisTurn(player);
             _ = GetNonHandDrawsThisTurn(player);
             _ = GetStatusCardsDrawnThisTurn(player);
+            _ = GetCurrentTurnAttack(simulator, player);
             _ = GetPreviousTurnAttack(simulator, player);
         }
         _ = GetFetchCardsPlayedThisTurn();
+        // Seed the captured native baseline without altering the root's card
+        // afflictions. The next amount change must compare with this amount,
+        // even if no previous simulated action normalized an affliction.
+        _lastNormalizedVitalSparkAmount = EffectivePowers().OfType<VitalSparkPower>()
+            .Where(static power => power.Amount > 0).Sum(static power => power.Amount);
         NormalizeSwordSageReplays(simulator);
         _enemiesIntendingAttack = [.. Enemies.Where(enemy => enemy.Monster?.IntendsToAttack == true)];
         _hasPredictedEnemyIntents = true;
@@ -2710,7 +2754,16 @@ internal sealed partial class SimulatedCombatState
     public CardModel CreateCard(CardModel canonicalCard, Player owner)
         => PredictionUtils.CreateCard(canonicalCard, owner);
     public CardModel CloneCard(CardModel mutableCard)
-        => PredictionUtils.CloneCardStateForSimulation(mutableCard);
+    {
+        // Native CombatState.CloneCard keeps CardModel.AfterCloned resets.
+        // The shared helper restores these two fields for snapshot/COW cloning;
+        // gameplay ICardScope cloning must not inherit run-level deck identity.
+        // Live AR10B7M2X001 native differential, 2026-10-09; capture is unchanged.
+        CardModel clone = PredictionUtils.CloneCardStateForSimulation(mutableCard);
+        clone.DeckVersion = null;
+        clone.HasBeenRemovedFromState = false;
+        return clone;
+    }
     public void AddCard(CardModel card, Player owner) => throw new NotSupportedException();
     public void RemoveCard(CardModel card) => throw new NotSupportedException();
     public bool ContainsCard(CardModel card)
@@ -2778,6 +2831,7 @@ internal sealed partial class SimulatedCombatState
                     pending,
                     simulator,
                     this);
+                RefreshPredictedEnemyIntent(creature);
             }
         }
         else
@@ -2806,6 +2860,7 @@ internal sealed partial class SimulatedCombatState
         bool removed = _allies.Remove(creature) || _enemies.Remove(creature);
         if (!removed)
             return;
+        _enemiesIntendingAttack?.Remove(creature);
         _creatures = null;
         InvalidateBaseHookListeners();
     }

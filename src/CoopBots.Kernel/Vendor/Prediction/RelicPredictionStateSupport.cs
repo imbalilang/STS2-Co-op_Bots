@@ -6,6 +6,7 @@ using CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks.Card;
 using CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks.Damage;
 using CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks.Death;
 using CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks.Orb;
+using CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks.TurnEnd;
 using CoopBots.Kernel.Vendor.Engine.InCombat.Simulation;
 
 namespace CoopBots.Kernel.Vendor;
@@ -28,6 +29,8 @@ internal static class RelicPredictionStateSupport
             or MusicBox
             or Nunchaku
             or OrnamentalFan
+            or Orichalcum
+            or FakeOrichalcum
             or PaelsLegion
             or PenNib
             or Permafrost
@@ -78,6 +81,12 @@ internal static class RelicPredictionStateSupport
                 break;
             case (LizardTail target, LizardTail source):
                 _ = simulator.StateStore.GetReadOnly((AbstractModel)target, () => new LizardTailPredictionState(source));
+                break;
+            case (Orichalcum target, Orichalcum source):
+                _ = simulator.StateStore.GetReadOnly((AbstractModel)target, () => new OrichalcumPredictionState(source));
+                break;
+            case (FakeOrichalcum target, FakeOrichalcum source):
+                _ = simulator.StateStore.GetReadOnly((AbstractModel)target, () => new OrichalcumPredictionState(source));
                 break;
             case (Metronome target, Metronome source):
                 _ = simulator.StateStore.GetReadOnly((AbstractModel)target, () => new MetronomePredictionState(source));
@@ -140,6 +149,9 @@ internal static class RelicPredictionStateSupport
     {
         switch (relic)
         {
+            case Orichalcum or FakeOrichalcum:
+                simulator.StateStore.Get(relic, static model => new OrichalcumPredictionState(model)).ShouldTrigger = false;
+                break;
             case BeatingRemnant value:
                 simulator.StateStore
                     .Get(value, static model => new BeatingRemnantPredictionState(model))
@@ -269,6 +281,10 @@ internal static class RelicPredictionStateSupport
                 fingerprint.Add(simulator.StateStore
                     .Peek(value, static relic => new LizardTailPredictionState(relic))
                     .WasUsed);
+                break;
+            case Orichalcum or FakeOrichalcum:
+                fingerprint.Add(simulator.StateStore
+                    .Peek(relic, static model => new OrichalcumPredictionState(model)).ShouldTrigger);
                 break;
             case Metronome value:
                 fingerprint.Add(simulator.StateStore
@@ -453,6 +469,8 @@ internal static class RelicPredictionStateSupport
             Kusarigama value => value._attacksPlayedThisTurn.ToString(),
             LetterOpener value => value._skillsPlayedThisTurn.ToString(),
             LizardTail value => Bool(value.WasUsed),
+            Orichalcum value => Bool(value._shouldTrigger),
+            FakeOrichalcum value => Bool(value._shouldTrigger),
             Metronome value => value._orbsChanneled.ToString(),
             MusicBox value => Bool(value._wasUsedThisTurn),
             Nunchaku value => value.AttacksPlayed.ToString(),
@@ -490,6 +508,8 @@ internal static class RelicPredictionStateSupport
             LetterOpener value => CounterValueReadOnly(simulator, value, value._skillsPlayedThisTurn).ToString(),
             LizardTail value => Bool(simulator.StateStore
                 .Peek((AbstractModel)value, () => new LizardTailPredictionState(value)).WasUsed),
+            Orichalcum or FakeOrichalcum => Bool(simulator.StateStore
+                .Peek((AbstractModel)relic, () => new OrichalcumPredictionState(relic)).ShouldTrigger),
             Metronome value => simulator.StateStore
                 .Peek((AbstractModel)value, () => new MetronomePredictionState(value)).OrbsChanneled.ToString(),
             MusicBox value => Bool(simulator.StateStore

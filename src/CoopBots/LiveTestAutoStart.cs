@@ -4,6 +4,7 @@ using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
+using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
 using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
 using System.Collections.Generic;
 using System.Linq;
@@ -87,20 +88,13 @@ internal static class LiveTestAutoStart
         try
         {
             if (NGame.Instance is not { } game) return;
-            // 走 --bootstrap 那条路：**不要建主菜单**。
-            // 依据是游戏自己的 NSceneBootstrapper._Ready：`_game.StartOnMainMenu = false;`
-            // 然后等 GameStartupComplete，再 SetUpNewSingleplayer + EnterRoomDebug。
-            // 实测（2026-09-20）：从主菜单进 `EnterRoomDebug` 会在 `RunManager.ClearScreens()`
-            // 空引用 —— 即使主菜单已经完全就绪（日志里 `Time to main menu: 26,243ms` 就在报错之前）。
-            // 那条流不是给"从菜单跳到房间"用的。
-            // mod 初始化（早于主菜单加载 ~26s）时就关掉它，所以来得及。
-            game.StartOnMainMenu = false;
+            // This harness restores through NGame.LoadRun AFTER menu startup;
+            // it is not NSceneBootstrapper. Native NGame.GameStartup only calls
+            // LaunchMainMenu when StartOnMainMenu is true. Suppressing it while
+            // waiting below for NMainMenu deadlocks on a sufficiently early tick.
             if (!game.GameStartupComplete.IsCompleted) return;
-            // **必须等主菜单真的加载完再建局。**
-            // 实测（2026-09-20，第 12 轮）：只等 GameStartupComplete 就建局，日志里
-            // `where scene=NMainMenu room=none` 一直重复 —— 局建起来了但没留下来，
-            // 因为主菜单那条流程**在我们建局之后**才加载完（`Time to main menu: 26,243ms`），
-            // 它继续跑就把局状态覆盖掉了。`StartOnMainMenu = false` 拦不住，那时它已越过那个判断。
+            // Wait until the native menu transition has completed, so it cannot
+            // subsequently replace the diagnostic run scene.
             if (game.RootSceneContainer?.CurrentScene is not NMainMenu) return;
             if (RunManager.Instance is not { } runs) return;
             // 已经有局在跑：不抢。（也自然覆盖了"上一次还没退干净"的情况。）
@@ -111,7 +105,7 @@ internal static class LiveTestAutoStart
         fired = true;
         try
         {
-            var (seed, multiplayer, room, encounter) = FlagSettings();
+            var (seed, multiplayer, room, encounter, ascension) = FlagSettings();
             // PRINT WHAT WAS PARSED. A targeted run silently did nothing and there was no way to
             // tell whether the sentinel was unread, mis-parsed, or ignored downstream —
             // the parser is the one place that distinguishes those, and it cost a whole batch to
@@ -141,13 +135,33 @@ internal static class LiveTestAutoStart
                 .FirstOrDefault(line => line.StartsWith("perf=", StringComparison.OrdinalIgnoreCase))?
                 .Skip("perf=".Length).ToArray() ?? []);
             KernelCombatPlanner.ApplyPerf(perf);
+            // `party=IRONCLAD,SILENT,SILENT,IRONCLAD` sets the four seats' characters, in seat
+            // order. Absent keeps the harness's historical all-Ironclad party. It is read and
+            // LOGGED here for the same reason as `perf`: a party that is not the one the batch
+            // asked for makes every number from that round a measurement of something else.
+            var partyNames = new string(File.ReadAllLines(FlagPath)
+                .Select(line => line.Trim())
+                .FirstOrDefault(line => line.StartsWith("party=", StringComparison.OrdinalIgnoreCase))?
+                .Skip("party=".Length).ToArray() ?? []);
+            var party = ResolveParty(partyNames);
+            var snapshot = File.ReadAllLines(FlagPath).Select(line => line.Trim())
+                .FirstOrDefault(line => line.StartsWith("snapshot=", StringComparison.OrdinalIgnoreCase));
+            if (snapshot is not null)
+            {
+                LiveTestSnapshotResume.Start(snapshot["snapshot=".Length..]);
+                ArmRunSceneReassert();
+                return;
+            }
             Log.Info($"CoopBots live test: flag seed='{seed}' multiplayer={multiplayer} "
+                + $"ascension={ascension} party='{partyNames}'(resolved={party.Count}) "
                 + $"room='{room}' encounter='{encounter}' search='{search}' "
                 + $"tournamentOverride={KernelCombatPlanner.TournamentOverride?.ToString() ?? "default"} "
                 + $"perf='{perf}'(active={KernelCombatPlanner.Perf}).");
             if (multiplayer)
             {
-                if (!LiveTestMultiplayerRun.Start(seed, room, encounter)) failed = true;
+                if (LiveTestMultiplayerRun.Start(seed, room, encounter, ascension, party))
+                    ArmRunSceneReassert();
+                else failed = true;
             }
             else StartOnMainThread();
         }
@@ -189,12 +203,104 @@ internal static class LiveTestAutoStart
                 // ——"站在地图上却不推进"最可能就是这道门。
                 + $"mapScreen={(MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance is null ? "null" : "ok")} "
                 + $"mapOpen={MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsOpen.ToString() ?? "-"} "
-                + $"mapTravel={MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsTravelEnabled.ToString() ?? "-"}");
+                + $"mapTravel={MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsTravelEnabled.ToString() ?? "-"} "
+                // hp/maxHp PER SEAT, in seat order. Without it the only HP readings in the log are
+                // the tournament's PREDICTED end-of-fight arrays, which mix "what the search
+                // expects" with "what happened" and cannot answer "how much did this fight cost
+                // us". This line already runs every 5 s, so it is a free HP trajectory across the
+                // whole run — the cheapest instrument for "which room is bleeding the party".
+                // deck= is the other free reading: it shows how many cards a run actually got.
+                + " hp=["
+                + (state is null ? "-" : string.Join(",", state.Players.Select(p =>
+                    $"{p.Creature.CurrentHp}/{p.Creature.MaxHp}")))
+                + "] deck=["
+                + (state is null ? "-" : string.Join(",", state.Players.Select(p => p.Deck.Cards.Count)))
+                + "]");
         }
         catch (Exception error) { Log.Warn($"CoopBots live test: where failed: {error.GetType().Name}"); }
     }
 
+    /// <summary>
+    /// Put the run scene back if the main-menu flow took it after we built the run.
+    ///
+    /// <para>
+    /// The live test arms from the main menu, and the menu is still loading when the run is
+    /// created from it, so the menu's own scene change can land after ours. With the all-Ironclad
+    /// default the preload is short enough that ours wins; a mixed party makes it long enough
+    /// that the menu wins (measured 2026-09-27: `party=SILENT,SILENT,IRONCLAD,IRONCLAD` parked at
+    /// `scene=NMainMenu state=set` forever, while the same package with the default party played
+    /// a whole round). Re-asserting is exactly what <c>NSceneBootstrapper</c> and
+    /// <c>NGame.LoadRun</c> do; it stops after a bounded number of ticks so a genuine failure to
+    /// enter the run still surfaces instead of turning into an infinite scene rebuild.
+    /// </para>
+    /// </summary>
+    internal static void EnsureRunScene()
+    {
+        if (LiveTestMultiplayerRun.PendingRunScene is not { } runState) return;
+        try
+        {
+            if (NGame.Instance?.RootSceneContainer is not { } container) return;
+            if (container.CurrentScene is NRun)
+            {
+                LiveTestMultiplayerRun.ClearPendingRunScene();
+                return;
+            }
+            if (System.Environment.TickCount64 > runSceneDeadlineMs)
+            {
+                LiveTestMultiplayerRun.ClearPendingRunScene();
+                Log.Warn("CoopBots live test: gave up re-asserting the run scene; the run never "
+                    + "took the screen. Check the main-menu flow for a hard failure.");
+                return;
+            }
+            Log.Warn($"CoopBots live test: the run was built but the scene is "
+                + $"{container.CurrentScene?.GetType().Name ?? "null"}; re-asserting NRun.");
+            container.SetCurrentScene(NRun.Create(runState));
+        }
+        catch (Exception error)
+        {
+            Log.Warn($"CoopBots live test: re-asserting the run scene failed: {error.GetType().Name}");
+        }
+    }
+
+    /// <summary>Deadline for <see cref="EnsureRunScene"/>, set when the run is built.</summary>
+    private static long runSceneDeadlineMs;
+
+    internal static void ArmRunSceneReassert() => runSceneDeadlineMs = System.Environment.TickCount64 + 20_000;
+
     private static long lastWhereMs;
+
+    /// <summary>Set by the game-over patch, consumed by the next live-test tick.</summary>
+    private static bool runEnded;
+
+    /// <summary>
+    /// Told by the game-over screen. Deliberately only a FLAG: the quit itself has to happen on
+    /// the live-test ticker, never inside the screen's own <c>_Ready</c>, because
+    /// <see cref="NGame.Quit"/> tears the scene tree down and doing that while Godot is still
+    /// building the screen it was called from is the kind of re-entrancy that shows up as a
+    /// crash in one round out of twenty. An attended game never sets this — a human has to be
+    /// able to read the screen.
+    /// </summary>
+    internal static void GameOverSeen()
+    {
+        if (LiveTestMenuTicker.Armed) runEnded = true;
+    }
+
+    /// <summary>
+    /// WHY THIS EXISTS: nothing in the pipeline closed the client when a run ended. The mod's
+    /// driver only STARTS a run, and the watcher in scripts/run-live-loop.ps1 only kills on a
+    /// silence timeout. Measured live 2026-09-26 that left 20 heartbeat lines (~100 s) of pure
+    /// idle on the game-over screen every round, against a ~4 minute run — a third of each batch
+    /// spent on a screen with nobody left to press "continue". Quitting here makes the loop's
+    /// existing "the client exited by itself" path fire within a second or two instead.
+    /// </summary>
+    internal static void QuitIfRunEnded()
+    {
+        if (!runEnded || !LiveTestMenuTicker.Armed) return;
+        runEnded = false;
+        Log.Info("CoopBots live test: the run is over — quitting so the unattended loop can start the next round.");
+        try { NGame.Instance?.Quit(); }
+        catch (Exception error) { Log.Warn($"CoopBots live test: quit after the run failed: {error.GetType().Name}"); }
+    }
 
     /// <summary>
     /// `BotRuntime.Tick()` 被调用的次数 —— 由 BotRuntime 递增（`LiveTestMenuTicker.Armed` 为真时）。
@@ -204,14 +310,42 @@ internal static class LiveTestAutoStart
     internal static long BotTicks;
 
     /// <summary>
-    /// 哨兵文件里的设置。第一行是种子；可选一行 <c>mode=single</c> 切回旧的单席直进战斗模式。
+    /// 哨兵文件里的设置。第一行是种子；可选一行 <c>mode=single</c> 切回旧的单席直进战斗模式，
+    /// 一行 <c>ascension=N</c> 指定多人局的飞升等级（缺省 10）。
     /// </summary>
     /// <remarks>
     /// 默认是**多人**：用户 2026-09-20 的规格要求跑 4 BOT 的 A10 爬塔，
     /// 而单席直进战斗那条路测不到任何 "Host 才亮" 的门。保留 <c>mode=single</c>
     /// 是为了那条路仍然可复现 —— 它当初是用来把"进不了局"和"进得了局"分开的。
     /// </remarks>
-    private static (string Seed, bool Multiplayer, string Room, string Encounter) FlagSettings()
+    /// <summary>
+    /// Resolve the sentinel's <c>party=</c> list BY ID against this build's characters, never by
+    /// a guessed type name. An unknown id is an ERROR, not a silent fallback to Ironclad: a party
+    /// that is not the one the batch asked for makes every number from that round a measurement
+    /// of something else, which is exactly the failure this project keeps paying for (R5).
+    /// </summary>
+    private static IReadOnlyList<CharacterModel> ResolveParty(string csv)
+    {
+        var names = csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (names.Length == 0) return [];
+        var resolved = new List<CharacterModel>();
+        foreach (var name in names)
+        {
+            var wanted = name.StartsWith("CHARACTER.", StringComparison.OrdinalIgnoreCase)
+                ? name["CHARACTER.".Length..]
+                : name;
+            var character = ModelDb.AllCharacters.FirstOrDefault(candidate =>
+                string.Equals(candidate.Id.Entry, wanted, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(candidate.Id.Entry, "CHARACTER." + wanted, StringComparison.OrdinalIgnoreCase));
+            if (character is null)
+                throw new InvalidOperationException(
+                    $"live-test.flag names party member '{name}', which this build does not know.");
+            resolved.Add(character);
+        }
+        return resolved;
+    }
+
+    private static (string Seed, bool Multiplayer, string Room, string Encounter, int Ascension) FlagSettings()
     {
         try
         {
@@ -225,14 +359,21 @@ internal static class LiveTestAutoStart
             var seed = lines.FirstOrDefault(line => !line.Contains('=')) ?? "COOPBOTS-LIVE";
             var multiplayer = Value("mode").Length == 0
                 || !Value("mode").Contains("single", StringComparison.OrdinalIgnoreCase);
+            // ASCENSION, added 2026-09-25: the multiplayer lobby was hardwired to A10, so a batch
+            // aimed at the A5 clear rate would have measured the wrong difficulty entirely.
+            // Clamped, not refused — but it is printed, so a mis-typed value cannot be mistaken
+            // for "the run really was A5".
+            var ascension = int.TryParse(Value("ascension"), out var asked)
+                ? Math.Clamp(asked, 0, 20)
+                : LiveTestMultiplayerRun.DefaultAscension;
             // TARGETING, added 2026-09-21 after nine live batches could not verify a two-phase
             // boss fix: the act-1 boss is seed-chosen AND the transition only fires if the party
             // actually reaches 0 HP on it, so "run until it happens" was a lottery that hit
             // four times in nine. `room=Boss` + `encounter=ENCOUNTER.WATERFALL_GIANT_BOSS`
             // enters that fight every time.
-            return (seed, multiplayer, Value("room"), Value("encounter"));
+            return (seed, multiplayer, Value("room"), Value("encounter"), ascension);
         }
-        catch { return ("COOPBOTS-LIVE", true, "", ""); }
+        catch { return ("COOPBOTS-LIVE", true, "", "", LiveTestMultiplayerRun.DefaultAscension); }
     }
 
     /// <summary>
@@ -324,6 +465,40 @@ internal static class LiveTestAutoStart
 /// 首次命中后 `Tick()` 里的 <c>fired</c> 会挡住后续所有调用，所以不必精确地停表。
 /// </para>
 /// </summary>
+/// <summary>
+/// The game-over screen is the one node BOTH endings share — a wipe and a victory both land here
+/// — and it has no singleton to poll, so this patch is what tells the unattended live test that
+/// the run is over. Without it the client sat on that screen until the watcher's silence timeout.
+/// </summary>
+[HarmonyPatch(typeof(NGameOverScreen), "_Ready")]
+internal static class LiveTestGameOverQuit
+{
+    [HarmonyPostfix]
+    internal static void Postfix()
+    {
+        LiveTestAutoStart.GameOverSeen();
+        // MACHINE-READABLE OUTCOME. A batch that measures a clear rate has to be able to say,
+        // per round, whether the party won or wiped, and the log is the only place it can read
+        // it: `shouldSave: false` keeps these runs out of the profile's run history, so there is
+        // no run-*.json to read the `win` field from. IsVictoryRoom is the game's own answer —
+        // true only for the Architect room — and it is the same field NGameOverScreen._Ready
+        // reads to pick its banner (`bool win = _runState.CurrentRoom?.IsVictoryRoom ?? false`).
+        // Printed on its own line, with the floor and act, so a batch can also tell "died on
+        // floor 16" from "died on floor 48" without parsing the run history.
+        try
+        {
+            var state = RunManager.Instance?.DebugOnlyGetState();
+            var won = state?.CurrentRoom?.IsVictoryRoom ?? false;
+            Log.Info($"CoopBots live test: run outcome — victory={won.ToString().ToLowerInvariant()} "
+                + $"act={state?.CurrentActIndex.ToString() ?? "-"} floor={state?.TotalFloor.ToString() ?? "-"}");
+        }
+        catch (Exception error)
+        {
+            Log.Warn($"CoopBots live test: outcome line failed: {error.GetType().Name}");
+        }
+    }
+}
+
 internal static class LiveTestMenuTicker
 {
     private static bool attached;
@@ -347,7 +522,14 @@ internal static class LiveTestMenuTicker
             if (Engine.GetMainLoop() is not SceneTree tree) return;
             tree.CreateTimer(1.0).Timeout += () =>
             {
-                try { LiveTestAutoStart.Tick(); LiveTestAutoStart.ReportWhere(); } catch { }
+                try
+                {
+                    LiveTestAutoStart.Tick();
+                    LiveTestAutoStart.ReportWhere();
+                    LiveTestAutoStart.EnsureRunScene();
+                    LiveTestAutoStart.QuitIfRunEnded();
+                }
+                catch { }
                 Schedule();
             };
         }
@@ -356,20 +538,9 @@ internal static class LiveTestMenuTicker
 }
 
 /// <summary>
-/// 在 `NGame` 建立**之前**就把 `StartOnMainMenu` 关掉 —— 这是 `NSceneBootstrapper` 的做法。
-///
-/// <para>
-/// 实测（2026-09-20，第 14 轮）：用无歧义诊断拿到
-/// `where scene=NMainMenu state=set room=null floor=0` ——
-/// **局建好了、而且留住了**（`state=set`），但 **scene 仍是主菜单**，没人把它推进到地图。
-/// 原因是游戏自己的状态机在 `StartOnMainMenu` 为真时会一直停在主菜单；
-/// 定时器里再设已经太晚（`NGame` 在 `GameStartupWrapper`／`_EnterTree` 时就读过这个值了）。
-/// </para>
-///
-/// <para>
-/// 挂 `_EnterTree` 而不是 `_Process`：**`NGame` 确实声明了 `_EnterTree`**（`NGame.cs:527`），
-/// 而它没有声明 `_Process` —— 上一版挂 `_Process` 就是因此被套件门禁正确拒掉的。
-/// </para>
+/// Ensure the sentinel harness reaches the native main menu it waits for.
+/// V21 startup evidence: old suppression loaded the mod but never reached
+/// "snapshot resumed"; native GameStartup skips LaunchMainMenu when false.
 /// </summary>
 [HarmonyPatch(typeof(NGame), nameof(NGame._EnterTree))]
 internal static class LiveTestSuppressMenuPatch
@@ -378,7 +549,7 @@ internal static class LiveTestSuppressMenuPatch
     {
         try
         {
-            if (LiveTestAutoStart.Enabled) __instance.StartOnMainMenu = false;
+            if (LiveTestAutoStart.Enabled) __instance.StartOnMainMenu = true;
         }
         catch { }
     }

@@ -1,4 +1,4 @@
-using CoopBots;
+﻿using CoopBots;
 using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
@@ -23,7 +23,6 @@ internal static class CombatFeedbackScenarios
     // losing rollouts must retain enemy HP progress instead of tying at zero player HP
     // the emergency benefit probe must resolve the potion's actual effect
     // a damage potion that improves a losing fight must be used even when neither rollout wins
-    // an emergency potion must replan after resolving instead of caching a losing suffix
     // a useful emergency potion must not be hoarded on a tied wipe
     // a bottle with no outcome or immediate benefit must still be kept
     // losing routes must prefer an actual enemy kill
@@ -65,19 +64,36 @@ internal static class CombatFeedbackScenarios
         var endPlanner = new KernelCombatPlanner();
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
         var ending = new KernelTeamSearch.Action(holder, null, null, EndTurn: true);
+        // R8 policy change, owner 2026-10-01: only a non-winning continuation
+        // can be replaced by the spare-attack heuristic. The old fixture called
+        // this a verified victory and therefore guarded the reported bug.
+        // WinningPlanScenarios independently requires preservation of a victory.
+        // R2 2026-10-01, disabling the attack heuristic entirely exits 1:
+        // System.Exception: a non-winning cached EndTurn must replan when the live hand still has a useful affordable attack
+        // Evidence: work/ancient-options-20261001/r2-losing-end-turn.json / .log.
         var staleEnd = new TournamentResult(ending,
-            new TerminalRecord(true, EvidenceKind.VerifiedTerminal, "", [80, 80, 80, 80], 0, 0), [], 1, 0, "fixture")
+            new TerminalRecord(false, EvidenceKind.VerifiedTerminal, "", [0, 0, 0, 0], 0, 100), [], 1, 0, "fixture")
         {
-            Script = [ending, ending],
+            // Adoption advances to cursor 1; cursor 0 is its already-submitted
+            // placeholder. Record the pending End from this fixture's live root.
+            Script = [ending, TurnStartFixtureCapture.Record(KernelSession.Capture(holdingCombat), [ending])[0]],
             ScriptAliveStates = [holdingParty.Select(p => p.NetId).OrderBy(x => x).ToArray(), holdingParty.Select(p => p.NetId).OrderBy(x => x).ToArray()],
             ScriptEnemyStates = [holdingCombat.HittableEnemies.ToArray(), holdingCombat.HittableEnemies.ToArray()],
         };
         typeof(KernelCombatPlanner).GetMethod("AdoptTournamentScript", flags)!.Invoke(endPlanner, [staleEnd, holdingCombat]);
         object?[] emitArgs = [holdingCombat, holdingParty, true, null];
-        var emitted = (bool)typeof(KernelCombatPlanner).GetMethod("TryEmitFromTournamentScript", flags)!.Invoke(endPlanner, emitArgs)!;
-        Check(!emitted && !endPlanner.HasPendingStep,
-            "a cached EndTurn must replan when the live hand still has a useful affordable attack");
-        Console.WriteLine("PASS: cached end-turn execution cannot silently waste a useful live attack.");
+        // R8 2026-10-04 owner P1: reuse the compared repair, rather than
+        // requiring a discarded script and a second full tournament.
+        // R2: disabling recovery exited 1, "a non-winning cached EndTurn must
+        // emit the useful affordable attack without a fresh tournament".
+        // Evidence: work/act2-fixes-20261004/r2-extra-results.json.
+        var emitted = false;
+        for (var tick = 0; tick < 1000 && !emitted; tick++)
+            emitted = (bool)typeof(KernelCombatPlanner).GetMethod("TryEmitFromTournamentScript", flags)!.Invoke(endPlanner, emitArgs)!;
+        Check(emitted && endPlanner.ConfirmedEndTurn is null
+            && emitArgs[3] is TeamCombatPlanner.Decision { Move.Card: StrikeIronclad },
+            "a non-winning cached EndTurn must emit the useful affordable attack without a fresh tournament");
+        Console.WriteLine("PASS: non-winning cached end-turn execution cannot silently waste a useful live attack.");
 
         var (doomedParty, doomedCombat) = Board("USE-POTION-WHILE-LOSING");
         foreach (var p in doomedParty) p.Creature.SetCurrentHpInternal(1);
@@ -99,12 +115,9 @@ internal static class CombatFeedbackScenarios
             "the emergency benefit probe must resolve the potion's actual effect");
         Check(KernelPotionPolicy.Improves(noBottle.Record, withBottle.Record),
             "a damage potion that improves a losing fight must be used even when neither rollout wins");
-        var emergencyPlanner = new KernelCombatPlanner();
-        typeof(KernelCombatPlanner).GetMethod("AdoptTournamentScript",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
-            .Invoke(emergencyPlanner, [withBottle, doomedCombat]);
-        Check(!emergencyPlanner.HasPendingStep,
-            "an emergency potion must replan after resolving instead of caching a losing suffix");
+        // Owner 2026-10-03 explicitly replaced emergency-bottle replanning with
+        // reuse of the native continuation. CombatQualityScenarios now guards
+        // adoption and opportunity dispatch with replayed outcome evidence.
         var tie = noBottle.Record with { ResourcesConsumed = 1 };
         Check(KernelPotionPolicy.Improves(noBottle.Record, tie, immediateBenefit: 8),
             "a useful emergency potion must not be hoarded on a tied wipe");

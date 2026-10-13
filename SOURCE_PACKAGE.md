@@ -1,30 +1,20 @@
-# CoopBots 源码包说明
+# CoopBots 源码快照说明
 
-本文档描述**源码包**包含与排除了什么。它对应**已发布版本 `CoopBots 0.39.1`**；
-工作树里的开发版本会领先于它（权威是 `src/CoopBots/mod_manifest.json`），发版时同步版本号。
+本次公开 **0.39.1 开发源码快照（2026-10-13）**，用于共同优化算法。它不是新的 Steam 安装包版本，历史冻结 v21 的验证与实机结果见 [docs/STATUS.md](docs/STATUS.md)。
 
-## 包含内容
+## 包含
 
-- `src/CoopBots/`：MOD C# 源码、项目文件和 Mod 清单。
-- `src/CoopBots.Kernel/`：接入 CombatSolver 的模拟内核实验项目；`Vendor/` 为上游导入源码，来源见 `UPSTREAM.json` / `POWER_SYNC.json` 与 `INTEGRATION.md`，偏离见 `VENDOR_DEVIATIONS.md`。
-- `tests/PatchSmoke/`：补丁挂载与多人协作回归测试源码；`DraftSim/` 是本地调参与构筑校验用的模拟器测试线，**不属于 MOD 包体**，构建脚本也不会把它打进发布包。
-- `scripts/`：macOS/Linux 与 Windows 构建脚本、CombatSolver 内核导入器、Spire Codex 数据抓取脚本。
-- `README.md`（简介、构建与许可）、`AGENT.md`（代理运作规范）、`CHANGELOG.md`（完整版本变更记录）、`.gitignore` 和本说明。
+- `src/CoopBots/`：联机 MOD、战斗执行、局外构筑和事件决策。
+- `src/CoopBots.Kernel/`：CombatSolver 0.41.0 导入内核、四席搜索与执行合同；上游身份和本地偏离记录随源码保留。
+- `tests/PatchSmoke/`、`tests/TypeLoadCheck/`：完整回归、原生对照和独立类型加载守卫；另含 Python 管线自测及匿名化样本。
+- `scripts/`：构建、验证、内核导入/适配、Steam 实机测试、归档与分析，以及公开基准入口。
+- `AGENT.md`、`AGENTS.md`、`PLAN.md`、九项 `.claude/skills/`：供参与作者及其 Agent 使用的协作规范。技能内的历史 `work/` 路径指维护者的私有证据，不要求其他作者拥有该目录。
+- 文档、第三方署名和许可证。历史候选记录只作为背景，当前规范以 `AGENT.md` 为准。
 
-## 已排除内容
+## 外部依赖与本地内容
 
-- 所有 `bin/`、`obj/`、仓库根发行包目录和 `.git/` 目录。
-- `work/` 中的本地 .NET SDK、PowerShell 便携版、反编译工具、缓存与实验数据。
-- `outputs/` 中的 DLL、历史安装包和其他发行物。
-- `third_party/` 下的第三方参考副本（`CombatSolver-main/`、`CombatSolver-upstream-main/`、`StS2.RandomForeseer-0.13.14/` 及参考包）——它们**不是我们的**，只在本工作区保留供来源核对，见 `THIRD_PARTY_NOTICES.md`。
-- 所有 DLL、PDB、EXE、ZIP、RAR、DYLIB、SO 和系统元数据文件。
+需要 .NET 9 SDK、Python 3、本地游戏 v0.111.0 程序集，以及 RitsuLib 0.6.2+ 对应的 compat 和 shared 程序集。构建路径可通过命令参数指定，详见 [测试指南](docs/TESTING_AND_BENCHMARKS.md)。
 
-## 构建环境
+游戏/RitsuLib DLL、SDK、缓存、发行 ZIP、`bin/`、`obj/`、个人原始日志/存档、账号标识与凭据不随源码上传。`work/`、`outputs/` 和 `third_party/` 参考副本仍属于本地内容；必要脚本和可复现匿名化测试已提取到公开目录。公开实机证据只包含汇总、种子、版本和哈希。
 
-- .NET 9 SDK。
-- 《杀戮尖塔 2》v0.111.0 的本地游戏程序集。
-- RitsuLib 0.6.2+ 的 0.111.0 变体程序集，内核与测试编译期引用。0.6.x 把运行时拆成多个程序集，默认从工坊项的 `compat/0.111.0`（`STS2-RitsuLib.dll`、`STS2-RitsuLib.Runtime.dll`）与同级的 `shared/`（Shared / Ui / Settings）解析，路径由 `$(STS2DataDir)/../../../workshop/content/2868840/3747602295/compat/0.111.0` 推出，可用 `-p:RitsuLibDir=...`（以及 `-p:RitsuLibSharedDir=...`）覆盖。
-- macOS/Linux：`./scripts/build.sh`。
-- Windows：`scripts/build.ps1`，必要时传入 `-GameData` 和 `-Dotnet`。
-
-游戏程序集、RitsuLib 和 .NET SDK 不随源码包分发。发布包声明 RitsuLib 为运行依赖但不内含其二进制。`CombatSolver-0.33.9` 没有覆盖整个仓库的统一软件许可证；其来源关系和 Random Foreseer 许可条件以随包保留的 `THIRD_PARTY_NOTICES.md` 为准。
+构筑测试中的独立模拟器不是游戏原生模拟，不应单独用来证明实际通关收益。正常 MOD 构建不包含这些测试组件。CombatSolver、Random Foreseer 和 Spire Codex 各自的许可条件见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

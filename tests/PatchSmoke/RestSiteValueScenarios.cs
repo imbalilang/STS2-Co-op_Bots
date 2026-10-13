@@ -33,7 +33,10 @@ internal static class RestSiteValueScenarios
         foreach (var p in run.Players) { p.ResetCombatState(); p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80); }
         pillow.Creature.SetCurrentHpInternal(25); lower.Creature.SetCurrentHpInternal(10);
         pillow.AddRelicInternal(ModelDb.Relic<RegalPillow>().ToMutable());
-        owner.Deck.AddInternal(run.CreateCard<StrikeIronclad>(owner));
+        // Use an ordinary deck so this patient-selection fixture is not also
+        // a one-card-deck upgrade policy test.
+        for (var i = 0; i < 5; i++) owner.Deck.AddInternal(run.CreateCard<StrikeIronclad>(owner));
+        for (var i = 0; i < 4; i++) owner.Deck.AddInternal(run.CreateCard<DefendIronclad>(owner));
         var choose = typeof(BotRestSitePatch).GetMethod("Choose", BindingFlags.Static | BindingFlags.NonPublic)!;
         object Plan() => choose.Invoke(null, new object[] { owner, new RestSiteOption[]
             { new SmithRestSiteOption(owner), new HealRestSiteOption(owner), new MendRestSiteOption(owner) } })!;
@@ -69,6 +72,39 @@ internal static class RestSiteValueScenarios
         if (BotRestSitePatch.BestMendTarget(owner) != lower)
             throw new Exception("Stone Humidifier max-HP growth must also be counted when receiving MEND.");
         Console.WriteLine("PASS: shared after-heal max-HP growth applies to self-heal and MEND recipients.");
+
+        // V37 (2026-09-30): a seat one hit from death, and the last camp before the act
+        // boss, must both be worth more than the linear need curve said. Live case that
+        // wiped the run: B3 at hp=7/62 (11%) chose SMITH over HEAL before AEONGLASS_BOSS
+        // (HEAL:33.1 vs SMITH:47.3) and died in round 1 at 9 HP.
+        //
+        // 5/100: current 0.05 -> x1.857142857...; 50/100 sits above the band -> x1.
+        if (Math.Abs(BotRestSitePatch.SurvivalPressure(5, 100) - 1.8571428571428572) > 0.0001)
+            throw new Exception($"A near-death seat must carry the critical-HP multiplier "
+                + $"(got {BotRestSitePatch.SurvivalPressure(5, 100):F4}).");
+        if (Math.Abs(BotRestSitePatch.SurvivalPressure(50, 100) - 1.0) > 0.0001)
+            throw new Exception("A mid-HP seat must be priced exactly as before the critical-HP band.");
+        if (!(BotRestSitePatch.SurvivalPressure(7, 62) > BotRestSitePatch.SurvivalPressure(20, 62)))
+            throw new Exception("The survival pressure must fall as the bar fills.");
+        // The linear need curve itself is unchanged: 10 HP at 50/100 is exactly as before.
+        if (Math.Abs(BotRestSitePatch.HealValue(10, 50, 100, 1.0) - 19.0) > 0.01)
+            throw new Exception("The HEAL/MEND need curve must not move outside the critical band.");
+        if (!(BotRestSitePatch.HealValue(30, 7, 62, 1.0) > BotRestSitePatch.HealValue(30, 20, 62, 1.0)))
+            throw new Exception("Healing must still be worth more the closer the seat is to death.");
+        // The last camp before the boss multiplies the recovery weight — but only for a
+        // target that still needs the healing (below 75% HP).
+        var normalWeight = BotRestSitePatch.CampHealWeight(owner, lastCampBeforeBoss: false, targetHpRatio: 0.5);
+        var lastWeight = BotRestSitePatch.CampHealWeight(owner, lastCampBeforeBoss: true, targetHpRatio: 0.5);
+        if (Math.Abs(lastWeight - normalWeight * 1.5) > 0.0001)
+            throw new Exception($"The last camp before a boss must carry a 1.5x recovery weight for a hurt target "
+                + $"({normalWeight:F4} -> {lastWeight:F4}).");
+        // A nearly-full target is not "in need", so the bonus must not apply: measured
+        // live 2026-10-01, a MEND for a teammate missing 10 of 24 outscored a real smith.
+        var healthyLast = BotRestSitePatch.CampHealWeight(owner, lastCampBeforeBoss: true, targetHpRatio: 0.875);
+        if (Math.Abs(healthyLast - normalWeight) > 0.0001)
+            throw new Exception($"The last-camp bonus must NOT apply to a target at 87.5% HP "
+                + $"({normalWeight:F4} vs {healthyLast:F4}).");
+        Console.WriteLine("PASS: near-death HP and the last camp before a boss both raise the recovery weight.");
     }
 }
 

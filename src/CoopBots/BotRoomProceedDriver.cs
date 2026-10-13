@@ -74,6 +74,15 @@ internal static class BotRoomProceedDriver
         if (Live.Count == 0) return false;
         try
         {
+            if (RoomWork.Waiting(manager, state) is { } waiting)
+            {
+                if (Environment.TickCount64 >= _nextWarnAt)
+                {
+                    _nextWarnAt = Environment.TickCount64 + 2000;
+                    Log.Info($"CoopBots room: holding the continue — {waiting}");
+                }
+                return false;
+            }
             // Never race the action queue: a proceed pressed while a purchase or a card
             // play is still executing would cut it off mid-flight.
             if (manager.ActionExecutor.CurrentlyRunningAction is not null || !manager.ActionQueueSet.IsEmpty) return false;
@@ -98,7 +107,11 @@ internal static class BotRoomProceedDriver
             // previous tick, not a settle measured from the screen appearing.
             var shop = state.CurrentRoom as MerchantRoom;
             var rewardScreenUp = NOverlayStack.Instance?.Peek() is NRewardsScreen;
-            var shopPending = shop is not null && !BotShopDriver.Finished(state);
+            // A faulted shop driver can never make Finished() true (Fail() stops shopping and
+            // never writes `done`), so holding the continue on it froze the whole party in the
+            // shop forever — live 2026-09-29, floor 25, after one refused purchase. Leaving is
+            // safe: a refused purchase changed nothing on any peer, and shopping has stopped.
+            var shopPending = shop is not null && !BotShopDriver.Finished(state) && !BotShopDriver.Faulted;
             var rewardsPending = rewardScreenUp && !BotRewardsScreenDriver.Finished(state);
             foreach (var button in Live.ToList())
             {

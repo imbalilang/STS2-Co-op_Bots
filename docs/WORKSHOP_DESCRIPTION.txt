@@ -1,41 +1,25 @@
 [h1]Co-op Bots / 联机机器人[/h1]
-[b]0.39.1：改进协同出牌、药水使用与针对 Boss 的构筑。[/b]
+为《杀戮尖塔 2》的官方多人房间加入 AI 队友。Bot 使用真实玩家席位，动作通过游戏队列同步；所有真人需安装相同版本。
 
-为《杀戮尖塔 2》官方多人房间加入 AI 队友，由房主统一调度。
+[h2]最新源码：0.39.1 开发快照（2026-10-13）[/h2]
+公开当前算法、Agent 规范与技能、完整回归和 Steam 实机测试管线，邀请社区共同优化。GitHub 源码更新与工坊安装包身份分别核对。
+v21 修复多人初始化抽弃牌能力等待问题，历史完整回归887项通过。五局同一冻结候选全 Bot A10 实机测试：0通关、5自然失败、0卡死。仍有状态差异和策略问题待修复，尚未证明50%通关目标，混合桌单独验证。
+[url=https://github.com/imbalilang/STS2-Co-op_Bots]源码、贡献指南、算法地图与公开测试证据[/url]
 
-[h2]需要先订阅[/h2]
-[list]
-[*][b]RitsuLib[/b] 0.6.2 或更高：[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3747602295]创意工坊依赖[/url]
-[*]所有真人必须使用同一版本 CoopBots；目标游戏版本 v0.111.0。
-[/list]
+[h2]玩法[/h2]
+在官方多人大厅添加 Bot，并调整节奏与性能预算。
+Flash / Pro / Cheated 共用算法；档位影响节奏与思考预算，Cheated 另有金币加成。
+支持全 Bot 与真人/Bot 混合桌。联合规划考虑各席生命、共享易伤/虚弱、格挡与真人输入变化；局外可处理奖励、商店、事件、营地和路线建议。
+战斗内核基于 CombatSolver 0.41.0，采用有界搜索和执行状态核对；局外构筑结合卡组结构、实际升级差分与资源启动。
 
-[h2]0.39.1 更新（2026-09-28）[/h2]
-[list]
-[*]改进集中火力、跨席位易伤与增益顺序、先上毒再打中毒条件牌的判断。
-[*]计入下回合能量与抽牌，改进连续出牌与小刀目标；沙漏战斗不再额外扣除未来污染成本。
-[*]满栏药水按实际收益积极使用，濒死优先抢救；比较后续控制的边际收益，减少吹哨与控制药水的重复防护。
-[*]构筑考虑持续能力、循环与烧牌联动；已知沙漏 Boss 时提高有效弃牌、烧牌与定向烧牌升级的价值。
-[*]营火比较有效治疗与核心升级收益，改进天选芝士等事件判断；修复训练假人流程和 A10 双 Boss 后续路线。
-[*]本轮通过自动回归；按要求停止继续实机测试。尚未验证稳定通关 A10，不承诺胜率。
-[/list]
-[url=https://github.com/imbalilang/STS2-Co-op_Bots/blob/main/CHANGELOG.md]完整变更记录[/url]
+[h2]依赖与兼容[/h2]
+需要游戏 v0.111.0 与 RitsuLib 0.6.2+ 的兼容变体。请订阅并启用 RitsuLib，所有真人保持相同 MOD 版本。
+本项目不随包分发游戏或 RitsuLib 程序集。手动安装时将 CoopBots.dll、CoopBots.Kernel.dll 和 mod_manifest.json 放入 mods/CoopBots。
+多人同步或游戏版本变化可能需要更新兼容层；问题反馈请附 MOD/游戏版本和匿名化日志。
 
-[h2]使用与协作[/h2]
-[list]
-[*]在官方多人大厅添加 Bot，可与真人混合游玩，也可把全部席位交给 AI 观战。
-[*]只有房主运行决策，客户端通过游戏动作同步；Bot 可以在真人回合中行动，并在真人结束后自行结束。
-[*]Flash：0.5 秒/张，预算 ×0.5；Pro：1.5 秒/张，预算 ×1.5；Cheated：Pro 节奏，3 倍金币。三档使用相同算法。
-[*]处理战斗、奖励、商店、事件、营火及路线；战斗以 CombatSolver 模拟与策略估值比较候选，找到的剧本逐步执行。
-[*]支持性能档位。多人联机请确认所有真人的 MOD 和依赖版本一致。
-[/list]
+[h2]开源协作[/h2]
+欢迎开发者及其 Agent 提交原生复现场景、性能证据和算法改进。当前基线保持路线与预算；开发种子和留出种子分开，保留自然失败、卡死与异常尝试。不要用战斗胜率代替整塔通关率。
 
-[h2]English[/h2]
-Adds configurable AI teammates to official multiplayer lobbies. The host runs decisions and synchronizes actions through the game. Human and bot seats can play together, or all seats can be handed to AI.
-[b]0.39.1[/b] improves coordinated play order, poison setup, next-turn resources, potion use, camp investment and event handling. Deck building now values discard, exhaust and targeted upgrades against a known Aeonglass boss. Defensive potions are evaluated alongside planned control effects. Automated regressions pass; further live runs were stopped at the owner's request. Reliable A10 completion has not been established.
-Requires RitsuLib 0.6.2+ and game v0.111.0. All humans need the same mod version. Flash / Pro / Cheated share the same algorithm; pacing, thinking budget and Cheated's 3x gold differ.
-
-[h2]第三方与许可证 / Third-party[/h2]
-Free, non-commercial mod. CoopBots 自有代码采用 MIT；发布包内的 [b]THIRD_PARTY_NOTICES.md[/b] 是第三方声明的权威记录，分发时必须保留。
-本 MOD 包含 Combat Solver（Torch 及贡献者）的模拟内核，作为 CoopBots.Kernel.Vendor 分发；Random Foreseer（hotwords123）的派生部分；Spire Codex 数据。游戏版权归 Mega Crit Games，不分发游戏资源。各部分遵循各自的原有许可。
-[url=https://github.com/hotwords123/StS2.RandomForeseer]Random Foreseer[/url] · [url=https://spire-codex.com]Spire Codex[/url]
-Spire Codex 数据依 [b]PolyForm Noncommercial License 1.0.0[/b]（[url=https://polyformproject.org/licenses/noncommercial/1.0.0]许可全文[/url]）。Required Notice: Copyright © 2025-present Peter Lord and Spire Codex contributors.
+[h2]许可与致谢[/h2]
+CoopBots 自有代码采用 MIT。CombatSolver / Random Foreseer 导入代码保留其 MIT 署名；Spire Codex 派生数据适用 PolyForm Noncommercial 1.0.0，详见仓库 THIRD_PARTY_NOTICES.md 及 licenses。
+感谢 CombatSolver、Random Foreseer、Spire Codex（spire-codex.com）及 RitsuLib 作者。游戏和原版资源属于 Mega Crit Games。

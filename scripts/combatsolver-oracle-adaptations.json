@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "purpose": "CoopBots deck-quality oracle: adaptations applied to the CombatSolver source copy.",
+  "authorisation": {
+    "date": "2026-09-16",
+    "by": "user",
+    "text": "已取得 Combat Solver 作者的授权,我们可以对这个工具进行任何源代码修改,如果有必要的话,我们可以改造它的接口。",
+    "scope": "CombatSolver-main/** only. Vendor/** stays untouched (our own kernel; its re-import contract via scripts/import-combatsolver-kernel.py depends on it)."
+  },
+  "target": "CombatSolver-main",
+  "note": "CombatSolver-main is a plain file copy, not a git repository, so a change is invisible and unreplayable unless it is written down here. Every entry carries an anchor: the exact text it was applied to. If an anchor no longer matches after an upstream refresh, the adaptation must be re-applied by hand rather than assumed present.",
+  "adaptations": [
+    {
+      "id": "ORACLE-01",
+      "kind": "harness",
+      "date": "2026-09-16",
+      "why": "The oracle is fed a deck and plays the fight out, and losing is the expected result for most decks — the ruler holds relics at zero on purpose, so decks are measured on their cards alone. The runner treated combat ending with living enemies as an InvalidOperationException, which made 'this deck lost' unrepresentable as a result. ExpectedPlayerDeath could not serve, because it is a binary that must be guessed per deck in advance and is meaningless when most decks are expected to die.",
+      "behaviour": "When acceptAnyCombatOutcome is set, both outcome assertions are skipped and the outcome is recorded as a completed check (CombatOutcome:PlayerDead / CombatOutcome:PlayerAlive). Nothing is lost by skipping: actualOutcome already carries survived / finalHp / hpLost / finalEnemyHp, and those are what the ruler reads.",
+      "semantics": "Does not change which plans the solver finds, which actions it plays, or any combat rule. Optics untouched: the same fight under the new flag produces the same actualOutcome as under -ExpectedPlayerDeath.",
+      "edits": [
+        {
+          "file": "src/Testing/UnattendedTestProtocol.cs",
+          "anchor": "    public bool ExpectedPlayerDeath { get; init; }",
+          "change": "insert after the anchor: a new `public bool AcceptAnyCombatOutcome { get; init; }` property with a doc comment explaining the above."
+        },
+        {
+          "file": "src/Testing/UnattendedTestRunner.Executor.cs",
+          "anchor": "                if (request.ExpectedPlayerDeath)",
+          "change": "insert before the anchor an `if (request.AcceptAnyCombatOutcome) { runner._completedChecks.Add(player.Creature.IsDead ? \"CombatOutcome:PlayerDead\" : \"CombatOutcome:PlayerAlive\"); }` branch, turning the following two branches into `else if`.",
+          "note": "The branch sits inside the guard `if (!stoppedAfter… && !stoppedAfterExpectedUnexpectedReplan)`, so it only speaks for a fight that ran to a natural end."
+        },
+        {
+          "file": "tools/run-unattended-test.ps1",
+          "anchor": "    [switch]$ExpectedPlayerDeath,",
+          "change": "insert after the anchor: `[switch]$AcceptAnyCombatOutcome,`"
+        },
+        {
+          "file": "tools/run-unattended-test.ps1",
+          "anchor": "    expectedPlayerDeath = $ExpectedPlayerDeath.IsPresent",
+          "change": "insert after the anchor: `acceptAnyCombatOutcome = $AcceptAnyCombatOutcome.IsPresent` (the request JSON is camelCase, matching the C# property)."
+        }
+      ],
+      "verified": {
+        "date": "2026-09-16",
+        "how": "Same deck, same boss (TEST_SUBJECT_BOSS), same seed, 4-player-free single-player scenario at A10, zero relics.",
+        "result": "Failed at turn 4 with '战斗结束，但仍存在未死亡敌人。' before the patch; Passed after, with completedChecks containing CombatOutcome:PlayerDead and actualOutcome {survived:false, finalHp:0, finalEnemyHp:51}."
+      }
+    },
+    {
+      "id": "ORACLE-02",
+      "kind": "harness",
+      "date": "2026-09-16",
+      "why": "A real deck's upgrade fraction runs 21%-65%; the scalar upgradeLevels can only say 'all +1' or 'none', so injecting real community decks flattened every one to 100% upgraded. That fed the solver decks nobody played and deleted the strongest card-quality signal the earlier analysis found (upgrades, AUC 0.62, the only feature past p<0.01) from the experiment.",
+      "behaviour": "Optional per-card array upgradeLevelsPerCard, parallel to ids. Cards sharing a level are folded into one injection carrying a Count, since UnattendedCardInjection already has Count and only a scalar level. Omitted => the old scalar behaviour, so existing callers are unchanged.",
+      "semantics": "Changes which deck the solver is given, not how it plays. No search, scoring or combat rule touched.",
+      "edits": [
+        {
+          "file": "src/Testing/GeneratedCombatScenario.cs",
+          "anchor": "    public int UpgradeLevels { get; init; }",
+          "change": "insert after the anchor: `public int[]? UpgradeLevelsPerCard { get; init; }` with a doc comment."
+        },
+        {
+          "file": "src/Testing/GeneratedCombatScenario.cs",
+          "anchor": "        Set(\"runCards\", spec.CharacterCards.Ids.Select(id => new UnattendedCardInjection",
+          "change": "replace the two id-only Select chains with a single call to a new private Injections(selection) helper, concatenated for character and colourless cards."
+        },
+        {
+          "file": "src/Testing/GeneratedCombatScenario.cs",
+          "anchor": "    internal static UnattendedTestRequest Apply(UnattendedTestRequest request, ResolvedGeneratedCombatScenario resolved)",
+          "change": "insert before the anchor: the private static Injections(GeneratedModelSelection) helper. Null per-card array keeps the old one-entry-per-id path; a length mismatch throws InvalidDataException."
+        }
+      ],
+      "verified": {
+        "date": "2026-09-16",
+        "how": "A real 1-player A10 Ironclad deck with 18 of 32 cards upgraded, injected with includeStartingDeck:false.",
+        "result": "Setup Passed; generated-scenario.loadout.json reports 32 cards with 18 upgraded and mixed levels (e.g. DEFEND_IRONCLAD+1 x2 alongside BULLY x2 at level 0) — matching the source deck exactly."
+      }
+    }
+  ],
+  "build": {
+    "command": "dotnet build CombatSolver.csproj -c Release -p:SteamRoot=B:/SteamLibrary",
+    "note": "CopyModOnBuild defaults to true, so this installs the mod into <Sts2Dir>/mods/CombatSolver. That directory IS what the launcher wants for -CombatSolverBuildDir, and it is what must be removed to uninstall cleanly.",
+    "warnings": 0,
+    "errors": 0
+  },
+  "environment": {
+    "pwsh": "PowerShell 7.4+ is required by run-unattended-test.ps1 (#requires -Version 7.4) and is NOT installed on this machine (only Windows PowerShell 5.1). A portable 7.6.6 is extracted under work/pwsh/7/ and put on PATH per invocation; nothing is installed system-wide.",
+    "consoleEncoding": "work/oracle/run-oracle.ps1 sets [Console]::OutputEncoding / $OutputEncoding / PYTHONIOENCODING to UTF-8 before delegating, otherwise the evidence is written with the console code page and the error strings come back as irreversible '????'."
+  },
+  "scope": "Applied to TWO copies. CombatSolver-main (the live game-internal oracle's copy, patched 2026-09-16, still the one in use) and CombatSolver-upstream-main (0.40.0-2-g1c31b9f, the designated new copy, patched 2026-09-16). Anchors were re-checked in upstream-main before applying: all 7 were still in place, so both adaptations replayed mechanically. Vendor/** stays untouched in both.",
+  "copies": {
+    "live": {
+      "path": "CombatSolver-main",
+      "role": "current game-internal oracle; do NOT switch away until the offline path is proven"
+    },
+    "new": {
+      "path": "CombatSolver-upstream-main",
+      "head": "1c31b9f (v0.40.0-2-g1c31b9f)",
+      "role": "designated new copy — 0.40 release, contains PR104's offline harness",
+      "patched": "2026-09-16",
+      "anchors_verified": "2026-09-16, 7/7 in place"
+    },
+    "pr_branch": {
+      "path": "work/CombatSolver-pr104",
+      "status": "KEPT (not deleted). PR104 was merged into 0.40, so CombatSolver-upstream-main is the reference — do not build or measure against this copy.",
+      "why_kept": "Deleting it was proposed and then withdrawn as unnecessary. The risk it posed (someone building the wrong version) is covered by this entry, which is worth more than the deletion was.",
+      "was_a_git_clone": true,
+      "origin": "https://github.com/Torch1230/CombatSolver.git",
+      "branch": "pr-104",
+      "head": "d98f089c198cd1ddb73d5eed86188833b1b414f7",
+      "how_to_restore": "already on disk; if ever lost: git clone https://github.com/Torch1230/CombatSolver.git work/CombatSolver-pr104 && git -C work/CombatSolver-pr104 checkout d98f089c198cd1ddb73d5eed86188833b1b414f7",
+      "note": "Nothing is pending here. Do not raise this again."
+    }
+  }
+}

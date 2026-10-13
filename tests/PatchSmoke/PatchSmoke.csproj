@@ -4,7 +4,7 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <STS2DataDir Condition="'$(STS2DataDir)' == ''">/Users/xiwa/Library/Application Support/Steam/steamapps/common/Slay the Spire 2/SlayTheSpire2.app/Contents/Resources/data_sts2_macos_arm64</STS2DataDir>
+    <STS2DataDir Condition="'$(STS2DataDir)' == ''"></STS2DataDir>
     <CoopBotsDll Condition="'$(CoopBotsDll)' == ''"></CoopBotsDll>
     <EnableKernelTests Condition="'$(EnableKernelTests)' == ''">false</EnableKernelTests>
     <DefineConstants Condition="'$(EnableKernelTests)' == 'true'">$(DefineConstants);KERNEL_TESTS</DefineConstants>
@@ -17,6 +17,8 @@
     <Reference Include="CoopBots" HintPath="$(CoopBotsDll)" Private="true" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="Fixtures/construction-performance.json" Link="construction-performance.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Fixtures/knowledge-demon-20261003.json" Link="knowledge-demon-20261003.json" CopyToOutputDirectory="PreserveNewest" />
     <!-- CoopBots' public API (CombatMove) exposes kernel types, so the kernel
          reference is required by every test run, not only the kernel scenarios. -->
     <ProjectReference Include="../../src/CoopBots.Kernel/CoopBots.Kernel.csproj" />
@@ -34,5 +36,11 @@
     <Reference Include="sts2" HintPath="$(STS2DataDir)/sts2.dll" Private="true" />
     <Reference Include="GodotSharp" HintPath="$(STS2DataDir)/GodotSharp.dll" Private="true" />
     <Reference Include="0Harmony" HintPath="$(STS2DataDir)/0Harmony.dll" Private="true" />
+    <Reference Include="SmartFormat" HintPath="$(STS2DataDir)/SmartFormat.dll" Private="true" />
+    <Reference Include="SmartFormat.ZString" HintPath="$(STS2DataDir)/SmartFormat.ZString.dll" Private="true" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="expiry-values.baseline.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="attack-gain-arrays.baseline.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

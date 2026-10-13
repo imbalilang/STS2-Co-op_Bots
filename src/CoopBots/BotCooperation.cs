@@ -413,8 +413,11 @@ internal static class BotCooperation
             if (node is null || !GodotObject.IsInstanceValid(node)) continue;
             var container = node.IntentContainer;
             if (container is null || !GodotObject.IsInstanceValid(container) || !container.Visible) continue;
-            foreach (var child in container.GetChildren())
+            // Avoid allocating a native Array on every UI refresh. The children
+            // are borrowed nodes; this traversal must not dispose them.
+            for (var i = 0; i < container.GetChildCount(); i++)
             {
+                var child = container.GetChild(i);
                 if (child is not Control bubble || !bubble.Visible) continue;
                 var rect = bubble.GetGlobalRect();
                 if (rect.Size.X <= 1f || rect.Size.Y <= 1f) continue;

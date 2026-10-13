@@ -251,9 +251,9 @@ internal static class KernelPowerRouter
     /// <summary>
     /// Conservative trigger/admission: a route only opens when the owner's own
     /// branch shows an observable strategic delta (<see cref="KernelSession.PersistentValue" />)
-    /// or an immediate defense gain. No per-card projection exists in this
-    /// vendor, so <c>ProjectedPotential</c> stays zero and upstream policies that
-    /// require positive projection keep their old behaviour (no commitment).
+    /// or an immediate defense gain. Trigger-dependent powers whose upstream
+    /// policy requires projection use the same bounded branch mechanism value.
+    /// Count it once, in the projection field, rather than inventing a second bonus.
     /// </summary>
     private static bool TryBuildPotential(
         KernelSession before,
@@ -277,8 +277,8 @@ internal static class KernelPowerRouter
                 after.Energy(owner),
                 hasTriggerEvidence,
                 immediateDefense,
-                SetupGain: setupGain,
-                ProjectedPotential: 0,
+                SetupGain: descriptor.Admission.RequirePositiveProjection ? 0 : setupGain,
+                ProjectedPotential: descriptor.Admission.RequirePositiveProjection ? setupGain : 0,
                 TriggerProjectionFloor: 0,
                 investment),
             descriptor.Admission);

@@ -34,7 +34,8 @@ public static class OutOfCombatPredictions
         ScrollBoxes,
     }
 
-    public sealed record Bundle(IReadOnlyList<CardModel> Cards, BundleKind Kind);
+    public sealed record Bundle(IReadOnlyList<CardModel> Cards, BundleKind Kind)
+    { public bool Mandatory { get; init; } }
 
     /// <summary>
     /// What a prediction resolved to. The shapes are kept apart because they mean
@@ -83,13 +84,20 @@ public static class OutOfCombatPredictions
     {
         try
         {
-            return Unpack(EventOptionPrediction.GetHoverTips(eventModel, option));
+            var result = Unpack(EventOptionPrediction.GetHoverTips(eventModel, option));
+            return NormalizeEventChoice(eventModel, option.TextKey, result);
         }
         catch
         {
             return Effect.Empty;
         }
     }
+
+    internal static Effect NormalizeEventChoice(EventModel eventModel, string textKey, Effect result)
+        => eventModel is MegaCrit.Sts2.Core.Models.Events.BrainLeech
+                && textKey == "BRAIN_LEECH.pages.INITIAL.options.SHARE_KNOWLEDGE"
+                ? result with { Cards = [], Bundles = [new Bundle(result.Cards, BundleKind.Choice) { Mandatory = true }] }
+                : result;
 
     private static Effect Unpack(IReadOnlyList<IHoverTip> tips)
     {

@@ -37,6 +37,9 @@ internal static class CardEffectSpecRegistry
         [typeof(Blur)] = [Owner<BlurPower>("Blur")],
         [typeof(ChargeBattery)] = [Owner<EnergyNextTurnPower>(card => card.DynamicVars.Energy.IntValue)],
         [typeof(Colossus)] = [Owner<ColossusPower>("Colossus")],
+        // Native Tank.OnPlay applies one TankPower; its AfterApplied grants
+        // separate Guarded instances to living allies (SimulatedCombatState).
+        [typeof(Tank)] = [Owner<TankPower>(_ => 1)],
         // CoopBots multiplayer port. CONCOCT is multiplayer-only (AnyAlly): it gives an ally
         // "your powered attacks apply N Poison". ConcoctPower's own TRIGGER was already
         // mirrored (AfterDamageGivenMirrors), but the card's OnPlay was not, so the power was
@@ -319,7 +322,8 @@ internal static class CardEffectSpecRegistry
                 applied = true;
                 break;
             case Plot:
-                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)
+                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players.Where(player =>
+                             simulator.State.GetCreature(player.Creature).IsAlive))
                     ApplyPower(combat, typeof(DrawCardsNextTurnPower), recipient.Creature,
                         card.DynamicVars.Cards.IntValue, ownerCreature);
                 applied = true;
@@ -485,6 +489,21 @@ internal static class CardEffectSpecRegistry
                 combat.SummonOsty(simulator, card.Owner, card.DynamicVars.Summon.IntValue);
                 applied = true;
                 break;
+            // Upstream 0.41 completes Rampage growth but omits TheBall's
+            // multiplayer growth despite the existing result-location mirror.
+            // Mirror native TheBall after its generic damage transaction: keep
+            // both current damage and the private downgrade-restoration total.
+            // User 2026-10-09 A10 native correctness request; paid current-DLL
+            // witness found 20/10 native damage versus 10/0 branch growth.
+            case TheBall theBall:
+            {
+                decimal increase = theBall.DynamicVars["Increase"].BaseValue;
+                TheBall mutableBall = (TheBall)playedCard.MutablePreview;
+                mutableBall.DynamicVars.Damage.BaseValue += increase;
+                mutableBall.ExtraDamageFromPlays += increase;
+                applied = true;
+                break;
+            }
             case Rampage rampage:
             {
                 decimal increase = rampage.DynamicVars["Increase"].BaseValue;

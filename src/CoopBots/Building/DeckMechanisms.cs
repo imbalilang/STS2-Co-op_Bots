@@ -79,12 +79,46 @@ internal static class DeckMechanisms
         // loses HP, so attacks alone do not make it supported. Rupture is filed
         // as a converter of the hp-loss resource (it reads the life spent, not
         // the life itself), so both converter and spender buckets are checked.
-        if (HpLoss is not null && (Contains(HpLoss.Converters, entry) || Contains(HpLoss.Spends, entry)))
+        //
+        // THE PRODUCER GETS A VERDICT TOO, and this half was missing. Judging only
+        // the payoff left the enabler charged for its life and credited for nothing:
+        // measured live 2026-10-02, seat `90000000000000001` bought RUPTURE in a shop
+        // and then refused BLOODLETTING four times (twice in reward menus at -17.5 and
+        // -17.8, twice in shops), and refused INFERNO at -2.0 against a bar of 0 —
+        // every one of those scores was the HP cost plus a flat unmodelled constant,
+        // with no term for the Strength the deck's Rupture would have converted it
+        // into. A producer is supported exactly when the deck holds a payoff, the
+        // mirror of the rule the payoff side already had.
+        if (HpLoss is not null && (Contains(HpLoss.Converters, entry) || Contains(HpLoss.Spends, entry)
+            || Contains(HpLoss.Producers, entry)))
         {
-            var losses = Count(deck, HpLoss.Producers);
-            return losses > 0
-                ? new(Support.Supported, "mech-supported:hp-loss", "hp-loss", losses, true)
+            var isProducer = Contains(HpLoss.Producers, entry);
+            var producers = Count(deck, HpLoss.Producers);
+            var payoffs = Count(deck, HpLoss.Converters) + Count(deck, HpLoss.Spends);
+            var matched = isProducer ? payoffs : producers;
+            return matched > 0
+                ? new(Support.Supported, "mech-supported:hp-loss", "hp-loss", matched, true)
                 : new(Support.Unsupported, "mech-unsupported:hp-loss", "hp-loss", 0, true);
+        }
+
+        // SHIV PRODUCERS GET THE PAYOFF VERDICT, and only shiv. This cannot be
+        // generalised to every resource: `strength` is supported by any ATTACK in the
+        // deck rather than by a named card, so a card-list rule misreads Inflame as
+        // unsupported and the Strength-with-attacks fixture goes red. Shiv is a closed
+        // list on both sides (producers, and Accuracy / Fan of Knives / Phantom Blades /
+        // Knife Trap as payoffs), so the mirror rule is safe here. Measured live
+        // 2026-10-02: CLOAK_AND_DAGGER carried `producer-no-payoff:shiv` on a deck that
+        // held Phantom Blades, and Blade Symphony was missing from the table.
+        // A SELF-CONTAINED card (Fan of Knives is both a producer and a multiplier)
+        // falls through to the amplifier rule below, which already counts it as its own
+        // trigger exactly once.
+        if (Shiv is not null && Contains(Shiv.Producers, entry)
+            && !Contains(Shiv.Multipliers, entry) && !Contains(Shiv.Replayers, entry))
+        {
+            var payoffs = Count(deck, Shiv.Multipliers) + Count(deck, Shiv.Replayers);
+            return payoffs > 0
+                ? new(Support.Supported, "mech-supported:shiv", "shiv", payoffs, true)
+                : new(Support.Unsupported, "mech-unsupported:shiv", "shiv", 0, true);
         }
 
         // An amplifier or replayer is only worth its printed numbers when the

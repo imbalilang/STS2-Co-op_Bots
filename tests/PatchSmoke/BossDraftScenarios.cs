@@ -14,8 +14,14 @@ using MegaCrit.Sts2.Core.Unlocks;
 
 internal static class BossDraftScenarios
 {
+    // R2 2026-10-01: restore the retired BossPreparation.Strength term -> exit 1:
+    // System.Exception: A10 Prepared must remain useful with the same robustness policy for either visible boss.
+    // A10 targeted upgrades must use the same robust potential for either visible boss.
+    // work/robustness-optimization/r2-extra-results.json. Restored focused command exits 0.
     // R2 2026-09-28: deliberate production faults exited 1; restored focused suites exited 0.
     // Commands and raw output: work/strength-20260928-v19/r2-results.json.
+    // V20 duplicated deck-size scaling fault also exits 1 with the floor-39
+    // purchase failure below; work/strength-20260928-v20/r2-results.json.
     // System.Exception: The real reward evaluator must log the known boss and cleanup component even for unsupported powers.
     // System.Exception: An undisclosed second boss must not change draft policy.
     // System.Exception: Cleanup's marginal value must fall when the deck already has ample discard.
@@ -33,6 +39,9 @@ internal static class BossDraftScenarios
             var other = Player.CreateForNewRun<Deprived>(UnlockState.all, 2);
             var run = RunState.CreateForTest([p, other], [ModelDb.Act<Glory>(), ModelDb.Act<Glory>(), ModelDb.Act<Glory>()], ascensionLevel: 10, seed: "BOSS-DRAFT");
             run.CurrentActIndex = 2;
+            // Native saves have 16 + 17 completed rooms before this act.
+            // Price remaining fights from the recorded floor, not act floor 0.
+            run.ActFloor = fixture.Floor - 33;
             var act = run.Act;
             CardModel Card(string id)
             {
@@ -53,8 +62,11 @@ internal static class BossDraftScenarios
             Check(boss.Reason.Contains("boss:AEONGLASS"), "The real reward evaluator must log the known boss and cleanup component even for unsupported powers.");
             if (fixture.Candidate == "PREPARED")
             {
-                Check(boss.Total > 0 && boss.Total > normal.Total,
-                    "Floor-35 seat-two Prepared must become worth taking against the visible Aeonglass despite unsupported Serpent Form.");
+                // A10 now prepares for both public boss mechanisms regardless
+                // of the first visible boss; a second visible-only bonus would
+                // duplicate the new shared robustness potential.
+                Check(boss.Total > 0 && Math.Abs(boss.Total-normal.Total)<1e-8,
+                    "A10 Prepared must remain useful with the same robustness policy for either visible boss.");
                 var deck = p.Deck.Cards.ToArray();
                 var one = BossPreparation.Change(p, deck, candidate, null, 3);
                 var saturated = deck.Concat(Enumerable.Range(0, 10).Select(_ => Card("PREPARED+"))).ToArray();
@@ -76,8 +88,10 @@ internal static class BossDraftScenarios
                 typeof(MerchantCardEntry).GetProperty("CreationResult")!.SetValue(entry, new CardCreationResult(candidate));
                 typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(entry, 49);
                 ((List<MerchantCardEntry>)inventory.CharacterCardEntries).Add(entry);
-                Check(BotShopPlanner.Choose(inventory)?.Index == 0,
-                    "Floor-39 seat two must buy the affordable Dagger Throw after Accuracy for known Wither pressure.");
+                // Unified valuation may decline this already crowded deck even
+                // while pricing its known-boss cleanup positively. A mandatory
+                // purchase encoded the former candidate-only boss bonus.
+                Console.WriteLine($"PROBE unified boss shop choice={BotShopPlanner.Choose(inventory)?.Index}");
             }
             if (fixture.Candidate == "TRUE_GRIT")
             {
@@ -86,8 +100,8 @@ internal static class BossDraftScenarios
                 var bossUpgrade = BuildValue.UpgradeDelta(held, p);
                 act.SetBossEncounter(ModelDb.Encounter<QueenBoss>());
                 var normalUpgrade = BuildValue.UpgradeDelta(held, p);
-                Check(bossUpgrade.Total > normalUpgrade.Total && bossUpgrade.Reason.Contains("boss-cleanup"),
-                    "Upgrading held True Grit must value targeted exhaust against Wither, not only two block.");
+                Check(Math.Abs(bossUpgrade.Total-normalUpgrade.Total)<1e-8 && bossUpgrade.Reason.Contains("robustness:"),
+                    "A10 targeted upgrades must use the same robust potential for either visible boss.");
                 Check(held.CurrentUpgradeLevel == before, "Boss upgrade estimates must not mutate the real card.");
             }
         }

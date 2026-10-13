@@ -1,6 +1,8 @@
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Models;
+using CoopBots.Kernel;
 using CoopBots.Kernel.Vendor.Engine.Common;
 
 namespace CoopBots.Kernel.Vendor;
@@ -10,12 +12,20 @@ internal sealed partial class SimulatedCombatState
     ICombatState ICombatPredictionForkableState.Fork(PredictionForkContext context)
     {
         AssertForkable();
+        ForkableList<Creature> allies, enemies, knownEnemies, escapedCreatures;
+        using (AllocationProbe.Measure(AllocationProbe.Phase.SimLists))
+        {
+            allies = _allies.Fork();
+            enemies = _enemies.Fork();
+            knownEnemies = _knownEnemies.Fork();
+            escapedCreatures = _escapedCreatures.Fork();
+        }
         SimulatedCombatState fork = new(
             this,
-            _allies.Fork(),
-            _enemies.Fork(),
-            _knownEnemies.Fork(),
-            _escapedCreatures.Fork())
+            allies,
+            enemies,
+            knownEnemies,
+            escapedCreatures)
         {
             _mirroredHookLayout = _mirroredHookLayout,
             _mirroredRunHookLayout = _mirroredRunHookLayout,
@@ -66,6 +76,7 @@ internal sealed partial class SimulatedCombatState
             _currentSide = _currentSide,
             _battlewornDummyTimedOut = _battlewornDummyTimedOut,
             _rootMaterialized = _rootMaterialized,
+            _historyCourseAttackWindows = _historyCourseAttackWindows is null ? null : new(_historyCourseAttackWindows),
             _statefulRelicStates = _statefulRelicStates?.Fork(),
             _simulatedOsties = _simulatedOsties?.Fork(),
             _simulatedOstyMaxHp = _simulatedOstyMaxHp?.Fork(),
@@ -90,75 +101,97 @@ internal sealed partial class SimulatedCombatState
             _deathSaveUseCount = _deathSaveUseCount,
         };
 
-        if (_addedPowerInstances is not null)
+        using (AllocationProbe.Measure(AllocationProbe.Phase.SimPowers))
         {
-            List<PowerModel> addedPowerInstances = new(_addedPowerInstances.Count);
-            foreach (PowerModel power in _addedPowerInstances)
-                addedPowerInstances.Add(ForkPower(power, context));
-            fork._addedPowerInstances = addedPowerInstances;
-        }
-        if (_rootMultiInstancePowerClones is not null)
-        {
-            fork._rootMultiInstancePowerClones = new(
-                _rootMultiInstancePowerClones.Count,
-                ReferenceEqualityComparer.Instance);
-            foreach ((PowerModel source, PowerModel clone) in _rootMultiInstancePowerClones)
-                fork._rootMultiInstancePowerClones.Add(source, context.RemapOrSelf(clone));
-        }
-        if (_powers is not null)
-        {
-            fork._powers = new Dictionary<(MegaCrit.Sts2.Core.Entities.Creatures.Creature Owner, Type Type), PowerModel>(
-                _powers.Count,
-                _powers.Comparer);
-            foreach (((MegaCrit.Sts2.Core.Entities.Creatures.Creature owner, Type type), PowerModel power) in _powers)
-                fork._powers.Add((owner, type), ForkPower(power, context));
-        }
-        if (_powerListenerOrder is not null)
-            fork._powerListenerOrder = _powerListenerOrder.Select(context.RequireRemap).ToList();
-
-        if (_nightmareSelections is not null)
-        {
-            fork._nightmareSelections = new(_nightmareSelections.Count, _nightmareSelections.Comparer);
-            foreach ((var power, PredictedCard card) in _nightmareSelections)
-                fork._nightmareSelections.Add(context.RemapOrSelf(power), ForkCard(card, context));
-        }
-        fork._returnToHandNextTurn = ForkCardSet(_returnToHandNextTurn, context);
-        fork._swordSageReplayBonuses = ForkCardDictionary(_swordSageReplayBonuses, context);
-        fork._dampenOriginalUpgrades = ForkDampenCards(context);
-        fork._lastAttackThisTurn = ForkHistoryCourseCards(_lastAttackThisTurn, context);
-        fork._lastAttackPreviousTurn = ForkHistoryCourseCards(_lastAttackPreviousTurn, context);
-        if (_registeredCombatCards is not null)
-        {
-            // 观察者只往卡上写一个回调，不读也不写任何被 ForkCard 改动的状态，
-            // 所以可以和分叉同一趟走完：卡的顺序、ForkCard 的调用序列都不变。
-            // Generation/transformation first registers one card before removing a replacement.
-            // One spare slot prevents that first insertion from copying the entire forked list.
-            List<PredictedCard> registeredCombatCards = new(
-                _registeredCombatCards.Count == 0 ? 0 : _registeredCombatCards.Count + 1);
-            foreach (PredictedCard card in _registeredCombatCards)
+            if (_addedPowerInstances is not null)
             {
-                PredictedCard forkedCard = ForkCard(card, context);
-                registeredCombatCards.Add(forkedCard);
-                fork.ObserveCardMutations(forkedCard);
+                fork._addedPowerInstances = new List<PowerModel>(_addedPowerInstances);
+                foreach (PowerModel power in fork._addedPowerInstances)
+                    SharePowerWith(fork, power);
             }
-            fork._registeredCombatCards = registeredCombatCards;
+            if (_rootMultiInstancePowerClones is not null)
+            {
+                fork._rootMultiInstancePowerClones = new(
+                    _rootMultiInstancePowerClones,
+                    ReferenceEqualityComparer.Instance);
+                foreach (PowerModel clone in fork._rootMultiInstancePowerClones.Values)
+                    SharePowerWith(fork, clone);
+            }
+            if (_powers is not null)
+            {
+                fork._powers = new Dictionary<(MegaCrit.Sts2.Core.Entities.Creatures.Creature Owner, Type Type), PowerModel>(
+                    _powers,
+                    _powers.Comparer);
+                foreach (PowerModel power in fork._powers.Values)
+                    SharePowerWith(fork, power);
+            }
+            if (_powerListenerOrder is not null)
+            {
+                fork._powerListenerOrder = new List<PowerModel>(_powerListenerOrder);
+                foreach (PowerModel power in fork._powerListenerOrder)
+                    SharePowerWith(fork, power);
+            }
         }
-        fork._generatedCombatCards = ForkCardList(_generatedCombatCards, context);
 
-        if (_orbitEnergyRemainders is not null)
+        using (AllocationProbe.Measure(AllocationProbe.Phase.SimCards))
         {
-            fork._orbitEnergyRemainders = new(_orbitEnergyRemainders.Count, _orbitEnergyRemainders.Comparer);
-            foreach ((var power, int amount) in _orbitEnergyRemainders)
-                fork._orbitEnergyRemainders.Add(context.RemapOrSelf(power), amount);
-        }
-        if (_paleBlueDotActivated is not null)
-        {
-            fork._paleBlueDotActivated = new(_paleBlueDotActivated.Count, _paleBlueDotActivated.Comparer);
-            foreach ((var power, bool active) in _paleBlueDotActivated)
-                fork._paleBlueDotActivated.Add(context.RemapOrSelf(power), active);
+            if (_nightmareSelections is not null)
+            {
+                fork._nightmareSelections = new(_nightmareSelections.Count, _nightmareSelections.Comparer);
+                foreach ((var power, PredictedCard card) in _nightmareSelections)
+                {
+                    fork._nightmareSelections.Add(power, ForkCard(card, context));
+                    SharePowerWith(fork, power);
+                }
+            }
+            fork._returnToHandNextTurn = ForkCardSet(_returnToHandNextTurn, context);
+            fork._swordSageReplayBonuses = ForkCardDictionary(_swordSageReplayBonuses, context);
+            fork._dampenOriginalUpgrades = ForkDampenCards(context);
+            fork._lastAttackThisTurn = ForkHistoryCourseCards(_lastAttackThisTurn, context);
+            fork._lastAttackPreviousTurn = ForkHistoryCourseCards(_lastAttackPreviousTurn, context);
+            if (_registeredCombatCards is not null)
+            {
+                // 观察者只往卡上写一个回调，不读也不写任何被 ForkCard 改动的状态，
+                // 所以可以和分叉同一趟走完：卡的顺序、ForkCard 的调用序列都不变。
+                // Generation/transformation first registers one card before removing a replacement.
+                // One spare slot prevents that first insertion from copying the entire forked list.
+                List<PredictedCard> registeredCombatCards = new(
+                    _registeredCombatCards.Count == 0 ? 0 : _registeredCombatCards.Count + 1);
+                foreach (PredictedCard card in _registeredCombatCards)
+                {
+                    PredictedCard forkedCard = ForkCard(card, context);
+                    registeredCombatCards.Add(forkedCard);
+                    fork.ObserveCardMutations(forkedCard);
+                }
+                fork._registeredCombatCards = registeredCombatCards;
+            }
+            fork._generatedCombatCards = ForkCardList(_generatedCombatCards, context);
         }
 
-        RestoreHookListenerCaches(fork, context);
+        using (AllocationProbe.Measure(AllocationProbe.Phase.SimMisc))
+        {
+            if (_orbitEnergyRemainders is not null)
+            {
+                fork._orbitEnergyRemainders = new(_orbitEnergyRemainders.Count, _orbitEnergyRemainders.Comparer);
+                foreach ((var power, int amount) in _orbitEnergyRemainders)
+                {
+                    fork._orbitEnergyRemainders.Add(power, amount);
+                    SharePowerWith(fork, power);
+                }
+            }
+            if (_paleBlueDotActivated is not null)
+            {
+                fork._paleBlueDotActivated = new(_paleBlueDotActivated.Count, _paleBlueDotActivated.Comparer);
+                foreach ((var power, bool active) in _paleBlueDotActivated)
+                {
+                    fork._paleBlueDotActivated.Add(power, active);
+                    SharePowerWith(fork, power);
+                }
+            }
+        }
+
+        using (AllocationProbe.Measure(AllocationProbe.Phase.SimHookCaches))
+            RestoreHookListenerCaches(fork, context);
         context.Register(this, fork);
         return fork;
     }

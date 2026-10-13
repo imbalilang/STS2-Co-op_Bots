@@ -323,10 +323,55 @@ internal static partial class HookMirrors
             IsInitialShuffle = isInitialShuffle
         };
 
-        foreach (var listener in IterateCombatHookListeners(simulator, MirroredHookMask.ModifyShuffleOrder))
+        // Native listeners see each player's current AllPiles (including Play),
+        // not the immutable registration order. Anger appends its generated
+        // copy before its original settles to Discard: PerfectFit ordering then
+        // differs from root registration. Keep other hook dispatch unchanged.
+        foreach (var listener in OwnedCardShuffleListeners(simulator))
         {
+            // Preserve the original iterator's per-listener choice boundary.
+            // No later subscriber runs while a previous native mirror is paused.
+            if (simulator.HasPendingChoice) break;
             ModifyShuffleOrderMirrors.Invoke(listener, context);
         }
+    }
+
+    private static IReadOnlyList<AbstractModel> OwnedCardShuffleListeners(CombatPredictionSimulator simulator)
+    {
+        // Snapshot the same eligible subscribers before any hook executes.
+        // Preserve every non-card slot and attachment order within one card;
+        // only current branch-owned card order changes. No live pile reads,
+        // cached value getters, new refusal or cross-branch listener cache.
+        List<AbstractModel> listeners = [];
+        foreach (var listener in IterateCombatHookListeners(simulator, MirroredHookMask.ModifyShuffleOrder))
+            listeners.Add(listener);
+        Dictionary<CardModel, int> order = new(ReferenceEqualityComparer.Instance);
+        int ordinal = 0;
+        foreach (Player owner in simulator.State.Players)
+        {
+            foreach (PredictedCard card in simulator.State.GetPlayerCombatState(owner).AllCards)
+            {
+                order[card.Original] = ordinal;
+                order[card.Preview] = ordinal++;
+            }
+        }
+        List<(int Slot, int Order, AbstractModel Model)> cards = [];
+        for (int index = 0; index < listeners.Count; index++)
+        {
+            CardModel? card = listeners[index] switch
+            {
+                CardModel model => model,
+                EnchantmentModel enchantment => enchantment.Card,
+                AfflictionModel affliction => affliction.Card,
+                _ => null,
+            };
+            if (card is not null && order.TryGetValue(card, out int cardOrder))
+                cards.Add((index, cardOrder, listeners[index]));
+        }
+        var sorted = cards.OrderBy(card => card.Order).ThenBy(card => card.Slot).ToArray();
+        for (int index = 0; index < cards.Count; index++)
+            listeners[cards[index].Slot] = sorted[index].Model;
+        return listeners;
     }
 
     // Mirrors Hook.AfterShuffle.

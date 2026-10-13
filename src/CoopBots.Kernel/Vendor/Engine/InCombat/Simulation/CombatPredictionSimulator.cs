@@ -3,6 +3,7 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Models;
+using CoopBots.Kernel;
 using CoopBots.Kernel.Vendor.Engine.Common;
 using CoopBots.Kernel.Vendor.Engine.Common.Mirrors;
 
@@ -120,6 +121,8 @@ internal sealed partial class CombatPredictionSimulator
             : CombatPredictionRngSet.From(combatState.RunState.Rng);
         StateStore = new PredictionStateStore();
         History = new CombatPredictionHistory(_trace);
+        if (State.CombatState is SimulatedCombatState attachedState)
+            attachedState.AttachStateStore(StateStore);
         if (combatState is ICombatPredictionRootMaterializable materializable)
             materializable.MaterializeRoot(this);
     }
@@ -150,15 +153,21 @@ internal sealed partial class CombatPredictionSimulator
 
     public CombatPredictionSimulator Fork()
     {
+        using var allocation = AllocationProbe.Measure(AllocationProbe.Phase.Fork);
         GuardOrdinaryCardContinuationFork();
         GuardOrdinaryExecutionContinuationFork();
         AssertForkable();
 
         using PredictionForkContext context = new();
         PredictionTrace trace = new();
-        CombatPredictionState state = State.Fork(context);
-        PredictionStateStore stateStore = StateStore.Fork(context);
-        CombatPredictionHistory history = History.Fork(trace);
+        CombatPredictionState state;
+        using (AllocationProbe.Measure(AllocationProbe.Phase.StateFork)) state = State.Fork(context);
+        PredictionStateStore stateStore;
+        using (AllocationProbe.Measure(AllocationProbe.Phase.StoreFork)) stateStore = StateStore.Fork(context);
+        if (state.CombatState is SimulatedCombatState forkedState)
+            forkedState.AttachStateStore(stateStore);
+        CombatPredictionHistory history;
+        using (AllocationProbe.Measure(AllocationProbe.Phase.HistoryFork)) history = History.Fork(trace);
         return new CombatPredictionSimulator(
             trace,
             state,

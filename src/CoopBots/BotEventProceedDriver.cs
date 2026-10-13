@@ -52,6 +52,15 @@ internal static class BotEventProceedDriver
         try
         {
             if (state.CurrentRoom?.RoomType != RoomType.Event) return false;
+            if (RoomWork.Waiting(manager, state) is { } waiting)
+            {
+                if (Environment.TickCount64 >= _nextWarnAt)
+                {
+                    _nextWarnAt = Environment.TickCount64 + 2000;
+                    Log.Info($"CoopBots event: holding the continue — {waiting}");
+                }
+                return false;
+            }
             // Already moved on: Proceed opens the map, so an open map means this event
             // is behind us and re-opening it would fight whatever the player is doing.
             if (NMapScreen.Instance is { IsOpen: true }) return false;

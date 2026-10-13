@@ -1,4 +1,4 @@
-using MegaCrit.Sts2.Core.Entities.Cards;
+﻿using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Models;
 
 namespace CoopBots.Building;
@@ -10,7 +10,9 @@ internal static class DraftCardEffects
     internal readonly record struct Effects(double TemporaryStrength = 0, double TemporaryDexterity = 0,
         double StrengthPerTurn = 0, double ReplayAttacks = 0, double ConditionalDamage = 0,
         int ExhaustRequired = 0, double GeneratedShivs = 0, double ExhaustDraw = 0,
-        double ExhaustBlock = 0, bool FreeExhaustSkills = false, double ConditionalPoison = 0)
+        double ExhaustBlock = 0, bool FreeExhaustSkills = false, double ConditionalPoison = 0,
+        double AlliedShivDamage = 0, double PoisonPerDraw = 0, double BlockPerAttack = 0,
+        double GeneratedShivWeak = 0, double ReplaySkills = 0)
     {
         internal bool NeedsLifecycle => this != default;
     }
@@ -18,20 +20,38 @@ internal static class DraftCardEffects
     internal static Effects Of(CardModel card)
     {
         double Amount(string key) => card.DynamicVars.TryGetValue(key, out var v) ? (double)v.BaseValue : 0;
-        return card.GetType().Name switch
+        Effects effect = card.GetType().Name switch
         {
             "Fade" or "Anticipate" => new(TemporaryDexterity: Amount("DexterityPower")),
-            "Coordinate" or "SetupStrike" => new(TemporaryStrength: Amount("StrengthPower")),
+            "Coordinate" or "SetupStrike" or "FeedingFrenzy" => new(TemporaryStrength: Amount("StrengthPower")),
             "DemonForm" => new(StrengthPerTurn: Amount("StrengthPower")),
             "OneTwoPunch" => new(ReplayAttacks: Amount("Attacks")),
             "PactsEnd" => new(ConditionalDamage: Amount("Damage"), ExhaustRequired: (int)Amount("Cards")),
-            "BladeDance" or "CloakAndDagger" => new(GeneratedShivs: Amount("Cards")),
+            "BladeDance" or "CloakAndDagger" or "HiddenDaggers" => new(GeneratedShivs: Amount("Cards")),
+            "BladeOfInk" => new(GeneratedShivs: Amount("Cards"), GeneratedShivWeak: Amount("Cards")),
+            "Burst" => new(ReplaySkills: Amount("Skills")),
+            // The owner's Shiv hooks stay local. Allies contribute their own
+            // base attacks, discounted for hand space/availability; never give
+            // the owner their exhaust triggers or Wither play count.
+            "BladeSymphony" => new(GeneratedShivs: Amount("Cards"), AlliedShivDamage:
+                Amount("Cards") * 4 * .8 * (card.IsMutable && card.Owner is { } owner
+                    ? owner.RunState.Players.Count(p => p != owner && p.Creature.IsAlive) : 0)),
             "DarkEmbrace" => new(ExhaustDraw: 1),
             "FeelNoPain" => new(ExhaustBlock: Amount("Power")),
             "Corruption" => new(FreeExhaustSkills: true),
             "BubbleBubble" => new(ConditionalPoison: CoopBots.Kernel.CardPoisonEffects.DirectAmount(card)),
+            // Native temporary powers: only draws/attacks AFTER this play
+            // trigger, and neither stack survives the end of the owner's turn.
+            "CorrosiveWave" => new(PoisonPerDraw: Amount("CorrosiveWave")),
+            "Rage" => new(BlockPerAttack: Amount("Power")),
             _ => default,
         };
+        // Each native replay executes generation again. Keep one structural
+        // quantity for Shiv damage, exhaust/play hooks, Rage and allied output.
+        var plays = 1 + Math.Max(0, card.GetEnchantedReplayCount());
+        return effect with { GeneratedShivs = effect.GeneratedShivs * plays,
+            AlliedShivDamage = effect.AlliedShivDamage * plays,
+            GeneratedShivWeak = effect.GeneratedShivWeak * plays };
     }
 
     // A deck-cycle trigger estimate, not the current fight's exhaust pile. The
@@ -72,6 +92,7 @@ internal static class DraftCardEffects
         var poisonAvailability = 1 - Math.Pow(1 - poisonSources / (double)deck.Count, Math.Min(10, deck.Count));
         value += effect.ConditionalPoison * poisonAvailability * 3;
         value += effect.GeneratedShivs * 4 * 1.2;
+        value += effect.AlliedShivDamage * 1.2;
         var triggers = ExhaustSupply(deck);
         value += Math.Min(8, triggers) * (effect.ExhaustDraw * 4 + effect.ExhaustBlock);
         if (effect.FreeExhaustSkills)

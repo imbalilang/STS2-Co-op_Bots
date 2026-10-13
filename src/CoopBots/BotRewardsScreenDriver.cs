@@ -10,6 +10,8 @@ using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.Rewards;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.GameActions;
 // Aliased: a bare `using Godot;` makes Environment ambiguous with System.Environment.
 using Node = Godot.Node;
 using GodotObject = Godot.GodotObject;
@@ -26,9 +28,9 @@ namespace CoopBots;
 /// for clicks nobody is going to make. The card reward is already answered by
 /// <see cref="BotCardSelector"/>; gold, potions and relics are buttons here.
 ///
-/// Shape follows the game's own AutoSlay handler (RewardsScreenHandler), including its
-/// potion rule: a potion reward is only clickable with an open potion slot, and
-/// clicking one with full slots would open a discard prompt instead.
+/// Shape follows the game's own AutoSlay handler (RewardsScreenHandler). For
+/// an improved potion reward, first finish a native discard action, then click
+/// with an open slot; do not open the unattended full-belt discard prompt.
 /// </summary>
 internal static class BotRewardsScreenDriver
 {
@@ -36,6 +38,9 @@ internal static class BotRewardsScreenDriver
     private static readonly HashSet<NRewardButton> Attempted = new();
     private static long _nextWarnAt;
     private static bool _beltFullReported;
+    private static Task? _discardPending;
+    private static readonly HashSet<NRewardButton> ReplacementAttempted = new();
+    private static readonly HashSet<Reward> ReportedMissing = new();
 
     internal static bool TryDrive(RunManager manager, RunState state)
     {
@@ -51,10 +56,19 @@ internal static class BotRewardsScreenDriver
                 _screen = screen;
                 Attempted.Clear();
                 _beltFullReported = false;
+                ReplacementAttempted.Clear();
+                ReportedMissing.Clear();
             }
 
-            var hasPotionSlots = state.Players.FirstOrDefault(p => p.NetId == me)?.HasOpenPotionSlots ?? false;
-            var button = NextRewardButton(screen, hasPotionSlots);
+            if (_discardPending is { IsCompleted: false }) return true;
+            if (_discardPending is { } finished)
+            {
+                _discardPending = null;
+                if (finished.IsFaulted) Log.Warn($"CoopBots reward discard failed: {finished.Exception}");
+            }
+            var player = state.Players.FirstOrDefault(p => p.NetId == me);
+            var hasPotionSlots = player?.HasOpenPotionSlots ?? false;
+            var button = NextRewardButton(screen, player);
             if (button is null)
             {
                 // The driver has taken everything it can from this screen, but the
@@ -65,29 +79,44 @@ internal static class BotRewardsScreenDriver
                 // the room forever — measured as the shop deadlock (Orrery/Cauldron).
                 // Non-terminal screens expose their proceed button as "Skip", and
                 // pressing it runs SkipLocalRewardsSet, which completes the task.
+                ReportMissingRewards(screen);
                 if (TryPressSkip(screen)) return true;
 
-                // SAY WHY THE REWARD IS STILL THERE. A potion button is deliberately left
-                // alone when the belt has no free slot — correct behaviour, but until now
-                // it was indistinguishable from a reward we failed to take, and the game
-                // itself gives no feedback either. Live report 2026-09-22: "the bot did not
-                // take the potion" in an all-bot game, with nothing in the log to read.
+                // A full belt is final only after considering a better reward.
                 if (!hasPotionSlots && !_beltFullReported
                     && Descendants<NRewardButton>(screen).Any(candidate =>
                         candidate.IsEnabled && !Attempted.Contains(candidate)
                         && candidate.Reward is PotionReward))
                 {
                     _beltFullReported = true;
-                    Log.Info("CoopBots rewards: leaving the potion reward — every potion slot is "
-                        + "full for the handed-over seat.");
+                    Log.Info("CoopBots rewards: leaving the potion reward — full belt and no eligible "
+                        + "replacement for the handed-over seat.");
                 }
                 return false;
             }
 
+            if (player is not null && !hasPotionSlots && button.Reward is PotionReward { Potion: { } incoming }
+                && BotPotionInventory.Replacement(player, incoming) is { } old)
+            {
+                ReplacementAttempted.Add(button);
+                var action = new DiscardPotionGameAction(player, (uint)player.GetPotionSlotIndex(old), false);
+                Log.Info(BotPotionInventory.Describe(player, old, incoming));
+                manager.ActionQueueSynchronizer.RequestEnqueue(action);
+                _discardPending = action.CompletionTask;
+                return true;
+            }
             Attempted.Add(button);
             button.ForceClick();
-            Log.Info($"CoopBots rewards: took {button.Reward?.GetType().Name ?? "a reward"} "
-                + "for the handed-over seat");
+            // "took" is only true for a reward this click actually CLAIMS. A CardReward
+            // click merely opens the nested choice, which BotCardSelector may answer
+            // with a skip — measured live 2026-09-29, the Act-1 boss card reward was
+            // answered with a skip while this line read "took CardReward", the exact
+            // opposite of what happened.
+            var name = button.Reward?.GetType().Name ?? "a reward";
+            Log.Info(button.Reward is CardReward
+                ? $"CoopBots rewards: answered {name} for the handed-over seat "
+                    + "(the nested choice decides whether a card was taken)"
+                : $"CoopBots rewards: took {name} for the handed-over seat");
             return true;
         }
         catch (Exception error)
@@ -126,9 +155,9 @@ internal static class BotRewardsScreenDriver
             if (NOverlayStack.Instance?.Peek() is not NRewardsScreen screen
                 || !GodotObject.IsInstanceValid(screen)) return true;
             if (!ReferenceEquals(_screen, screen)) return false;
-            var hasPotionSlots = state.Players
-                .FirstOrDefault(p => p.NetId == LocalContext.NetId)?.HasOpenPotionSlots ?? false;
-            return NextRewardButton(screen, hasPotionSlots) is null;
+            if (_discardPending is { IsCompleted: false }) return false;
+            var player = state.Players.FirstOrDefault(p => p.NetId == LocalContext.NetId);
+            return NextRewardButton(screen, player) is null;
         }
         catch
         {
@@ -139,13 +168,36 @@ internal static class BotRewardsScreenDriver
     }
 
     /// <summary>The button <see cref="TryDrive"/> would click next, or null when there is
-    /// nothing left to take. The potion rule is the game's own: a potion reward is only
-    /// clickable with an open slot, so a full belt makes those buttons untakeable rather
-    /// than pending — otherwise the room would never be finishable.</summary>
-    private static NRewardButton? NextRewardButton(NRewardsScreen screen, bool hasPotionSlots)
+    /// nothing left to take. A better potion remains pending while the native
+    /// discard is queued; equal, weaker and unknown rewards remain skippable.</summary>
+    private static NRewardButton? NextRewardButton(NRewardsScreen screen, Player? player)
         => Descendants<NRewardButton>(screen)
             .FirstOrDefault(candidate => candidate.IsEnabled && !Attempted.Contains(candidate)
-                && (candidate.Reward is not PotionReward || hasPotionSlots));
+                && CanTakeReward(candidate.Reward, player, ReplacementAttempted.Contains(candidate)));
+
+    internal static bool CanTakeReward(Reward? reward, Player? player, bool replacementAttempted)
+        => reward is not PotionReward potion || player?.HasOpenPotionSlots == true
+            || player is not null && potion.Potion is { } incoming && !replacementAttempted
+                && BotPotionInventory.Replacement(player, incoming) is not null;
+
+    /// <summary>
+    /// Every reward this screen left unclaimed. The synthetic-bot path has printed
+    /// `reward not taken` since 2026-09-21, but the handed-over seat had no such line —
+    /// measured live 2026-09-29, its skipped Act-1 boss CardReward was reported only as
+    /// "took CardReward". Printed once per reward per screen; potions already report
+    /// themselves on the full-belt path.
+    /// </summary>
+    private static void ReportMissingRewards(NRewardsScreen screen)
+    {
+        foreach (var candidate in Descendants<NRewardButton>(screen))
+        {
+            if (!GodotObject.IsInstanceValid(candidate) || candidate.Reward is not { } reward) continue;
+            if (reward.SuccessfullySelected || reward is PotionReward) continue;
+            if (!ReportedMissing.Add(reward)) continue;
+            Log.Info($"CoopBots reward not taken: {reward.GetType().Name} for the handed-over seat "
+                + $"(taken={reward.SuccessfullySelected}).");
+        }
+    }
 
     /// <summary>
     /// Completes a non-terminal reward set whose remaining rewards this driver cannot
@@ -184,8 +236,9 @@ internal static class BotRewardsScreenDriver
     // typed and independent of how the screen names its nodes.
     private static IEnumerable<T> Descendants<T>(Node node) where T : Node
     {
-        foreach (var child in node.GetChildren())
+        for (var i = 0; i < node.GetChildCount(); i++)
         {
+            var child = node.GetChild(i);
             if (child is T typed) yield return typed;
             foreach (var nested in Descendants<T>(child)) yield return nested;
         }

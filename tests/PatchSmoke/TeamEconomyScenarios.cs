@@ -50,8 +50,11 @@ internal static class TeamEconomyScenarios
         UnknownAllySupportIsBounded(Check);
         HypotheticalOwnContext(Check);
         SaturationExcludesOnlyTheSameInstance(Check);
+        VulnerablePayoffFollowsPartySupply(Check);
+        PayoffValueReachesRemovalAndUpgrade(Check);
         TwoItemShopBeatsGreedySingle(Check);
         MawBankFreeFirstPair(Check);
+        MawBankDeclinesWeakSecondCopy(Check);
         SequentialShopReplan(Check);
         SecondActionGates(Check);
         PairFeasibility(Check);
@@ -388,6 +391,170 @@ internal static class TeamEconomyScenarios
         Console.WriteLine($"PASS: saturation excludes only the actual instance (external={externalValue:F2} < actual={actualValue:F2}).");
     }
 
+    // The payoff side of the shared Vulnerable economy.
+    //
+    // Split by what the deck model can already see:
+    //  * BULLY is already team-aware inside DeckStrength (SustainedDeckValue feeds
+    //    the allies' Vulnerable application into DamagePerVulnerable when the deck
+    //    holds a Bully). The regression pins that on all three edit paths and
+    //    asserts the new channel does NOT price it a second time.
+    //  * DOMINATE and MOLTEN_FIST have no reader term in the deck model, so the
+    //    new TeamCoordinator payoff channel carries them.
+    // Live 2026-10-05 A10 (seed 2B1D65QTZ1F2): the party held 8-27 Vulnerable all
+    // run (three TAUNT + two BASH + Leg Sweep); Bully sat in one shop at 74 gold
+    // with 113 gold in hand and was skipped, Molten Fist's two picks scored
+    // 0.7 / -1.9, and suppliers collected team-fit while readers collected nothing.
+    private static void VulnerablePayoffFollowsPartySupply(Action<bool, string> check)
+    {
+        var a = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
+        var b = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 1));
+        a.MaxEnergy = 3; b.MaxEnergy = 3;
+        var run = RunState.CreateForTest(new[] { a, b }, seed: "TEAM-PAYOFF");
+        ClearDeck(a); ClearDeck(b);
+        for (var i = 0; i < 5; i++) Give(a, run.CreateCard<StrikeIronclad>(a));
+        var deck = a.Deck.Cards.ToArray();
+        var bully = run.CreateCard<Bully>(a);
+        var dominate = run.CreateCard<Dominate>(a);
+        var molten = run.CreateCard<MoltenFist>(a);
+
+        // --- Bully: the deck model itself must follow the party supply. -------
+        TeamBuildingContext.Capture(run, new[] { a, b });
+        var bullyAddDry = BuildValue.Add(bully, a, deck).Total;
+        var bullyChannelDry = TeamCoordinator.TeamBonus(bully, a);
+        for (var i = 0; i < 3; i++) Give(b, run.CreateCard<Bash>(b));
+        TeamBuildingContext.Capture(run, new[] { a, b });
+        var bullyAddRich = BuildValue.Add(bully, a, deck).Total;
+        var bullyChannelRich = TeamCoordinator.TeamBonus(bully, a);
+        check(bullyAddRich > bullyAddDry + 1,
+            $"Bully must already follow the party supply through the deck model "
+            + $"({bullyAddDry:F2} -> {bullyAddRich:F2}).");
+        check(bullyChannelDry <= 0.001 && bullyChannelRich <= 0.001,
+            $"the payoff channel must not price Bully's supply twice "
+            + $"(dry={bullyChannelDry:F2}, rich={bullyChannelRich:F2}).");
+
+        // The same supply must reach the other two edit paths for Bully: its
+        // UpgradeDelta grows and removing it costs more, without any wrapper.
+        var heldBully = deck.Append(bully).ToArray();
+        var bullyUpgradeRich = BuildValue.UpgradeDelta(bully, a, heldBully).Total;
+        var bullyRemoveRich = BuildValue.Remove(bully, a, heldBully).Total;
+        ClearDeck(b);
+        TeamBuildingContext.Capture(run, new[] { a, b });
+        var bullyUpgradeDry = BuildValue.UpgradeDelta(bully, a, heldBully).Total;
+        var bullyRemoveDry = BuildValue.Remove(bully, a, heldBully).Total;
+        check(bullyUpgradeRich > bullyUpgradeDry,
+            $"upgrading Bully must already inherit the party supply ({bullyUpgradeDry:F2} -> {bullyUpgradeRich:F2}).");
+        check(bullyRemoveRich < bullyRemoveDry,
+            $"removing Bully must already cost more with supply ({bullyRemoveDry:F2} -> {bullyRemoveRich:F2}).");
+
+        // --- Dominate / Molten Fist: the new channel carries the supply. ------
+        TeamBuildingContext.Capture(run, new[] { a, b });
+        var moltenDry = TeamCoordinator.TeamBonus(molten, a);
+        check(moltenDry <= 0.001,
+            $"a reader with no party supply must earn no team bonus ({moltenDry:F2}).");
+
+        Give(b, run.CreateCard<Bash>(b));
+        TeamBuildingContext.Capture(run, new[] { a, b });
+        var moltenThin = TeamCoordinator.TeamBonus(molten, a);
+        check(moltenThin > moltenDry,
+            $"one party applier must make a reader worth more ({moltenDry:F2} -> {moltenThin:F2}).");
+
+        Give(b, run.CreateCard<Bash>(b));
+        Give(a, run.CreateCard<Taunt>(a));
+        TeamBuildingContext.Capture(run, new[] { a, b });
+        var moltenRich = TeamCoordinator.TeamBonus(molten, a);
+        check(moltenRich > moltenThin,
+            $"a second applier must keep raising the reader ({moltenThin:F2} -> {moltenRich:F2}).");
+
+        // Dominate is both an applier and a reader, so the two channels move in
+        // opposite directions as the party saturates (its "missing debuff"
+        // supplier value falls, its reader value rises). Both ends stay priced:
+        // without the reader channel these fall to 14.00 / 1.67.
+        ClearDeck(a); ClearDeck(b);
+        for (var i = 0; i < 5; i++) Give(a, run.CreateCard<StrikeIronclad>(a));
+        TeamBuildingContext.Capture(run, new[] { a, b });
+        var dominateAlone = TeamCoordinator.TeamBonus(dominate, a);
+        Give(b, run.CreateCard<Bash>(b));
+        Give(b, run.CreateCard<Bash>(b));
+        TeamBuildingContext.Capture(run, new[] { a, b });
+        var dominateWithParty = TeamCoordinator.TeamBonus(dominate, a);
+        check(dominateAlone > 15,
+            $"Dominate must count its own stack as supply (alone={dominateAlone:F2}).");
+        check(dominateWithParty > 10,
+            $"a supplied Dominate must stay priced through the reader channel (party={dominateWithParty:F2}).");
+        Console.WriteLine($"PASS: the Vulnerable payoff split follows what the deck model can see "
+            + $"(Bully add {bullyAddDry:F2}->{bullyAddRich:F2}, upgrade {bullyUpgradeDry:F2}->{bullyUpgradeRich:F2}, "
+            + $"remove {bullyRemoveDry:F2}->{bullyRemoveRich:F2}; Molten {moltenDry:F2}->{moltenThin:F2}->{moltenRich:F2}; "
+            + $"Dominate {dominateAlone:F2}/{dominateWithParty:F2}).");
+    }
+
+    // The channel must reach every permanent-edit path for the readers it covers,
+    // not just the reward screen: acquisition, removal and upgrade all go through
+    // the decision wrappers, while the pure deck-strength functions stay exact
+    // transforms of the deck model (UnifiedDeckStrengthScenarios pins them).
+    private static void PayoffValueReachesRemovalAndUpgrade(Action<bool, string> check)
+    {
+        var a = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 1, 1));
+        var b = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 1));
+        a.MaxEnergy = 3; b.MaxEnergy = 3;
+        var run = RunState.CreateForTest(new[] { a, b }, seed: "TEAM-PAYOFF-EDIT");
+        ClearDeck(a); ClearDeck(b);
+        for (var i = 0; i < 5; i++) Give(a, run.CreateCard<StrikeSilent>(a));
+        var molten = run.CreateCard<MoltenFist>(a);
+        var deck = a.Deck.Cards.ToArray();
+
+        TeamBuildingContext.Capture(run, new[] { a, b });
+        var addDry = BuildValue.AddForDecision(molten, a, deck).Total;
+        var addPureDry = BuildValue.Add(molten, a, deck).Total;
+
+        for (var i = 0; i < 3; i++) Give(b, run.CreateCard<Bash>(b));
+        TeamBuildingContext.Capture(run, new[] { a, b });
+        var addRich = BuildValue.AddForDecision(molten, a, deck).Total;
+        var addPureRich = BuildValue.Add(molten, a, deck).Total;
+        check(addRich - addDry > 0.5,
+            $"the reward decision path must price the party supply ({addDry:F2} -> {addRich:F2}).");
+        check(Math.Abs(addPureRich - addPureDry) < 1e-8,
+            $"the deck-strength model itself must stay unchanged ({addPureDry:F2} vs {addPureRich:F2}).");
+
+        // Now the same card is held: removal and upgrade must follow the channel.
+        Give(a, molten);
+        var held = a.Deck.Cards.ToArray();
+        var removeRich = BuildValue.RemoveForDecision(molten, a, held).Total;
+        var upgradeRich = BuildValue.UpgradeForDecision(molten, a, held).Total;
+        var upgradePureRich = BuildValue.UpgradeDelta(molten, a, held).Total;
+        check(Math.Abs(addRich + removeRich) < 1e-6,
+            $"decision-layer add/remove must stay inverse ({addRich:F2}/{removeRich:F2}).");
+
+        ClearDeck(b);
+        TeamBuildingContext.Capture(run, new[] { a, b });
+        var removeDry = BuildValue.RemoveForDecision(molten, a, held).Total;
+        var upgradeDry = BuildValue.UpgradeForDecision(molten, a, held).Total;
+        var upgradePureDry = BuildValue.UpgradeDelta(molten, a, held).Total;
+        check(removeRich < removeDry,
+            $"removing a reader the party supplies must cost more ({removeDry:F2} -> {removeRich:F2}).");
+        check(Math.Abs(upgradePureRich - upgradePureDry) < 1e-8,
+            $"the pure upgrade delta must stay unchanged ({upgradePureDry:F2} vs {upgradePureRich:F2}).");
+        // The upgrade path must be wired to the channel: the wrapper is the pure
+        // delta plus exactly the channel's after-before for this card. Molten Fist
+        // doubles the standing stock and its upgrade changes the attack, not the
+        // doubling, so that delta is legitimately zero here — the assertion is
+        // that the path is consulted, not that every reader upgrade gains. The
+        // channel can never make an upgrade worth less than the deck model alone.
+        TeamBuildingContext.Capture(run, new[] { a, b });
+        var upgradedMolten = CardProfile.Upgraded(molten, BuildValue.StableEnergy(a))!.Value.Card;
+        var channelDelta = TeamCoordinator.TeamBonus(upgradedMolten, a, held, null)
+            - TeamCoordinator.TeamBonus(molten, a, held, null);
+        var upgradeRich2 = BuildValue.UpgradeForDecision(molten, a, held).Total;
+        var upgradePureRich2 = BuildValue.UpgradeDelta(molten, a, held).Total;
+        check(Math.Abs(upgradeRich2 - upgradePureRich2 - channelDelta) < 1e-8,
+            $"the upgrade path must add exactly the channel's delta "
+            + $"(wrapper={upgradeRich2:F2}, pure={upgradePureRich2:F2}, channel={channelDelta:F2}).");
+        check(upgradeRich2 >= upgradeDry - 1e-9,
+            $"the channel must not make an upgrade worse ({upgradeDry:F2} -> {upgradeRich2:F2}).");
+        Console.WriteLine($"PASS: the payoff channel reaches acquisition, removal and upgrade "
+            + $"(add {addDry:F2}->{addRich:F2}, remove {removeDry:F2}->{removeRich:F2}, "
+            + $"upgrade {upgradeDry:F2}->{upgradeRich:F2}).");
+    }
+
     private static void TwoItemShopBeatsGreedySingle(Action<bool, string> check)
     {
         var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 3, 1));
@@ -506,12 +673,12 @@ internal static class TeamEconomyScenarios
             bot.MaxEnergy = 3;
             var run = RunState.CreateForTest(new[] { bot }, seed: "TEAM-MAW-" + slot);
             ClearDeck(bot);
-            // An attack-less deck makes a draw/energy card a large, clearly
-            // positive improvement, so the pair comfortably beats the best
-            // single. (Changed for community-elo-draft: an ordinary attack like
-            // Twin Strike now sits below the skip Elo and is no longer worth the
-            // fixture's >26 gold.)
-            for (var i = 0; i < 8; i++) Give(bot, run.CreateCard<DefendIronclad>(bot));
+            // A first-copy value alone cannot justify the second copy. Keep
+            // one native attack payoff so the second Adrenaline's actual deck
+            // marginal remains above the bank income and price; the attackless
+            // original board is preserved as the refusal case below.
+            for (var i = 0; i < 7; i++) Give(bot, run.CreateCard<DefendIronclad>(bot));
+            Give(bot, run.CreateCard<StrikeIronclad>(bot));
             bot.Gold = 500;
             var room = new MerchantRoom();
             run.PushRoom(room);
@@ -535,11 +702,22 @@ internal static class TeamEconomyScenarios
         var activePaid = activeRun.CreateCard<Adrenaline>(activeBot);
         var plainFree = plainRun.CreateCard<Adrenaline>(plainBot);
         var plainPaid = plainRun.CreateCard<Adrenaline>(plainBot);
-        var freeValue = Math.Max(0, BuildValue.Add(activeFree, activeBot).Total) * BotShopPlanner.GoldPerDeckValue;
-        var paidValue = Math.Max(0, BuildValue.Add(activePaid, activeBot).Total) * BotShopPlanner.GoldPerDeckValue;
+        var freeValue = Math.Max(0, BotShopPlanner.PermanentValue(BuildValue.Add(activeFree, activeBot), activeBot)) * BotShopPlanner.GoldPerDeckValue;
+        var paidValue = Math.Max(0, BotShopPlanner.PermanentValue(BuildValue.Add(activePaid, activeBot), activeBot)) * BotShopPlanner.GoldPerDeckValue;
         check(freeValue > 26 && Math.Abs(freeValue - paidValue) < 0.001,
             $"the MawBank fixture needs a worthwhile card with equal order values ({freeValue:F1}/{paidValue:F1}).");
         const int paidCost = 1;
+        var afterFreeDeck = activeBot.Deck.Cards.Append(activeFree).ToArray();
+        var secondAfterFreeGold = Math.Max(0, BotShopPlanner.PermanentValue(
+            BuildValue.AddForDecision(activePaid, activeBot, afterFreeDeck), activeBot)) * BotShopPlanner.GoldPerDeckValue;
+        // R2 positive-paid-margin: restore the original eight-Defend board,
+        // force Rebuild exit 0, then named RED exit 1 (restored GREEN exit 0):
+        // System.Exception: Team economy regression: the positive free-first fixture needs a paid marginal above the bank income and price with headroom, got 13.74.
+        // Existing fee witness on a second-paid-bank-income mutation:
+        // System.Exception: Team economy regression: an active MawBank must charge exactly one 24 income on the free-first pair (plain=493.71, active=493.71).
+        // Exact source bytes restored; raw logs: work/szg-repair-20261008T124624/build/maw-fix/r2-results.json.
+        check(secondAfterFreeGold > 24 + paidCost + 5,
+            $"the positive free-first fixture needs a paid marginal above the bank income and price with headroom, got {secondAfterFreeGold:F2}.");
         AddCard(activeBot, activeInv, activeFree, 0);
         AddCard(activeBot, activeInv, activePaid, paidCost);
         AddCard(plainBot, plainInv, plainFree, 0);
@@ -563,7 +741,7 @@ internal static class TeamEconomyScenarios
         typeof(MerchantCardEntry).GetProperty("CreationResult")!
             .SetValue(activeInv.AllEntries.ElementAt(activePlan.Choice!.Index), null);
         var followUp = BotShopPlanner.ChooseDetailed(activeInv);
-        var paidAfterFree = Math.Max(0, BuildValue.Add(activePaid, activeBot).Total) * BotShopPlanner.GoldPerDeckValue;
+        var paidAfterFree = Math.Max(0, BotShopPlanner.PermanentValue(BuildValue.Add(activePaid, activeBot), activeBot)) * BotShopPlanner.GoldPerDeckValue;
         check(!followUp.FromPair && followUp.Choice is { Index: 1 },
             $"after the free purchase the driver must replan onto the paid card, got {followUp.Choice?.Index.ToString() ?? "(none)"}.");
         check(Math.Abs(followUp.SingleNet - (paidAfterFree - 24 - paidCost)) < 0.001,
@@ -571,6 +749,80 @@ internal static class TeamEconomyScenarios
             + $"(net={followUp.SingleNet:F2}, expected={paidAfterFree - 24 - paidCost:F2}).");
         Console.WriteLine($"PASS: MawBank free-first pair charges one 24 income "
             + $"(plain pair {plainPlan.PairNet:F2} vs active {activePlan.PairNet:F2}; follow-up single {followUp.SingleNet:F2}).");
+    }
+
+    // The historical all-Defend board is still tested. Native TestSubject's
+    // Enrage reacts to every Skill: extra draw/energy cannot be priced as free
+    // late defence without also pricing the added Skill triggers. The second
+    // Adrenaline's marginal is positive but below the bank's lost income.
+    private static void MawBankDeclinesWeakSecondCopy(Action<bool, string> check)
+    {
+        (Player Bot, RunState Run, MerchantInventory Inventory, CardModel Free, CardModel Paid)
+            Setup(int slot, bool bank)
+        {
+            var bot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, slot, 1));
+            bot.MaxEnergy = 3;
+            var run = RunState.CreateForTest(new[] { bot }, seed: "TEAM-MAW-" + slot);
+            ClearDeck(bot);
+            for (var i = 0; i < 8; i++) Give(bot, run.CreateCard<DefendIronclad>(bot));
+            bot.Gold = 500;
+            var room = new MerchantRoom();
+            run.PushRoom(room);
+            var inventory = new MerchantInventory(bot);
+            room.Inventories.Add(inventory);
+            if (bank) bot.AddRelicInternal(ModelDb.Relic<MawBank>().ToMutable());
+            var free = run.CreateCard<Adrenaline>(bot);
+            var paid = run.CreateCard<Adrenaline>(bot);
+            foreach (var (card, cost) in new[] { (free, 0), (paid, 1) })
+            {
+                var entry = new MerchantCardEntry(bot, inventory, Array.Empty<CardModel>(), card.Type);
+                typeof(MerchantCardEntry).GetProperty("CreationResult")!.SetValue(entry, new CardCreationResult(card));
+                typeof(MerchantEntry).GetField("_cost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(entry, cost);
+                ((List<MerchantCardEntry>)inventory.CharacterCardEntries).Add(entry);
+            }
+            return (bot, run, inventory, free, paid);
+        }
+
+        var active = Setup(21, true);
+        var plain = Setup(22, false);
+        var afterFreeDeck = active.Bot.Deck.Cards.Append(active.Free).ToArray();
+        var paidMarginal = Math.Max(0, BotShopPlanner.PermanentValue(
+            BuildValue.AddForDecision(active.Paid, active.Bot, afterFreeDeck), active.Bot)) * BotShopPlanner.GoldPerDeckValue;
+        // R2 negative-paid-margin: one Defend -> Strike, Rebuild 0 / RED 1,
+        // exact fixture restore / Rebuild 0 / full negative-case GREEN 0:
+        // System.Exception: Team economy regression: the attackless refusal fixture needs a positive paid marginal below the bank income, got 42.54.
+        check(paidMarginal > 1 + 5 && paidMarginal < 24 - 5,
+            $"the attackless refusal fixture needs a positive paid marginal below the bank income, got {paidMarginal:F2}.");
+        var activePlan = BotShopPlanner.ChooseDetailed(active.Inventory);
+        var plainPlan = BotShopPlanner.ChooseDetailed(plain.Inventory);
+        // R2 second-paid-bank-income: production mutation, Rebuild 0 / named RED 1,
+        // exact source restore / Rebuild 0 / full negative-case GREEN 0:
+        // System.Exception: Team economy regression: an active bank must take only the free card when the second copy cannot cover its lost income.
+        check(!activePlan.FromPair && activePlan.Choice is { Index: 0, Cost: 0 },
+            "an active bank must take only the free card when the second copy cannot cover its lost income.");
+        // R2 legal-bank-free-pair: production mutation, Rebuild 0 / named RED 1,
+        // exact source restore / Rebuild 0 / full negative-case GREEN 0:
+        // System.Exception: Team economy regression: without the bank, the positive second-copy marginal must still win the free-first pair.
+        check(plainPlan.FromPair && plainPlan.PairFirst == 0 && plainPlan.PairSecond == 1,
+            "without the bank, the positive second-copy marginal must still win the free-first pair.");
+        foreach (var state in new[] { active, plain })
+        {
+            Give(state.Bot, state.Free);
+            typeof(MerchantCardEntry).GetProperty("CreationResult")!.SetValue(state.Inventory.AllEntries.ElementAt(0), null);
+        }
+        var activeFollowUp = BotShopPlanner.ChooseDetailed(active.Inventory);
+        var plainFollowUp = BotShopPlanner.ChooseDetailed(plain.Inventory);
+        // R2 single-paid-bank-income: production mutation, Rebuild 0 / named RED 1,
+        // exact source restore / Rebuild 0 / full negative-case GREEN 0:
+        // System.Exception: Team economy regression: after the free purchase an active bank must refuse the weak paid copy.
+        check(activeFollowUp.Choice is null,
+            "after the free purchase an active bank must refuse the weak paid copy.");
+        // R2 legal-bank-free-replan: production mutation, Rebuild 0 / named RED 1,
+        // exact source restore / Rebuild 0 / full negative-case GREEN 0:
+        // System.Exception: Team economy regression: after the free purchase without the bank, the positive paid copy must remain executable.
+        check(plainFollowUp.Choice is { Index: 1, Cost: 1 },
+            "after the free purchase without the bank, the positive paid copy must remain executable.");
+        Console.WriteLine($"PASS: MawBank preserves its income against a weak second Adrenaline ({paidMarginal:F2}) while the bank-free pair and replan remain executable.");
     }
 
     // The driver buys one item per visit and replans. This drives the real
@@ -632,7 +884,7 @@ internal static class TeamEconomyScenarios
     }
 
     // The second action is re-checked against the existing single-item rules on
-    // the projected state: item threshold, reserve, affordability and potion
+    // the projected state: item threshold, affordability and potion
     // capacity. A pair the driver would refuse is not claimed.
     private static void SecondActionGates(Action<bool, string> check)
     {
@@ -642,15 +894,20 @@ internal static class TeamEconomyScenarios
             => new(0, -1, null!, value, cost, potion, false);
 
         check(BotShopPlanner.SecondExecutable(Offer(40, 60), 60, bot, goldAfterFirst: 100, projectedPotionCount: 0),
-            "a second purchase that clears the item threshold and reserve is executable.");
+            "a second purchase that clears the item threshold is executable.");
         check(!BotShopPlanner.SecondExecutable(Offer(60, 50), 50, bot, goldAfterFirst: 100, projectedPotionCount: 0),
             "a second purchase below its item threshold is not executable.");
-        check(!BotShopPlanner.SecondExecutable(Offer(60, 90), 90, bot, goldAfterFirst: 80, projectedPotionCount: 0),
-            "a second purchase that would break the reserve after the first is not executable.");
+        // No extra 25-gold reserve (ConstructionOutcomeScenarios covers that).
+        // The actual purse remains a hard executable limit.
+        // R2: remove the production affordability check -> exit 1:
+        // System.Exception: Team economy regression: a second purchase above the actual remaining purse is not executable.
+        // work/deck-outcome-optimization/r2-results.json; source restored.
+        check(!BotShopPlanner.SecondExecutable(Offer(90, 180), 180, bot, goldAfterFirst: 80, projectedPotionCount: 0),
+            "a second purchase above the actual remaining purse is not executable.");
         check(!BotShopPlanner.SecondExecutable(Offer(40, 60, potion: true), 60, bot,
                 goldAfterFirst: 100, projectedPotionCount: bot.MaxPotionCount),
             "a second potion with no remaining slot is not executable.");
-        Console.WriteLine("PASS: the second shop action is re-checked against threshold, reserve, purse and potion capacity.");
+        Console.WriteLine("PASS: the second shop action is re-checked against threshold, purse and potion capacity.");
     }
 
     private static void PairFeasibility(Action<bool, string> check)
@@ -703,8 +960,25 @@ internal static class TeamEconomyScenarios
         check(bot.Deck.Cards.Count == before.Count
             && before.Zip(bot.Deck.Cards).All(pair => ReferenceEquals(pair.First, pair.Second)),
             "the real deck must be untouched and unbranded by a removal plan.");
+
+        // The shop purchase and the event/Cook screen must name the same card
+        // for the same deck: both now narrow through RemovalPlan.PriorityPool.
+        var shopPick = BotShopPlanner.BestRemoval(bot.Deck.Cards, bot);
+        check(shopPick.index >= 0 && ReferenceEquals(bot.Deck.Cards[shopPick.index], plan.Steps[0].Card),
+            "the shop removal target must match the first card the shared removal priority picks.");
+
+        // And a removable curse outranks every unupgraded basic on both paths.
+        var curse = run.CreateCard(ModelDb.AllCards.First(card => card.Id.Entry == "CLUMSY"), bot);
+        Give(bot, curse);
+        var cursePlan = RemovalPlan.Choose(bot, bot.Deck.Cards.Where(card => card.IsRemovable).ToList(), 1);
+        var curseShop = BotShopPlanner.BestRemoval(bot.Deck.Cards, bot);
+        check(cursePlan.Steps.Count == 1 && ReferenceEquals(cursePlan.Steps[0].Card, curse)
+            && curseShop.index >= 0 && ReferenceEquals(bot.Deck.Cards[curseShop.index], curse),
+            "a removable curse must be the first removal target on both the event and shop paths.");
+
         Console.WriteLine($"PASS: RemovalPlan matches BotBrain's forced two removals "
-            + $"({string.Join(",", plan.Steps.Select(step => step.Card.Id.Entry))}) and leaves the deck unchanged.");
+            + $"({string.Join(",", plan.Steps.Select(step => step.Card.Id.Entry))}), the shop picks the same card, "
+            + "and curses outrank basics on both paths.");
     }
 
     private static void NegativeRemovalIsNotInflated(Action<bool, string> check)

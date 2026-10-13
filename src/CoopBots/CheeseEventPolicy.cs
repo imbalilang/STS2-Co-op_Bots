@@ -1,4 +1,4 @@
-using CoopBots.Building;
+﻿using CoopBots.Building;
 using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Events;
@@ -31,7 +31,7 @@ internal sealed class RoomFullOfCheeseHandler : IEventSpecialHandler
         var cards = 0.0;
         for (var pick = 0; pick < 2 && candidates.Count > 0; pick++)
         {
-            var best = candidates.Select(c => (Card: c, Value: BuildValue.Add(c, player, deck).Total))
+            var best = candidates.Select(c => (Card: c, Value: BuildValue.AddForDecision(c, player, deck).Total))
                 .OrderByDescending(c => c.Value).First();
             cards += best.Value; deck.Add(best.Card); candidates.Remove(best.Card);
         }

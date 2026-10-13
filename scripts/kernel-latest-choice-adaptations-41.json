@@ -1,0 +1,85 @@
+{
+  "Prediction/TurnStartChoiceSupport.cs": {
+    "base_sha256": "e9413d17a461b6f4f49c68d24b75bc42bfdbb073e515cbf9e9e5807f6e6bc890",
+    "changes": [
+      {
+        "name": "retain-existing-unanswered-choice-logger-using",
+        "old": "using MegaCrit.Sts2.Core.Factories;\n",
+        "new": "using MegaCrit.Sts2.Core.Factories;\nusing MegaCrit.Sts2.Core.Logging;\n"
+      },
+      {
+        "name": "retain-existing-unanswered-choice-diagnostics",
+        "old": "            if (!combat.HasPendingChoice)\n            {\n                combat.SetPendingTurnStartChoice(request);",
+        "new": "            if (!combat.HasPendingChoice)\n            {\n                // NAME WHY, ONCE PER NEW REQUEST. The boundary the round fails with carries only\n                // the SourceId (`round-pending-choice:TOASTY_MITTENS@start-next-player-turn`), so\n                // the live 2026-10-05 act-3 boss left no way to tell an unanswerable request from\n                // a missing cursor from an exhausted before-take callback — the three repairs are\n                // completely different. Logged only when this call is what raised the pending\n                // choice, so a per-tick retry of the same board cannot spam it.\n                Log.Warn(\"CoopBots kernel: turn-start choice could not be auto-answered: \"\n                    + $\"source={request.SourceId} effect={request.Effect} pile={request.SourcePile} \"\n                    + $\"count={request.Count} spec={(request.Spec is null ? \"null\" : \"set\")} \"\n                    + $\"cursor={(cursor is null ? \"null\" : \"present\")} \"\n                    + $\"owner={player.NetId} hand={simulator.State.GetPlayerCombatState(player).Hand.Cards.Count}\");\n                combat.SetPendingTurnStartChoice(request);"
+      },
+      {
+        "name": "request-menu-source",
+        "old": "    PlanChoiceTiming Timing = PlanChoiceTiming.Action);",
+        "new": "    PlanChoiceTiming Timing = PlanChoiceTiming.Action,\n    string? MenuSource = null);"
+      },
+      {
+        "name": "cursor-native-bounds-diagnostic",
+        "old": "                $\"计划上下文={choice.ContextId}，当前上下文={request.ContextId}。\");",
+        "new": "                $\"计划上下文={choice.ContextId}，当前上下文={request.ContextId}；\" +\n                $\"计划张数={choice.Cards.Count}，当前边界={request.Spec?.MinCount}..{request.Spec?.MaxCount}，\" +\n                $\"当前候选={request.Spec?.Options.Count}，菜单来源={request.MenuSource}。\");"
+      },
+      {
+        "name": "cursor-effective-cardinality",
+        "old": "            && choice.Timing == request.Timing;",
+        "new": "            && choice.Timing == request.Timing\n            && (request.Spec is null || choice.Cards.Count >= Math.Min(request.Spec.MinCount, request.Spec.Options.Count)\n                && choice.Cards.Count <= Math.Min(request.Spec.MaxCount, request.Spec.Options.Count));"
+      }
+    ],
+    "repaired_region_source": "B:\\slay-the-spire-2-mod-mod\\src\\CoopBots.Kernel\\Vendor\\Prediction\\TurnStartChoiceSupport.cs",
+    "baseline_review": "Real public 0.41 importer before choice layer differs from current inverse only by omitted pre-existing Log.Warn diagnostics and its using; both are explicitly retained above. No source/context/bounds logic was silently rebased."
+  },
+  "Search/SimulatedCombatState.ActionChoices.cs": {
+    "base_sha256": "6a4e2f8677fa60b9ecc3a0f6ce75808e99b39cc1de3b434cfed3c2c834988186",
+    "changes": [
+      {
+        "name": "active-card-menu-source",
+        "old": "            contextIdOverride ?? spec.ContextId,\n            Timing: _activeActionChoiceTiming);",
+        "new": "            contextIdOverride ?? spec.ContextId,\n            Timing: _activeActionChoiceTiming,\n            MenuSource: playedCard.Preview.Id.Entry);"
+      },
+      {
+        "name": "empty-card-menu-source",
+        "old": "            emptySpec,\n            Timing: _activeActionChoiceTiming);",
+        "new": "            emptySpec,\n            Timing: _activeActionChoiceTiming,\n            MenuSource: card.Preview.Id.Entry);"
+      },
+      {
+        "name": "nested-empty-card-menu-cursor",
+        "old": "        if (CardChoiceSupport.BuildRequiredEmptyChoice(card.Preview) is { } emptyChoice)\n            CardChoiceSupport.Apply(simulator, this, card, emptyChoice, processedEnemyDeaths);\n",
+        "new": "        if (CardChoiceSupport.BuildRequiredEmptyChoice(card.Preview) is { } emptyChoice)\n        {\n            // An implicit empty native menu still occupies a choice slot. In a\n            // nested autoplay, omitting it shifts every subsequent menu token.\n            CardChoiceSpec emptySpec = new(\n                emptyChoice.Effect,\n                emptyChoice.SourcePile,\n                0,\n                0,\n                [],\n                [],\n                ReplacementValue: 0d);\n            return ResolveActionCardChoice(\n                simulator,\n                card,\n                sourceId,\n                emptySpec,\n                processedEnemyDeaths,\n                contextId);\n        }\n"
+      }
+    ],
+    "repaired_region_source": "B:\\slay-the-spire-2-mod-mod\\src\\CoopBots.Kernel\\Vendor\\Search\\SimulatedCombatState.ActionChoices.cs"
+  },
+  "Search/CardChoiceSupport.cs": {
+    "base_sha256": "8d39f23f50b661352598e6795eb3022f5dfd8316dab82dd71700bbd463360159",
+    "changes": [
+      {
+        "name": "native-dredge-capacity-menu-gate",
+        "old": "            Dredge => Spec(owner, PlanChoiceEffect.MoveToHand, PileType.Discard,\n",
+        "new": "            Dredge when Math.Min(card.DynamicVars.Cards.IntValue,\n                    simulator.GetMaxHandSize(card.Owner) - owner.Hand.Cards.Count) > 0\n                => Spec(owner, PlanChoiceEffect.MoveToHand, PileType.Discard,\n"
+      },
+      {
+        "name": "native-neows-fury-capacity-menu-gate",
+        "old": "            NeowsFury => RangeSpec(owner, PlanChoiceEffect.MoveToHand, PileType.Discard,\n",
+        "new": "            NeowsFury when Math.Min(card.DynamicVars.Cards.IntValue,\n                    simulator.GetMaxHandSize(card.Owner) - owner.Hand.Cards.Count) > 0\n                => RangeSpec(owner, PlanChoiceEffect.MoveToHand, PileType.Discard,\n"
+      },
+      {
+        "name": "retain-real-native-empty-spec-menu",
+        "old": "        return list.Count == 0\n            ? null\n            : new CardChoiceSpec(effect, source, count, count, list, sourceCards, replacementValue,\n                IsImplicitAllSelection: list.Count <= count);\n",
+        "new": "        // These native callers still invoke CardSelectCmd with zero options.\n        // Keep that implicit menu slot; only their explicit capacity gates may\n        // skip a menu (Dredge/NeowsFury above).\n        return new CardChoiceSpec(effect, source, count, count, list, sourceCards, replacementValue,\n            IsImplicitAllSelection: list.Count <= count);\n"
+      },
+      {
+        "name": "native-empty-seeker-spec-history",
+        "old": "        if (options.Count == 0)\n            return null;\n        simulator.History.CardsSelected(options);\n        simulator.History.RecordRisk(PredictionRiskReason.UnresolvedPlayerChoice);\n",
+        "new": "        if (options.Count > 0)\n        {\n            simulator.History.CardsSelected(options);\n            simulator.History.RecordRisk(PredictionRiskReason.UnresolvedPlayerChoice);\n        }\n"
+      },
+      {
+        "name": "native-empty-seeker-implicit-all",
+        "old": "            ReplacementValue: 0d,\n            contextId);\n",
+        "new": "            ReplacementValue: 0d,\n            contextId,\n            IsImplicitAllSelection: options.Count == 0);\n"
+      }
+    ]
+  }
+}

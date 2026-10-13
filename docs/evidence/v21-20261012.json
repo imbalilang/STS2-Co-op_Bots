@@ -1,0 +1,318 @@
+{
+  "schema": 1,
+  "kind": "historical_development_evidence",
+  "published_date": "2026-10-13",
+  "candidate": {
+    "candidate": "frozen-v21",
+    "mod_version": "0.39.1",
+    "game_build": "v0.111.0",
+    "installed_dll_sha256": {
+      "CoopBots.dll": "F8C222469E3141FEAD8E1DFC5004BAC3EAB869978FD0593DF874D3C10B42FAF2",
+      "CoopBots.Kernel.dll": "DF750C28902420A017392D038D748AF9F0F0FBFF17EFACFB05C463376032207A"
+    },
+    "identity_boundary": "These are physical installed DLLs at archive time. Log load path and earlier file mtimes support association; no per-process DLL hash was logged by this manual run."
+  },
+  "scope": "Five user manual full-Bot A10 ascents on the same frozen-v21 installed DLLs. Historical/development and saved-combat runs excluded.",
+  "seed_classification": "development_diagnostic_not_prespecified_holdout",
+  "outcomes": {
+    "attempts": 5,
+    "wins": 0,
+    "natural_defeats": 5,
+    "hangs": 0,
+    "combats": 69,
+    "combat_wins": 64
+  },
+  "historical_gate": {
+    "started_utc": "2026-10-12T13:42:29.4360875Z",
+    "finished_utc": "2026-10-12T13:57:11.3050238Z",
+    "status": "pass",
+    "phases": [
+      {
+        "name": "build",
+        "exit_code": 0,
+        "pass_lines": 0
+      },
+      {
+        "name": "typeloadcheck",
+        "exit_code": 0,
+        "pass_lines": 0
+      },
+      {
+        "name": "patchsmoke-kernel",
+        "exit_code": 0,
+        "pass_lines": 887
+      }
+    ],
+    "suite_coverage": {
+      "ordinary": {
+        "status": "covered-by-full",
+        "evidence_phase": "patchsmoke-kernel",
+        "evidence_log": "phase-04-patchsmoke-kernel.log",
+        "physical_run": false,
+        "pass_lines": null,
+        "evidence_exit_code": 0,
+        "boundary": "Default: ordinary entrypoints covered in full-kernel configuration, with no standalone count/exit. IncludeOrdinary records an additional isolated physical run."
+      },
+      "full": {
+        "status": "passed",
+        "evidence_phase": "patchsmoke-kernel",
+        "pass_lines": 887,
+        "unfiltered": true
+      }
+    },
+    "dll_sha256": {
+      "CoopBots.dll": "F8C222469E3141FEAD8E1DFC5004BAC3EAB869978FD0593DF874D3C10B42FAF2",
+      "CoopBots.Kernel.dll": "DF750C28902420A017392D038D748AF9F0F0FBFF17EFACFB05C463376032207A"
+    }
+  },
+  "runs": [
+    {
+      "number": 1,
+      "seed": "ZT078WZ61J9V",
+      "ascension": 10,
+      "outcome": {
+        "kind": "natural_defeat",
+        "win": false,
+        "was_abandoned": false,
+        "act": 2,
+        "floor": 31,
+        "encounter": "THE_INSATIABLE_BOSS",
+        "native_killed_by_encounter": "ENCOUNTER.THE_INSATIABLE_BOSS",
+        "turn": 11,
+        "combat_count": 16,
+        "previous_native_combat_wins": 15,
+        "run_time_seconds": 1511
+      },
+      "archive_hashes": {
+        "log": "25B78682F821059567C96630F2DFDC8ED284A189DED7CD3EC4428214F58F6E03",
+        "meter": "AA1F578768ED906ED3082410CB8E1D99D7D49F246A8F1052503FF008B2966FFE",
+        "native_history": "C1DB74D8AE4D9C5ED1C17FEEA75E0DFE96A1550647624E7538EA0258BE232F4F",
+        "latest_replay_unparsed": "49D351813E1B258EF3FD836310D912DFA0D224093AA5BE14577E7908A544787D",
+        "CoopBots.dll": "F8C222469E3141FEAD8E1DFC5004BAC3EAB869978FD0593DF874D3C10B42FAF2",
+        "CoopBots.Kernel.dll": "DF750C28902420A017392D038D748AF9F0F0FBFF17EFACFB05C463376032207A",
+        "mod_manifest.json": "4D99123CEC6279D350CDC830330919BB9840D0EFB71CE31DEDC4E436E8BC393E",
+        "v21_candidate_receipt": "A438D6DAFD57E77B75F7A8DA58B716BC2539F89A5677898543D9B45DE73190B0"
+      },
+      "anomalies": [
+        {
+          "kind": "unresolved_complete_state_semantics_difference",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        },
+        {
+          "kind": "NDemonFormVfx_refinement_qualification_unavailable",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        }
+      ]
+    },
+    {
+      "number": 2,
+      "seed": "LMB8M9JD9HPN",
+      "ascension": 10,
+      "outcome": {
+        "kind": "natural_defeat",
+        "win": false,
+        "was_abandoned": false,
+        "act": 2,
+        "floor": 31,
+        "encounter": "KNOWLEDGE_DEMON_BOSS",
+        "native_killed_by_encounter": "ENCOUNTER.KNOWLEDGE_DEMON_BOSS",
+        "turn": 10,
+        "combat_count": 13,
+        "previous_native_combat_wins": 12,
+        "run_time_seconds": 1239
+      },
+      "archive_hashes": {
+        "log": "EAAD97EBC15E3334222946F2400BDFFECB082852C546FE6D09BF4900CD15FE71",
+        "meter": "77FA0DD6709453A67D3A6C3CB3CDDC06E00034D704710AAEDCE9081F625D07F4",
+        "latest_replay_unparsed": "B9F466C5BE766596B388F7938B7A600ACA8D4BE9589D10C04ABF54B8D09FFD60",
+        "native_history": "38364610C49FBB7DD5401D0A011366CE92E2C685A92FC78B66E9CE2AFF79194E",
+        "CoopBots.dll": "F8C222469E3141FEAD8E1DFC5004BAC3EAB869978FD0593DF874D3C10B42FAF2",
+        "CoopBots.Kernel.dll": "DF750C28902420A017392D038D748AF9F0F0FBFF17EFACFB05C463376032207A",
+        "mod_manifest.json": "4D99123CEC6279D350CDC830330919BB9840D0EFB71CE31DEDC4E436E8BC393E",
+        "v21_candidate_receipt": "A438D6DAFD57E77B75F7A8DA58B716BC2539F89A5677898543D9B45DE73190B0"
+      },
+      "anomalies": [
+        {
+          "kind": "unresolved_complete_state_semantics_difference",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        },
+        {
+          "kind": "unresolved_complete_state_semantics_difference",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        },
+        {
+          "kind": "unresolved_complete_state_semantics_difference",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        },
+        {
+          "kind": "boss_refinement_cache_qualification_or_card_reference_miss",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        }
+      ]
+    },
+    {
+      "number": 3,
+      "seed": "G9B959YHQV2A",
+      "ascension": 10,
+      "outcome": {
+        "kind": "natural_defeat",
+        "win": false,
+        "was_abandoned": false,
+        "act": 1,
+        "floor": 16,
+        "encounter": "THE_KIN_BOSS",
+        "native_killed_by_encounter": "ENCOUNTER.THE_KIN_BOSS",
+        "turn": 8,
+        "combat_count": 6,
+        "previous_native_combat_wins": 5,
+        "run_time_seconds": 547
+      },
+      "archive_hashes": {
+        "log": "290DDC55CD4EE5921A5B9B021D8AC531ED366FEC8B60E7FB55509EF853CDA86D",
+        "meter": "B271CD83D80CCC2DBBD346B6B44E5BD194E80594003AA1263989F14F631CD864",
+        "latest_replay_unparsed": "42082FD5EA9D03BE53694DAEB08573F74396DFBF082A5529EC21AB7D002E29B9",
+        "native_history": "B1CF707C4252EA3655A62556F1CEFA9FBF9A5DCC6CFFFB04967B3D8F7A96D869",
+        "CoopBots.dll": "F8C222469E3141FEAD8E1DFC5004BAC3EAB869978FD0593DF874D3C10B42FAF2",
+        "CoopBots.Kernel.dll": "DF750C28902420A017392D038D748AF9F0F0FBFF17EFACFB05C463376032207A",
+        "mod_manifest.json": "4D99123CEC6279D350CDC830330919BB9840D0EFB71CE31DEDC4E436E8BC393E",
+        "v21_candidate_receipt": "A438D6DAFD57E77B75F7A8DA58B716BC2539F89A5677898543D9B45DE73190B0"
+      },
+      "anomalies": [
+        {
+          "kind": "unresolved_complete_state_semantics_difference",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        },
+        {
+          "kind": "unresolved_complete_state_semantics_difference",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        },
+        {
+          "kind": "unresolved_next_turn_power_state_difference",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        },
+        {
+          "kind": "unresolved_next_turn_power_state_difference",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        },
+        {
+          "kind": "unresolved_next_turn_power_state_difference",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        }
+      ]
+    },
+    {
+      "number": 4,
+      "seed": "G9PJZQNKU4XL",
+      "ascension": 10,
+      "outcome": {
+        "kind": "natural_defeat",
+        "win": false,
+        "was_abandoned": false,
+        "act": 3,
+        "floor": 47,
+        "encounter": "TEST_SUBJECT_BOSS",
+        "native_killed_by_encounter": "ENCOUNTER.TEST_SUBJECT_BOSS",
+        "turn": 9,
+        "combat_count": 17,
+        "previous_native_combat_wins": 16,
+        "run_time_seconds": 2087
+      },
+      "archive_hashes": {
+        "log": "14BE139500C8E6DCBBD6863C5811D094EFA521B377794C2BDE4D24EB2DC20A92",
+        "meter": "60AA83400BFA303660DE3F615031B74A7295179FA330E52191361CD7466FDBD9",
+        "latest_replay_unparsed": "1F9384DD592E8D0B2E3AD7E7671E938C37461A2779645193AE4890A1E9BACE15",
+        "native_history": "55A07D5A6771CB223792A03E35BD089187FF907F4CCAADDCDA7B1B0DB0EE2BAD",
+        "CoopBots.dll": "F8C222469E3141FEAD8E1DFC5004BAC3EAB869978FD0593DF874D3C10B42FAF2",
+        "CoopBots.Kernel.dll": "DF750C28902420A017392D038D748AF9F0F0FBFF17EFACFB05C463376032207A",
+        "mod_manifest.json": "4D99123CEC6279D350CDC830330919BB9840D0EFB71CE31DEDC4E436E8BC393E",
+        "v21_candidate_receipt": "A438D6DAFD57E77B75F7A8DA58B716BC2539F89A5677898543D9B45DE73190B0"
+      },
+      "anomalies": [
+        {
+          "kind": "refinement_cache_not_qualified",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        },
+        {
+          "kind": "prediction_turn_start_choice_not_auto_answered",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        }
+      ]
+    },
+    {
+      "number": 5,
+      "seed": "YE5VVK7XNHH3",
+      "ascension": 10,
+      "outcome": {
+        "kind": "natural_defeat",
+        "win": false,
+        "was_abandoned": false,
+        "act": 3,
+        "floor": 45,
+        "encounter": "AEONGLASS_BOSS",
+        "native_killed_by_encounter": "ENCOUNTER.AEONGLASS_BOSS",
+        "turn": 7,
+        "combat_count": 17,
+        "previous_native_combat_wins": 16,
+        "run_time_seconds": 2092
+      },
+      "archive_hashes": {
+        "log": "1F128705102FED2E4FBFF254F7259945D07CEAD18DBA1F03D5013688C7FBB0AF",
+        "meter": "3AC7D91F93CEE509EB321319D53A09D77D8152FBE607762949722622D7CD2150",
+        "latest_replay_unparsed": "FBCFB01A8E1FFA21D9016CCC11EB3FD548CC76EABC428F11D20729BB6477DFCA",
+        "native_history": "6D0BFE0DC02CA957ADE43E434F29A61CC1AFFEBDEDD6C960ADB3EAB84567F985",
+        "CoopBots.dll": "F8C222469E3141FEAD8E1DFC5004BAC3EAB869978FD0593DF874D3C10B42FAF2",
+        "CoopBots.Kernel.dll": "DF750C28902420A017392D038D748AF9F0F0FBFF17EFACFB05C463376032207A",
+        "mod_manifest.json": "4D99123CEC6279D350CDC830330919BB9840D0EFB71CE31DEDC4E436E8BC393E",
+        "v21_candidate_receipt": "A438D6DAFD57E77B75F7A8DA58B716BC2539F89A5677898543D9B45DE73190B0"
+      },
+      "anomalies": [
+        {
+          "kind": "unresolved_complete_state_semantics_difference",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        },
+        {
+          "kind": "unresolved_complete_state_semantics_difference",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        },
+        {
+          "kind": "unresolved_next_turn_state_difference",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        },
+        {
+          "kind": "unresolved_planned_choice_menu_difference",
+          "impact_on_defeat": "unproven",
+          "harmless_exemption_verified": false
+        }
+      ]
+    }
+  ],
+  "provenance": {
+    "evaluation_sha256": "2E2109E35E66AE41C9BB4D268AF803F7DCA5ECAC1FC5CD7F37073BE912155D76",
+    "candidate_receipt_sha256": "A438D6DAFD57E77B75F7A8DA58B716BC2539F89A5677898543D9B45DE73190B0"
+  },
+  "boundary": [
+    "Raw personal logs, native histories, account identities and local paths are not published.",
+    "Archive hashes identify retained private evidence; they do not provide the missing combat boards.",
+    "Physical installed DLL identity was recorded at archive time, not inside each manual game process.",
+    "Zero wins in five diagnostic seeds does not establish a population win probability.",
+    "New source-publication verification is distinct from this historical frozen-v21 gate."
+  ],
+  "target_met": false,
+  "mixed_table_validated": false
+}

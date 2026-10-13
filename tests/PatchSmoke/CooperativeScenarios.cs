@@ -306,6 +306,7 @@ internal static class CooperativeScenarios
         MonsterHazardScenarios.Run();
         ImportedCardRelicScenarios.Run();
 #if KERNEL_TESTS
+        TurnStartChoiceContractScenarios.Run();
         KernelEngineScenarios.Run();
         KernelRolloutScenarios.Run();
         KernelTerminalScenarios.Run();

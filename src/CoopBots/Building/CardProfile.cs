@@ -41,11 +41,26 @@ internal static class CardProfile
     {
         internal double NextTurnEnergy { get; init; }
         internal double NextTurnDraw { get; init; }
+        internal double NextTurnDrawForTeam { get; init; }
+        internal double AlliedDrawValue { get; init; }
         internal bool DrawForTeam { get; init; }
+        internal bool DrawPileDamage { get; init; }
+        internal double AlliedEnergyValue { get; init; }
+        internal bool AutoOnly { get; init; }
         internal DraftCardEffects.Effects Effects { get; init; }
+        internal ConstructionMechanismFacts.Facts? Mechanisms { get; init; }
     }
 
     internal static Facts Of(CardModel card, int energy = 3, int enemies = 1)
+    {
+        var cache = ConstructionReadCache.Current?.Profiles;
+        var key = (card, energy, enemies);
+        if (cache is not null && cache.TryGetValue(key, out var facts)) return facts;
+        var result = Read(card, energy, enemies);
+        if (cache is not null) cache[key] = result;
+        return result;
+    }
+    private static Facts Read(CardModel card, int energy, int enemies)
     {
         var analyzed = GeniusCombatStrategy.Analyze(card, null, energy, enemies);
         // A card can be executed more than once per play ("Replay"): an intrinsic
@@ -59,7 +74,7 @@ internal static class CardProfile
         var resources = CoopBots.Kernel.CardResourceTiming.Of(card, energy);
         var effects = DraftCardEffects.Of(card);
         var roles = new HashSet<string>(StringComparer.Ordinal);
-        if (analyzed.TotalDamage > 0)
+        if (analyzed.TotalDamage > 0 || card is MegaCrit.Sts2.Core.Models.Cards.MindBlast)
         {
             roles.Add("damage");
             if (card.TargetType == TargetType.AllEnemies) roles.Add("aoe");
@@ -82,7 +97,11 @@ internal static class CardProfile
         // The analyzer clamps an unplayable card's cost to 0, so the keyword —
         // not the number — decides whether this really is a free card.
         var unplayable = card.Keywords.Contains(CardKeyword.Unplayable)
-            || card.Type is CardType.Curse or CardType.Status;
+            || card.Type is CardType.Curse or CardType.Status
+            // Native AnyAlly permits a same-side self target in multiplayer,
+            // but CanPlay rejects the whole card with only one living player.
+            || card.TargetType==TargetType.AnyAlly && card.IsMutable
+                && card.Owner?.RunState is { } run && run.Players.Count(p=>p.Creature.IsAlive)<=1;
         if (analyzed.EnergyCost == 0 && !unplayable) roles.Add("zerocost");
         // Damage split across several hits multiplies any Strength the deck has,
         // which is what makes multi-hit cards the payoff of a Strength engine.
@@ -118,11 +137,19 @@ internal static class CardProfile
         if (effects.ExhaustDraw > 0) roles.Add("draw");
         if (effects.ExhaustBlock > 0) roles.Add("block");
         if (effects.FreeExhaustSkills) roles.Add("energy");
-        if (CardPoisonEffects.CanSeedPoison(card)) roles.Add("poison-source");
+        if (card is MegaCrit.Sts2.Core.Models.Cards.Tank) { roles.Add("block"); roles.Add("scaling"); }
+        if (card is MegaCrit.Sts2.Core.Models.Cards.Cascade or MegaCrit.Sts2.Core.Models.Cards.Havoc) roles.Add("autoplay");
+        if (CardPoisonEffects.CanSeedPoison(card) || effects.PoisonPerDraw > 0
+            || analyzed.Poison > 0 && effects.ConditionalPoison <= 0) roles.Add("poison-source");
         if (effects.ConditionalPoison > 0) { roles.Remove("poison"); roles.Add("poison-payoff"); }
+        // 易伤轴的资源变现端（Bully/Dominate/MoltenFist）。供应侧是机械可读的
+        // （任何带 VulnerablePower 变量的牌 = "vulnerable" 角色），读者侧只有
+        // VulnerablePin 这张手工表。角色本身不加分：它让快照能数出全队有多少个
+        // 变现端，价格由 TeamCoordinator 的 payoff 通道按全队供应给。
+        if (VulnerablePin.IsPayoff(entry)) roles.Add("vulnerable-payoff");
         return new Facts(
             (effects.ExhaustRequired > 0 ? 0 : analyzed.TotalDamage) * plays, analyzed.Block * plays, analyzed.Draw * plays,
-            analyzed.ImmediateEnergy * plays,
+            (card is MegaCrit.Sts2.Core.Models.Cards.BelieveInYou ? 0 : analyzed.ImmediateEnergy) * plays,
             analyzed.Vulnerable * plays, analyzed.Weak * plays, analyzed.StrengthDown * plays,
             (effects.ConditionalPoison > 0 ? 0 : analyzed.Poison) * plays, analyzed.Doom * plays,
             Math.Max(0, analyzed.Strength + analyzed.Dexterity + analyzed.Focus
@@ -133,8 +160,15 @@ internal static class CardProfile
         {
             NextTurnEnergy = resources.EnergyNextTurn * plays,
             NextTurnDraw = resources.DrawNextTurn * plays,
+            NextTurnDrawForTeam = resources.DrawForTeam ? resources.DrawNextTurn * plays : 0,
             DrawForTeam = resources.DrawForTeam,
+            AlliedDrawValue = resources.DrawForTeam
+                ? AlliedDraw.Value(card.IsMutable ? card.Owner : null,(int)(resources.DrawNextTurn*plays)) : 0,
+            DrawPileDamage = card is MegaCrit.Sts2.Core.Models.Cards.MindBlast,
+            AlliedEnergyValue = card is MegaCrit.Sts2.Core.Models.Cards.BelieveInYou
+                ? AlliedEnergy.Value(card.IsMutable ? card.Owner : null, (int)(analyzed.ImmediateEnergy * plays)) : 0,
             Effects = effects,
+            Mechanisms = ConstructionMechanismFacts.Read(card, energy),
         };
     }
 
@@ -143,12 +177,7 @@ internal static class CardProfile
     // BurningPact exhausts one. Keep gross draw for cycling and discard synergies.
     internal static double NetDraw(CardModel card, Facts facts)
     {
-        var handPayment = card.GetType().Name switch
-        {
-            "Prepared" => facts.Draw,
-            "Acrobatics" or "DaggerThrow" or "BurningPact" => 1,
-            _ => 0,
-        };
+        var handPayment = ConstructionMechanismFacts.HandPayment(card, facts.Draw);
         return Math.Max(0, facts.Draw - 1 - handPayment);
     }
 
@@ -157,6 +186,15 @@ internal static class CardProfile
     /// The clone is never published, so the live card is untouched.
     /// </summary>
     internal static (Facts Facts, CardModel Card)? Upgraded(CardModel card, int energy = 3, int enemies = 1)
+    {
+        var cache = ConstructionReadCache.Current?.Upgrades;
+        var key = (card, energy, enemies);
+        if (cache is not null && cache.TryGetValue(key, out var held)) return held;
+        var result = ReadUpgrade(card, energy, enemies);
+        if (cache is not null) cache[key] = result;
+        return result;
+    }
+    private static (Facts Facts, CardModel Card)? ReadUpgrade(CardModel card, int energy, int enemies)
     {
         if (!card.IsUpgradable) return null;
         try

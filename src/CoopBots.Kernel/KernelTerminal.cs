@@ -73,7 +73,11 @@ public sealed record TerminalRecord(
     // non-victory ties before valuing consumables that cannot survive a wipe.
     int RemainingEnemies = 0,
     int RemainingEnemyHp = 0,
-    int RoundsSurvived = 0)
+    int RoundsSurvived = 0,
+    // HP-priced option value beyond the generic per-bottle cost. Capture it
+    // from the simulated inventory so reference, joint and script replay all
+    // preserve it, including a bottle that appears only in a later prefix.
+    double ConsumablePreservationPremium = 0)
 {
     public bool Verified => Kind == EvidenceKind.VerifiedTerminal;
 
@@ -102,6 +106,7 @@ public sealed record TerminalRecord(
             hp[i] = Math.Max(0, session.Hp(party[i].Creature));
             if (hp[i] <= 0) dead++;
         }
+        var opposition = session.RemainingOpposition();
         return new TerminalRecord(
             Victory: terminal && session.HasWon,
             Kind: terminal ? EvidenceKind.VerifiedTerminal : EvidenceKind.EstimatedCutoff,
@@ -110,9 +115,10 @@ public sealed record TerminalRecord(
             IrreversibleLoss: terminal ? dead : 0,
             ResourcesConsumed: 0,
             OutstandingStolenResource: session.OutstandingStolenResource,
-            RemainingEnemies: session.Enemies.Count,
-            RemainingEnemyHp: session.Enemies.Sum(e => session.Hp(e)),
-            RoundsSurvived: session.RoundsAdvanced);
+            RemainingEnemies: opposition.Count,
+            RemainingEnemyHp: opposition.Hp,
+            RoundsSurvived: session.RoundsAdvanced,
+            ConsumablePreservationPremium: KernelPotionPolicy.ConsumedPreservationPremium(session, party));
     }
 }
 
@@ -226,6 +232,7 @@ public static class TerminalComparer
         // There is no next fight in a verified wipe. Saving the bottle cannot
         // outrank an otherwise equal attempt to escape that losing prediction.
         var bottleCost = record is { Verified: true, Victory: false } ? 0 : c.ConsumableUnitCost;
-        return total - record.ResourcesConsumed * bottleCost;
+        var preservation = record is { Verified: true, Victory: false } ? 0 : record.ConsumablePreservationPremium;
+        return total - record.ResourcesConsumed * bottleCost - preservation;
     }
 }

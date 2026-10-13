@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""Bake the community all-runs card Elo snapshot into a C# table.
+
+Source: https://spire-codex.com/api/runs/scores/cards, cached locally by
+scripts/fetch-spire-codex-decks.py as work/shiv-score-audit/scores-all-skip.json
+(the all-runs bracket, including the reward-screen SKIP pseudo-entity). Used
+under the PolyForm Noncommercial 1.0.0 license and the Spire Codex API terms:
+free for community use, attribution encouraged. Game data belongs to Mega Crit
+Games. See THIRD_PARTY_NOTICES.md; the notice must ship with any release
+containing this.
+
+What is baked, and what is thrown away:
+
+* `elo` is the signal: the Bradley-Terry latent strength fitted from which card
+  players actually took when a reward screen offered several. It is revealed
+  preference, not win rate and not a causal effect.
+* `SKIP` is the same response's pseudo-entity row for the reward-screen skip.
+  It is the zero baseline a candidate is compared against.
+* The 0-100 `score`, `picks`, `wins` and `win_rate` are NOT carried over. The
+  Score is a clipped association score, and the pick/win counts are sample
+  sizes, not effect sizes.
+* Only the all-runs bracket is read. The A10 snapshot is a different ranking
+  and is never mixed in silently.
+
+Usage:
+    python scripts/import-spire-codex-elo.py [snapshot.json] [output.cs] [local-ids.txt]
+"""
+
+import hashlib
+import json
+import math
+import os
+import sys
+from datetime import date
+
+DEFAULT_INPUT = "work/shiv-score-audit/scores-all-skip.json"
+DEFAULT_OUTPUT = "src/CoopBots/Building/BakedCardElo.cs"
+DEFAULT_LOCAL_IDS = "work/spire-codex/local-card-ids.txt"
+SOURCE = "https://spire-codex.com/api/runs/scores/cards"
+# The snapshot carries no generation timestamp. This is the date the snapshot
+# was retrieved into the local checkout, which is all the provenance that
+# exists; the upstream generation date stays UNKNOWN.
+LOCAL_RETRIEVED = "2026-09-18"
+UPSTREAM_GENERATED = "UNKNOWN"
+SKIP_ID = "SKIP"
+
+
+def csharp_string(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def csharp_double(value: float) -> str:
+    # repr is the shortest round-tripping form and is stable for a given value;
+    # it never emits locale separators or a missing decimal point.
+    text = repr(float(value))
+    if text in ("inf", "-inf", "nan"):
+        raise ValueError("non-finite Elo reached the writer")
+    if "." not in text and "e" not in text and "E" not in text:
+        text += ".0"
+    return text
+
+
+def sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def is_finite_number(value) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(float(value))
+
+
+def local_ids(path: str) -> set:
+    """Ids the installed build actually has, written by the cross-check suite."""
+    if not os.path.exists(path):
+        print(f"warning: {path} not found; keeping every snapshot entry "
+              f"(run the PatchSmoke suite once to write it)", file=sys.stderr)
+        return set()
+    with open(path, encoding="utf-8") as handle:
+        return {line.strip() for line in handle if line.strip()}
+
+
+def main() -> int:
+    source = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_INPUT
+    target = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_OUTPUT
+    ids_path = sys.argv[3] if len(sys.argv) > 3 else DEFAULT_LOCAL_IDS
+
+    if not os.path.isfile(source):
+        print(f"error: snapshot not found: {source}", file=sys.stderr)
+        return 1
+
+    with open(source, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        print("error: snapshot must be a JSON object of id -> row", file=sys.stderr)
+        return 1
+
+    skip_row = payload.get(SKIP_ID)
+    if not isinstance(skip_row, dict) or not is_finite_number(skip_row.get("elo")):
+        print(f"error: snapshot is missing a finite {SKIP_ID} elo row", file=sys.stderr)
+        return 1
+    skip_elo = float(skip_row["elo"])
+
+    known = local_ids(ids_path)
+    elo = {}
+    malformed = []
+    no_elo = []
+    for card_id, row in payload.items():
+        if card_id == SKIP_ID:
+            continue
+        if not isinstance(row, dict):
+            malformed.append(card_id)
+            continue
+        value = row.get("elo")
+        if not is_finite_number(value):
+            no_elo.append(card_id)
+            continue
+        if known and card_id not in known:
+            continue
+        elo[card_id] = float(value)
+
+    if not elo:
+        print("error: no card Elo entries survived validation", file=sys.stderr)
+        return 1
+
+    missing_known = sorted(cid for cid in known if cid not in elo)
+
+    snapshot_hash = sha256_file(source)
+    lines = [
+        "// <auto-generated>",
+        "//     Generated by scripts/import-spire-codex-elo.py from",
+        f"//     {SOURCE}",
+        f"//     all-runs snapshot, source sha256={snapshot_hash}",
+        f"//     local retrieval date={LOCAL_RETRIEVED}; upstream data generation date={UPSTREAM_GENERATED}",
+        "//",
+        "//     Source data: (c) 2025-present Peter Lord and Spire Codex contributors,",
+        "//     used under the PolyForm Noncommercial License 1.0.0 and the Spire",
+        "//     Codex API terms (community use, non-commercial, attribution",
+        "//     encouraged). Slay the Spire 2 game data belongs to Mega Crit Games.",
+        "//     See THIRD_PARTY_NOTICES.md. Do not edit by hand.",
+        "//",
+        "//     The 0-100 community score, picks, wins and win_rate are deliberately",
+        "//     not baked. Only the all-runs Elo (revealed preference) and the SKIP",
+        "//     pseudo-entity baseline are.",
+        "// </auto-generated>",
+        "",
+        "namespace CoopBots.Building;",
+        "",
+        "/// <summary>",
+        "/// Community all-runs card Elo, the draft baseline the pick/shop policy",
+        "/// starts from. Elo is what players actually chose when a card was offered",
+        "/// against alternatives; SKIP is the reward-screen skip row in the same",
+        "/// response. Missing entries are a real possibility and stay missing rather",
+        "/// than defaulting to zero.",
+        "/// </summary>",
+        "internal static class BakedCardElo",
+        "{",
+        f"    internal const string Source = {csharp_string(SOURCE)};",
+        f"    internal const string LocalRetrieved = {csharp_string(LOCAL_RETRIEVED)};",
+        f"    internal const string UpstreamGenerated = {csharp_string(UPSTREAM_GENERATED)};",
+        f"    internal const string SnapshotSha256 = {csharp_string(snapshot_hash)};",
+        f"    internal const double SkipElo = {csharp_double(skip_elo)};",
+        f"    internal const int CardCount = {len(elo)};",
+        f"    internal const int MissingKnownCount = {len(missing_known)};",
+        "",
+        "    /// <summary>Card id to all-runs Elo, ordinal and deterministic.</summary>",
+        "    internal static readonly Dictionary<string, double> Elo = new(StringComparer.Ordinal)",
+        "    {",
+    ]
+    for card_id in sorted(elo):
+        lines.append(f"        [\"{card_id}\"] = {csharp_double(elo[card_id])},")
+    lines += [
+        "    };",
+        "",
+        "    internal static bool TryGet(string id, out double elo)",
+        "        => Elo.TryGetValue(id, out elo);",
+        "}",
+        "",
+    ]
+
+    os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+    with open(target, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines))
+    print(f"wrote {target}: {len(elo)} card Elo entries + SKIP={skip_elo:.1f} "
+          f"(snapshot sha256={snapshot_hash[:16]}..., malformed={len(malformed)}, "
+          f"missing_elo={len(no_elo)}, known ids without Elo={len(missing_known)})")
+    if missing_known:
+        preview = ", ".join(missing_known[:10])
+        print(f"warning: {len(missing_known)} known local ids have no Elo entry: {preview}",
+              file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

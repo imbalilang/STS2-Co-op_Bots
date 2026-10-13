@@ -56,9 +56,12 @@ internal static class DraftSemanticsScenarios
         var removable = p.Deck.Cards.Where(c => c.Type != CardType.Curse).ToArray();
         var plan = RemovalPlan.Choose(p, removable, 2);
         Console.WriteLine("PROBE original deck remove2=" + string.Join(',', plan.Steps.Select(s => s.Card.Id.Entry)));
-        Check(plan.Steps.Count == 2 && plan.Steps.All(s => s.Card.Rarity == CardRarity.Basic && !s.Card.IsUpgraded
-            && (s.Card.Tags.Contains(CardTag.Strike) || s.Card.Tags.Contains(CardTag.Defend))),
-            "original act3 remove-two must discard plain starters before growth and replay engines");
+        // The shared removal priority (same one the shop uses) spends both slots
+        // on unupgraded basic Defends while they remain, so this act-3 remove-two
+        // no longer touches Mangle/Snakebite. Keep the original engine guard:
+        // whatever the priority picks, growth and replay engines must not be hit.
+        Check(plan.Steps.Count == 2 && plan.Steps.All(s => s.Card is not DemonForm and not OneTwoPunch),
+            "original act3 remove-two must retain useful growth and replay engines");
         var demon = p.Deck.Cards.OfType<DemonForm>().Single();
         var punch = p.Deck.Cards.OfType<OneTwoPunch>().Single();
         Check(CardProfile.Of(demon).Effects.StrengthPerTurn == 3 && CardProfile.Of(punch).Effects.ReplayAttacks == 1
@@ -69,13 +72,17 @@ internal static class DraftSemanticsScenarios
             "incomplete hand experiments must not price held engine deletion as blank-card relief");
         var candidate = combat.CreateCard<DarkEmbrace>(p);
         var addition = BuildValue.AddDetailed(candidate, p);
-        Check(addition.Contextual && addition.HandExperiment is null && Math.Abs(addition.Total
-            - (addition.EloBase + addition.Rules + addition.Development + addition.Affinity + addition.Multiplayer)) < 1e-8,
-            "unsupported additions must preserve the full structural fallback instead of a clamped residual");
+        // V20 replaces all-or-nothing fallback for a known addition. Unknown
+        // held mechanisms retain a structural share; deletion above stays guarded.
+        Check(addition.Contextual && addition.Reason.Contains("unknown:")
+            && addition.Reason.Contains("deck-strength:"),
+            "known additions beside unknown held mechanisms must retain a labeled structural share");
 
         Deck("STRIKE_IRONCLADx6 DEFEND_IRONCLADx6");
         var fade = combat.CreateCard<Fade>(p);
         var fadeValue = BuildValue.UpgradeDelta(fade, p).Total;
+        // R2 2026-09-30: TemporaryStatShare=.7 -> 0, exit 1 (restored .7 passes).
+        // System.Exception: Fade upgrade must value one-turn block support instead of permanent dexterity
         Check(CardProfile.Of(fade).Scaling == 0 && CardProfile.Of(fade).Effects.TemporaryDexterity == 6
             && fadeValue > 0 && fadeValue < 10,
             "Fade upgrade must value one-turn block support instead of permanent dexterity");
@@ -102,6 +109,21 @@ internal static class DraftSemanticsScenarios
         var dance = CardProfile.Of(combat.CreateCard<BladeDance>(p));
         Check(dance.Draw == 0 && dance.Effects.GeneratedShivs == 3 && DraftCardEffects.Value(dance.Effects, empty, 3) > 0,
             "generated Shivs must contribute attacks without being mislabeled as card draw");
+        Check(!LiveCombatCapture.Enabled, "combat capture must be off outside armed live tests");
+        var run = p.RunState;
+        var save = new SerializableRun { Players = party.Select(c => c.ToSerializable()).ToList(),
+            SerializableRng = run.Rng.ToSerializable(), SerializableOdds = run.Odds.ToSerializable(),
+            SerializableSharedRelicGrabBag = run.SharedRelicGrabBag.ToSerializable(), Ascension = 10 };
+        var restored = JsonSerializer.Deserialize(LiveCombatCapture.SerializeInitial(save), JsonSerializationUtility.GetTypeInfo<SerializableRun>());
+        Check(restored?.Players.Count == 4 && restored.Players[2].Deck.Count == 12 && restored.Ascension == 10,
+            "combat initial archive must preserve all four seats decks and difficulty");
+        var replay = new CombatReplay { serializableRun = save, version = "test", gitCommit = "test",
+            choiceIds = [1, 2, 3, 4], rewardIds = [5, 6, 7, 8], nextActionId = 12, nextHookId = 13 };
+        var reader = new PacketReader(); reader.Reset(LiveCombatCapture.SerializeReplay(replay));
+        var decoded = reader.Read<CombatReplay>();
+        Check(decoded.serializableRun.Players.Count == 4 && decoded.choiceIds.SequenceEqual(new uint[] { 1, 2, 3, 4 })
+            && decoded.rewardIds.SequenceEqual(new[] { 5, 6, 7, 8 }) && decoded.nextActionId == 12 && decoded.nextHookId == 13,
+            "native combat packet must preserve multiplayer choice reward and action sequencing");
         if (Failures.Count > 0) throw new Exception(string.Join("\n", Failures));
         Console.WriteLine($"PASS: draft semantic correction across rewards removals and upgrades (Fade upgrade={fadeValue:F2}).");
     }

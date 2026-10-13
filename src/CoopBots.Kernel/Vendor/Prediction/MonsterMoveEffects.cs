@@ -349,7 +349,8 @@ internal static partial class MonsterMoveEffects
                             move.Owner,
                             partyTarget,
                             plannedChoices,
-                            autoResolveKnowledgeChoices))
+                            autoResolveKnowledgeChoices,
+                            simulator.State.GetCreature(partyTarget).CurrentHp))
                     {
                         // A planned branch is waiting for its explicit choice; do not
                         // advance the counter for a move that has not resolved.
@@ -829,15 +830,17 @@ internal static partial class MonsterMoveEffects
                 return true;
             case ("Noisebot", "NOISE_MOVE"):
                 foreach (var partyTarget in targets)
+                {
                     simulator.AddToCombat<Dazed>(partyTarget, PileType.Discard, 1, null);
-                foreach (var partyTarget in targets)
                     simulator.AddToCombat<Dazed>(partyTarget, PileType.Draw, 1, null, CardPilePosition.Random);
+                }
                 return true;
             case ("SoulFysh", "BECKON_MOVE"):
                 foreach (var partyTarget in targets)
+                {
                     simulator.AddToCombat<Beckon>(partyTarget, PileType.Draw, 1, null, CardPilePosition.Random);
-                foreach (var partyTarget in targets)
                     simulator.AddToCombat<Beckon>(partyTarget, PileType.Discard, 1, null);
+                }
                 return true;
             case ("SoulFysh", "GAZE_MOVE"):
                 foreach (var partyTarget in targets)
@@ -1027,10 +1030,13 @@ internal static partial class MonsterMoveEffects
             case ("TheInsatiable", "LIQUIFY_GROUND_MOVE"):
                 foreach (var partyTarget in targets)
                     combat.ApplyTargeted<SandpitPower>(move.Owner, partyTarget, 4, move.Owner);
+                // Native Liquify creates/inserts each card immediately, and completes
+                // draw3/discard3 for one seat before visiting the next. Shuffle RNG is
+                // shared by the party: grouping all draw piles first silently changes it.
                 foreach (var partyTarget in targets)
-                    simulator.AddToCombat<FranticEscape>(partyTarget, PileType.Draw, 3, null, CardPilePosition.Random);
-                foreach (var partyTarget in targets)
-                    simulator.AddToCombat<FranticEscape>(partyTarget, PileType.Discard, 3, null, CardPilePosition.Random);
+                    for (var index = 0; index < 6; index++)
+                        simulator.AddToCombat<FranticEscape>(partyTarget,
+                            index < 3 ? PileType.Draw : PileType.Discard, 1, null, CardPilePosition.Random);
                 return true;
             case ("ThievingHopper", "FLUTTER_MOVE"):
                 combat.Apply<FlutterPower>(move.Owner, 5, move.Owner);

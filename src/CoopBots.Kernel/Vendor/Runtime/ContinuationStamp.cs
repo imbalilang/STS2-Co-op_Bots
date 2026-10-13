@@ -97,8 +97,13 @@ internal sealed record ContinuationStamp(string StateText)
         SimulatedCombatState.AppendLiveStatefulRelics(text, player);
         RelicPredictionStateSupport.AppendLiveContinuation(text, player);
         ModelPredictionStateMirrors.AppendLiveContinuation(text, state);
+        // CoopBots multiplayer port: emit this field even when empty. DescribeDifferences
+        // compares the whole party text as ONE ';'-separated list, so a field present on
+        // one side and absent on the other shifts every later field and reports
+        // `field_order[i]` instead of the field that actually differs.
+        text.Append(";onplay_configuration=");
         if (AdaptedCardOnPlayMirrors.CaptureLiveStamp() is { } onPlayStamp)
-            text.Append(";onplay_configuration=").Append(onPlayStamp);
+            text.Append(onPlayStamp);
         AppendPowers(text, state.Creatures.SelectMany(creature => creature.Powers));
         AppendRng(text,
             state.RunState.Rng.Shuffle.CaptureState(),
@@ -160,8 +165,10 @@ internal sealed record ContinuationStamp(string StateText)
             combat.RelicsOf(player));
         StateFingerprintBuilder adapterFingerprint = new();
         ModelPredictionStateMirrors.AppendPredicted(ref adapterFingerprint, text, simulator, combat);
+        // CoopBots multiplayer port: always emit, same reason as the live branch above.
+        text.Append(";onplay_configuration=");
         if (combat.AdaptedOnPlay is { } adaptedOnPlay)
-            text.Append(";onplay_configuration=").Append(adaptedOnPlay.Stamp);
+            text.Append(adaptedOnPlay.Stamp);
         AppendPowers(text, combat.EffectivePowers(), simulator);
         AppendRng(text,
             simulator.Rng.ShuffleState,
@@ -414,8 +421,19 @@ internal sealed record ContinuationStamp(string StateText)
 
     private static void AppendPowers(StringBuilder text, IEnumerable<PowerModel> powers, CombatPredictionSimulator? simulator = null)
     {
+        // CoopBots multiplayer port: canonical order, because DescribeDifferences compares
+        // the P= list by INDEX. The two renderers enumerate powers differently (live uses
+        // `state.Creatures.SelectMany(c => c.Powers)`, a branch uses `EffectivePowers()` --
+        // the hook-listener order), so the same board could render the same amounts onto
+        // different seats and compare equal, or report a `P[n]` diff that is only an
+        // enumeration-order difference. Sorting by (owner, type) makes index n mean the
+        // same power on both sides.
+        PowerModel[] active = powers.Where(power => power.Amount != 0)
+            .OrderBy(power => power.Owner.CombatId)
+            .ThenBy(power => power.Id.Entry, StringComparer.Ordinal)
+            .ToArray();
         text.Append(";P=");
-        foreach (PowerModel power in powers.Where(power => power.Amount != 0))
+        foreach (PowerModel power in active)
         {
             text.Append(power.Owner.CombatId).Append(':').Append(power.Id.Entry).Append('=')
                 .Append(power.Amount).Append('/')
@@ -448,6 +466,26 @@ internal sealed record ContinuationStamp(string StateText)
                     : ((SimulatedCombatState)simulator.State.CombatState).GetOrbitEnergyRemainder(orbit)).Append(',');
             text.Append("],");
         }
+        // P0-SIM-1（2026-10-05 伪 VICTORY）：上面的 P= 是有序表。实机渲染
+        // `Creatures.SelectMany(c => c.Powers)`，分支渲染 `EffectivePowers()`（hook listener
+        // 顺序），两侧口径不同时，两个"把同一个 amount 序列挂到不同席位"的盘面可以渲染成
+        // 同一段文本。SandpitPower 的全部语义就在 Target 上，逐席交换会翻转"谁被倒计时处死"。
+        // 这里按 (owner,type,target) 排序单独渲染一遍，让交换无法再被枚举顺序掩盖。
+        PowerModel[] targeted = active.Where(power => power.Target is not null)
+            .OrderBy(power => power.Owner.CombatId)
+            .ThenBy(power => power.Id.Entry, StringComparer.Ordinal)
+            .ThenBy(power => power.Target!.CombatId)
+            .ToArray();
+        // CoopBots multiplayer port: always emit PT=, even with no target. Live 2026-10-06
+        // (FABRICATOR_NORMAL) reported `field_order[35] expected={PT=0:GUARDED_POWER=1@0,…}
+        // actual={R=3008…}` -- the prediction had a targeted power and the live board did
+        // not, so the field COUNT differed and every later field was compared one slot off.
+        // An empty PT= keeps the layout fixed and turns that case into a readable
+        // `PT expected={…} actual={}`.
+        text.Append(";PT=");
+        foreach (PowerModel power in targeted)
+            text.Append(power.Owner.CombatId).Append(':').Append(power.Id.Entry).Append('=')
+                .Append(power.Amount).Append('@').Append(power.Target!.CombatId).Append(',');
     }
 
     private static void AppendRng(

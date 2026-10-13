@@ -1,10 +1,12 @@
 using System.Reflection;
+using CoopBots.Building;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Events;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Events;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Runs;
 
@@ -23,7 +25,27 @@ public static class BotEventDriver
     private static readonly FieldInfo PageIndex = AccessTools.Field(typeof(EventSynchronizer), "_pageIndex");
     private static readonly HashSet<EventOption> ChosenOptions = new(ReferenceEqualityComparer.Instance);
 
-    public static void Reset() => ChosenOptions.Clear();
+    private static readonly Dictionary<ulong, ConstructionPoll<(int Index, string Explanation)>> planning = new();
+    public static void Reset()
+    {
+        ChosenOptions.Clear();
+        foreach (var poll in planning.Values) poll.Clear();
+        planning.Clear();
+    }
+    private static bool TryPlan(Player player, EventModel model, out int index, out string explanation)
+    {
+        if (!planning.TryGetValue(player.NetId, out var poll)) planning[player.NetId] = poll = new();
+        string Context() {
+            if (model.IsFinished || !AutoPilot.Drives(player.NetId)) throw new OperationCanceledException();
+            return $"{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(model)}:"
+                + string.Join(';', model.CurrentOptions.Select(o => $"{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(o)}:{o.TextKey}:{o.IsLocked}:{o.WasChosen}"))
+                + string.Join(';', model.DynamicVars.Select(v => $"{v.Key}:{v.Value.BaseValue}"));
+        }
+        index = -1; explanation = "";
+        if (!poll.TryGet(ConstructionDecision.Fingerprint(player) + Context(), token =>
+            ConstructionDecision.RunAsync(player, () => (ChooseEventOption(player, model), EventHandlers.Explain(player, model)), Context, token), out var result)) return false;
+        index = result.Index; explanation = result.Explanation; return true;
+    }
 
     public static void Tick(RunManager manager, RunState state)
     {
@@ -67,7 +89,8 @@ public static class BotEventDriver
                 .Select(p => synchronizer.GetPlayerVote(p)).ToList();
             var humanVote = isShared ? MultiHumanCooperation.Vote(humanVotes, bots.Count, bots.IndexOf(player)) : null;
             int optionIndex;
-            if (!isShared) optionIndex = ChooseEventOption(player, eventModel);
+            var explanation = "";
+            if (!isShared) { if (!TryPlan(player, eventModel, out optionIndex, out explanation)) return; }
             else if (humanVote.HasValue) optionIndex = (int)humanVote.Value;
             else if (humanVotes.Count == 0)
                 // Every seat is handed over, so there is no human distribution to copy
@@ -75,7 +98,7 @@ public static class BotEventDriver
                 // forever and the event never resolves — the same shape as the map
                 // vote in TryVoteOnMap. Fall back to the scorer the per-player events
                 // already use, so each seat answers for its own deck.
-                optionIndex = ChooseEventOption(player, eventModel);
+                { if (!TryPlan(player, eventModel, out optionIndex, out explanation)) return; }
             else optionIndex = -1;
             if (optionIndex < 0 || optionIndex >= eventModel.CurrentOptions.Count)
                 continue;
@@ -87,7 +110,7 @@ public static class BotEventDriver
                 if (synchronizer.GetPlayerVote(player) == (uint)optionIndex)
                     continue;
                 var page = (uint)PageIndex.GetValue(synchronizer)!;
-                LogChoice(player, eventModel, optionIndex);
+                LogChoice(player, eventModel, optionIndex, explanation);
                 VoteShared.Invoke(synchronizer, new object[] { player, (uint)optionIndex, page });
             }
             else
@@ -96,7 +119,7 @@ public static class BotEventDriver
                 if (!ShouldAnswer(eventModel, option, ChosenOptions))
                     continue;
                 ChosenOptions.Add(option);
-                LogChoice(player, eventModel, optionIndex);
+                LogChoice(player, eventModel, optionIndex, explanation);
                 ChooseSolo.Invoke(synchronizer, new object[] { player, optionIndex });
             }
         }
@@ -117,10 +140,14 @@ public static class BotEventDriver
     {
         var usable = eventModel.CurrentOptions
             .Select((option, index) => (option, index))
-            .Where(pair => !pair.option.IsLocked && !pair.option.WasChosen)
+            .Where(pair => !pair.option.IsLocked && !pair.option.WasChosen
+                && !EnchantmentEventPolicy.ShouldAvoid(player, eventModel, pair.option))
             .ToList();
         if (usable.Count == 0)
             return -1;
+
+        if (eventModel is AncientEventModel ancient)
+            return AncientOptionValue.Rank(player, ancient).First().Index;
 
         // Events that need card-specific reasoning the option data cannot
         // express get a handler; everything else falls through to the scorer.
@@ -152,32 +179,52 @@ public static class BotEventDriver
             // once no shop is left to buy a removal at.
             if (key.Contains("curse"))
                 score -= 9 * RunDepth.BloatFactor(player);
-            // The key only says what the option is called; the game states what
-            // it actually gives. Read that instead of inferring magnitude from
-            // text: a key like LOST_WISP...CLAIM never mentions the Decay curse
-            // the option adds, and "gain" keys look identical whether they hand
-            // over a relic or a single card.
-            foreach (var relic in GrantedRelics(option))
-                score += RelicValueSafe(relic, player) * 0.25;
-            // CLIMB's relic is supplied only as a hover tip, but so is its
-            // permanent health cost: reward recognition must not make it free.
-            if (eventModel is DrowningBeacon && option.TextKey.EndsWith("CLIMB", StringComparison.Ordinal))
-                score -= (double)eventModel.DynamicVars.HpLoss.BaseValue * 2.5;
-            foreach (var tip in option.HoverTips)
-            {
-                if (tip.CanonicalModel is not CardModel granted) continue;
-                score += granted.Type switch
-                {
-                    // A curse or status is a permanent deck cost, not a reward —
-                    // and a dearer one the later it is accepted.
-                    CardType.Curse or CardType.Status => -14 * RunDepth.BloatFactor(player),
-                    CardType.Power => 6,
-                    _ => 0,
-                };
-            }
+            // The key only says what the option is called; the game states what it
+            // actually gives. T1+T2: price everything the option will REALLY grant —
+            // the models the game attached, plus the ones the RandomForeseer port
+            // predicts by replaying the generator on a cloned RNG — through one
+            // implementation shared with the trade handlers. Deduped, so an option
+            // that names its grant is not counted twice.
+            var grants = EventTrade.Grants(player, eventModel, option).Value;
+            // Grants evaluates the complete transform transaction, including
+            // replacement pools, compulsory additions and native duplication.
+            score += grants * ScorePerDeckPoint;
             return score;
         }
-        return usable.OrderByDescending(pair => Score(pair.option)).ThenBy(pair => pair.index).First().index;
+        var ranked = usable
+            .Select(pair => (pair.option, pair.index, Value: Score(pair.option)))
+            .OrderByDescending(entry => entry.Value)
+            .ThenBy(entry => entry.index)
+            .ToList();
+        // Pool-based events (NEOW / OROBAS / PAEL) draw their option ids from a relic pool,
+        // so no handler's Explain() covers them and the decision used to leave NO trace at
+        // all — a three-way tie broken by page order was indistinguishable from a considered
+        // pick. Measured 2026-09-30: OROBAS offered a seat Sea Glass / Driftwood /
+        // Archaic Tooth and the log said only which one won. Priced 58.24 / 0.00 / 0.00 at
+        // the time, so the two zeroes were tied and the order decided it.
+        if (ConstructionDecision.Current is null) LogRanking(player, eventModel, ranked);
+        return ranked[0].index;
+    }
+
+    /// <summary>
+    /// The generic scorer's per-option ranking, so a pool-based event can be read back
+    /// afterwards. Option ids are printed as their last segment (<c>SEA_GLASS</c>), which is
+    /// the relic id for these lives pools.
+    /// </summary>
+    private static void LogRanking(Player player, EventModel eventModel,
+        IReadOnlyList<(EventOption Option, int Index, double Value)> ranked)
+    {
+        try
+        {
+            var detail = string.Join(" ", ranked.Select(entry =>
+            {
+                var key = entry.Option.TextKey;
+                var dot = key.LastIndexOf('.');
+                return $"{(dot >= 0 ? key[(dot + 1)..] : key)}#{entry.Index}={entry.Value:F1}";
+            }));
+            MegaCrit.Sts2.Core.Logging.Log.Info($"CoopBots event ranking: bot={player.NetId} event={eventModel.Id.Entry} {detail}");
+        }
+        catch { /* instrumentation must never break a run */ }
     }
 
     internal static IEnumerable<RelicModel> GrantedRelics(EventOption option)
@@ -185,10 +232,10 @@ public static class BotEventDriver
             .Concat(option.Relic is { } direct ? [direct] : [])
             .DistinctBy(r => r.Id);
 
-    private static void LogChoice(Player player, EventModel model, int index)
+    private static void LogChoice(Player player, EventModel model, int index, string explanation)
         => MegaCrit.Sts2.Core.Logging.Log.Info($"CoopBots event: bot={player.NetId} event={model.Id.Entry} "
             + $"chose={model.CurrentOptions[index].TextKey} "
-            + (model is RoomFullOfCheese ? RoomFullOfCheeseHandler.Explain(player, model) : ""));
+            + explanation + EnchantmentEventPolicy.Explain(player, model));
 
     // A relic we cannot evaluate must not swing an event decision.
     private static double RelicValueSafe(RelicModel relic, Player player)
@@ -196,6 +243,18 @@ public static class BotEventDriver
         try { return HumanCoopAdvisor.RelicValue(relic, player).Score; }
         catch { return 0; }
     }
+
+    // A card we cannot evaluate is likewise neutral, never a crash.
+    private static double CardValueSafe(CardModel card, Player player)
+    {
+        try { return BuildValue.AddForDecision(card, player).Total; }
+        catch { return 0; }
+    }
+
+    // The scorer's scale is a handful of points per option; deck values run in tens.
+    // 0.25 is the ratio the relic branch has always used, so a card and a relic of
+    // equal deck value are worth equally much to this decision.
+    private const double ScorePerDeckPoint = 0.25;
 
     internal static bool ShouldDecipherTablet(Player player, int cost, int availableHealing)
     {
@@ -213,15 +272,36 @@ public static class BotEventDriver
 
         var upgrades = player.Deck.Cards.Where(card => card.IsUpgradable).ToList();
         if (upgrades.Count == 0) return false;
-        // The upgrade is random: estimate the pool's average, not its best card.
-        // These are conservative utility units, not a claim of exact card simulation.
-        var upgradeValue = upgrades.Average(card => card.Type is CardType.Curse or CardType.Status ? 0.0
-            : card.Rarity == CardRarity.Basic ? 8.0 : 12.0);
+        // Native selects uniformly from the CURRENT upgradable cards, without
+        // replacement after each purchase. Basic rarity supplies no fabricated
+        // upgrade reward: evaluate every actual upgraded clone and average it.
+        using var evaluation = DeckStrength.BeginEvaluation();
+        var upgradeValue = TabletRandomUpgradeValue(player);
         var clippedHp = Math.Max(0, hp - remainingMaxHp);
         var lowHealthPenalty = hp < maxHp * 0.75 ? cost * 0.5 : 0;
-        var permanentCost = cost + clippedHp * 0.25 + lowHealthPenalty;
-        var healingValue = Math.Min(Math.Max(0, availableHealing), Math.Max(0, maxHp - hp)) * 0.75;
+        // MaxHp is a permanent capacity loss; full-health purchases also lose
+        // the clipped CURRENT Hp now. Reducing the cap costs real healing at
+        // subsequent rest sites (the native rest fraction), rather than pricing
+        // this as a reversible three-point wound.
+        var permanentCost = TabletMaxHpCost(player, cost) + clippedHp + lowHealthPenalty;
+        // This heal is executable NOW. Use the shared event HP unit without
+        // the discount reserved for uncertain future potion opportunities.
+        var healingValue = EventTrade.Healed(player, availableHealing);
         return upgradeValue > permanentCost + healingValue;
+    }
+
+    internal static double TabletRandomUpgradeValue(Player player)
+    {
+        var pool = player.Deck.Cards.Where(c => c.IsUpgradable).ToArray();
+        return pool.Length == 0 ? 0 : pool.Average(c => BuildValue.UpgradeForDecision(c, player).Total);
+    }
+
+    internal static double TabletMaxHpCost(Player player, int cost)
+    {
+        double camps = 0;
+        try { camps = AncientOptionValue.RemainingRooms(player, MapPointType.RestSite, 2); }
+        catch { /* Detached fixtures have no generated route. */ }
+        return cost * (1 + .3 * Math.Min(3, camps));
     }
 }
 

@@ -39,7 +39,7 @@ internal static class HumanFinisherHints
                 nextAttempt = now + 500;
                 combat = state;
                 stamp = KernelSession.CaptureLiveStamp(state);
-                var root = KernelSession.Capture(state);
+                var root = KernelCombatCapture.Capture(state);
                 revision = KernelSession.LiveRevision;
                 steps = HumanFinisher.Search(root, state).GetEnumerator();
                 started = now;

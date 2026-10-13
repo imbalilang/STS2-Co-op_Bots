@@ -207,6 +207,68 @@ internal static class RouteScenarios
         if (!(matureEliteAct3 > safeUnknownAct3))
             throw new Exception($"A genuinely mature all-bot Act 3 deck may take the elite "
                 + $"({matureEliteAct3:F1} vs {safeUnknownAct3:F1}).");
+
+        // HEALTHY ELITES MUST SURVIVE THE DP'S OWN HEALTH PROPAGATION, not just the
+        // node comparison above. Measured live 2026-09-30 (act-2 boss run, which took
+        // ZERO elites in 31 floors): both branches below were losing the DP at 73-77%
+        // HP. Two independent causes were found and fixed:
+        //   * the health ladder bucketed 70-75% onto the 60% representative, so the
+        //     elite's own 70% survival gate refused it outright
+        //     (`chose UnknownMapCoord (0,13) (minHp=73%) … EliteMapCoord (1,13)=9.4`);
+        //   * `Advance(Elite)` cost two of the three health tiers, so a full-health
+        //     party was priced at <40% for the REST of the act
+        //     (`MonsterMapCoord (2,9)=117.4` vs `EliteMapCoord (1,9)=8.5` at minHp=77%).
+        if (RoutePlanner.HealthTier(.73) != 2 || RoutePlanner.HealthTier(.69) != 1 || RoutePlanner.HealthTier(.3) != 0)
+            throw new Exception("70% must be the healthy line: a 73% party is not a 69% party.");
+        void EliteSiblingDp(int healthTier, bool expectElite)
+        {
+            // The decision point is an Unknown/Treasure node, whose Advance leaves the
+            // health tier alone — that is the shape the live log lines compare.
+            var eliteStart = new MapPoint(0, 0) { PointType = MapPointType.Unknown };
+            var eliteChild = new MapPoint(0, 1) { PointType = MapPointType.Elite };
+            var monsterChild = new MapPoint(1, 1) { PointType = MapPointType.Monster };
+            var eliteBoss = new MapPoint(0, 6) { PointType = MapPointType.Boss };
+            eliteStart.AddChildPoint(eliteChild);
+            eliteStart.AddChildPoint(monsterChild);
+            void Tail(MapPoint from)
+            {
+                var cursor = from;
+                for (var row = 2; row <= 5; row++)
+                {
+                    var next = new MapPoint(row % 2, row) { PointType = MapPointType.Monster };
+                    cursor.AddChildPoint(next);
+                    cursor = next;
+                }
+                cursor.AddChildPoint(eliteBoss);
+            }
+            Tail(eliteChild);
+            Tail(monsterChild);
+            double EliteDpValue(MapPointType type, int hp, int gold) =>
+                RoutePlanner.ValueForNode(type, hp, gold, 0, 20, .5, 1, teamRoute: true);
+            var dp = RoutePlanner.Plan(eliteStart, eliteBoss, EliteDpValue, healthTier, 1);
+            var picked = dp?.Path[1].PointType;
+            if (expectElite && picked != MapPointType.Elite)
+                throw new Exception($"A healthy all-bot party must take the elite through the DP, got {picked}.");
+            if (!expectElite && picked == MapPointType.Elite)
+                throw new Exception($"A party at healthTier={healthTier} must not take the elite, got {picked}.");
+        }
+        EliteSiblingDp(2, expectElite: true);
+        EliteSiblingDp(1, expectElite: false);
+        EliteSiblingDp(0, expectElite: false);
+        // The per-room cost is pinned directly, not only through the DP: a tail of
+        // health-preserving rooms (Unknown/Treasure) is what makes a wrong tier stick,
+        // and a monster-only tail hides the bug because both branches fall to tier 0
+        // after one node anyway.
+        if (RoutePlanner.HealthAfterRoom(MapPointType.Elite, 2) != 1)
+            throw new Exception("A healthy party must leave an elite hurt, not crippled "
+                + $"(tier {RoutePlanner.HealthAfterRoom(MapPointType.Elite, 2)} after an elite at tier 2).");
+        if (RoutePlanner.HealthAfterRoom(MapPointType.Elite, 1) != 0
+            || RoutePlanner.HealthAfterRoom(MapPointType.Elite, 0) != 0)
+            throw new Exception("An elite must still take a hurt party to the floor.");
+        if (RoutePlanner.HealthAfterRoom(MapPointType.Monster, 2) != 1
+            || RoutePlanner.HealthAfterRoom(MapPointType.RestSite, 1) != 2)
+            throw new Exception("Only the elite's cost changed; fights and rests must not move.");
+        Console.WriteLine("PASS: healthy elites survive the DP's health propagation; hurt ones still do not.");
         Console.WriteLine("PASS: a healthy all-bot party proactively takes act-1/2 elites and "
             + "only takes act-3 elites with a mature deck.");
 

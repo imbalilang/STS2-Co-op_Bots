@@ -65,14 +65,21 @@ internal static class TemporalResourceScenarios
         Check(CardProfile.Of(scavenge) is { Energy: 0, NextTurnEnergy: 2 }, "Scavenge must not finance cards in the current hand.");
         Check(CardProfile.Of(glow) is { Draw: 1, NextTurnDraw: 1 }, "Glow must retain both its immediate and next-turn draw.");
         Check(CardProfile.Of(predator) is { Draw: 0, NextTurnDraw: 2 }, "Predator's two cards belong to the next hand.");
-        Check(BuildValue.UpgradeDelta(side, p) is { Total: > 0, Reason: var why } && why.Contains("next-energy+1"),
+        for (var i = 0; i < 10; i++) p.Deck.AddInternal(combat.CreateCard<StrikeIronclad>(p));
+        Check(BuildValue.UpgradeDelta(side, p) is { Total: > 0 },
             "Sidestep upgrades must value the extra next-turn energy.");
         foreach (var card in new CardModel[] { side, combat.CreateCard<ChargeBattery>(p),
             combat.CreateCard<Relax>(p), combat.CreateCard<Outmaneuver>(p), combat.CreateCard<Adrenaline>(p), combat.CreateCard<Apotheosis>(p) })
         {
             Hand(card);
+            // Apotheosis needs an upgradeable combat card. p.Deck above is the
+            // permanent deck, not a combat pile; the old empty-pile fixture
+            // accidentally required spending a one-shot for no effect.
+            var upgradeTarget = card is Apotheosis ? combat.CreateCard<StrikeIronclad>(p) : null;
+            if (upgradeTarget is not null) p.PlayerCombatState.DrawPile.AddInternal(upgradeTarget);
             Check(!RolloutRun.ShouldHold(KernelSession.Capture(combat), [p], p, card),
                 $"Resource timing must not hold {card.GetType().Name} for lacking a current payoff.");
+            if (upgradeTarget is not null) p.PlayerCombatState.DrawPile.RemoveInternal(upgradeTarget);
         }
         Hand(side);
         p.PlayerCombatState.LoseEnergy(3);

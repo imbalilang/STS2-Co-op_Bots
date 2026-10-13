@@ -47,11 +47,25 @@ internal static class AfterDeathMirrors
         registry.RegisterIgnored<Vantom>();
         registry.RegisterIgnored<WaterfallGiant>();
 
+        // Native Adaptable.AfterDeath enters TestSubject's reviving/dead move.
+        // DeathPowerSupport.Trigger owns that transition on a predicted branch;
+        // invoking the native listener would mutate the live monster instance.
+        registry.RegisterIgnored<AdaptablePower>();
+
         registry.Register<GremlinHorn>(HandleGremlinHorn);
         registry.Register<Melancholy>(HandleMelancholy);
         registry.Register<StockPower>(HandleStock);
         registry.Register<CrabRagePower>(HandleCrabRage);
         registry.Register<DampenPower>(HandleDampen);
+        registry.Register<GuardedPower>((power, context) =>
+        {
+            if (!context.WasRemovalPrevented && context.Creature == power.Applier)
+            {
+                if (context.CombatState is not ICombatPredictionEffectSink effects)
+                    throw new InvalidOperationException("Guarded death requires writable branch state.");
+                effects.SetPowerAmount(power, 0);
+            }
+        });
 
         return registry;
     }

@@ -27,7 +27,8 @@ internal static class KnowledgeDemonChoiceSupport
         Creature source,
         Creature player,
         IReadOnlyList<PlanCardChoice>? plannedChoices,
-        bool autoResolve = false)
+        bool autoResolve = false,
+        int? currentHp = null)
     {
         int counter = combat.GetKnowledgeDemonCurseCounter(source);
         if ((uint)counter >= (uint)OptionsByCounter.Length)
@@ -49,13 +50,7 @@ internal static class KnowledgeDemonChoiceSupport
                     optionIds));
                 return false;
             }
-            // Roll-out prediction, not a committed plan: every target still has to
-            // choose, and the tournament has no vector for those choices. Prefer the
-            // non-Disintegration curse (Mind Rot / Sloth / Waste Away) because
-            // Disintegration is direct unblockable damage and scales with the counter.
-            var disintegrationId = CanonicalModels.Card<Disintegration>().Id.Entry;
-            var defaultId = optionIds.FirstOrDefault(id =>
-                !string.Equals(id, disintegrationId, StringComparison.Ordinal)) ?? optionIds[0];
+            var defaultId = KernelKnowledgeChoice.Choose(optionIds);
             choice = new PlanCardChoice(
                 PlanChoiceEffect.ApplyKnowledgeCurse,
                 PileType.None,
@@ -91,18 +86,14 @@ internal static class KnowledgeDemonChoiceSupport
         KnowledgeDemonChoiceRequest request,
         SolverDisplayNames displayNames)
     {
-        List<PlanCardChoice> choices = new(request.OptionIds.Count);
-        for (int optionIndex = 0; optionIndex < request.OptionIds.Count; optionIndex++)
-        {
-            string cardId = request.OptionIds[optionIndex];
-            choices.Add(new PlanCardChoice(
+        // Search must not publish a suffix that live policy cannot execute.
+        string cardId = KernelKnowledgeChoice.Choose(request.OptionIds);
+        return [new PlanCardChoice(
                 PlanChoiceEffect.ApplyKnowledgeCurse,
                 PileType.None,
                 [new PlanCardToken(cardId, 0, string.Empty, 0, 0, displayNames.Card(cardId))],
                 request.SourceId,
-                Timing: PlanChoiceTiming.EnemyTurn));
-        }
-        return choices;
+                Timing: PlanChoiceTiming.EnemyTurn)];
     }
 
     private static string SourceId(Creature source, int counter)

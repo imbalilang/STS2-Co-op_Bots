@@ -4,6 +4,7 @@ using CoopBots.Building;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Events;
+using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent;
 using MegaCrit.Sts2.Core.Models;
@@ -197,6 +198,24 @@ internal static class TabletEventScenarios
         }
         Console.WriteLine($"PASS: all {EventHandlers.Registered.Count} event handlers match option ids that exist in this build.");
 
+        // Three option ids were added to the table by hand after diffing it against
+        // the INSTALLED build's localisation keys (2026-09-29). A missing id is not
+        // cosmetic — the guard above rejects a handler that names one, so the event
+        // could never be modelled. Pin them so a regeneration that drops them fails.
+        Check(BakedEvents.OptionIds["COLORFUL_PHILOSOPHERS"].Contains("EQUALITY")
+            && BakedEvents.OptionIds["LOST_WISP"].Contains("CLAIM_LOCKED")
+            && BakedEvents.OptionIds["SPIRALING_WHIRLPOOL"].Contains("REACH_IN"),
+            "The option ids verified against the installed build must stay in the table.");
+        // Pool-based events have no static ids: their options are synthesised from a
+        // relic pool at runtime. Named here so "which events are unguarded" has an
+        // answer, and kept handler-free so the guard never has to skip one silently.
+        Check(BakedEvents.PoolBasedEvents.Count > 0,
+            "Pool-based events must be named rather than silently absent from the table.");
+        Check(!BakedEvents.PoolBasedEvents.Any(EventHandlers.Registered.ContainsKey),
+            "A pool-based event cannot carry a handler: the id guard has nothing to check it against.");
+        Console.WriteLine($"PASS: {BakedEvents.PoolBasedEvents.Count} pool-based events are named, and the "
+            + "three build-verified option ids are pinned.");
+
         // Carrier event: the real event models build canonical vars that need card
         // titles, which the headless harness does not have.
         EventModel Carrier(params string[] suffixes)
@@ -260,5 +279,428 @@ internal static class TabletEventScenarios
         Check(Picked(new AbyssalBathsHandler(), Carrier("IMMERSE", "ABSTAIN")).EndsWith("ABSTAIN", StringComparison.Ordinal),
             "A hurt player should stop soaking rather than risk the damage.");
         Console.WriteLine("PASS: the abyssal baths soak while healthy and stop once the health is needed.");
+
+        // Doors of Light and Dark: the light door upgrades {Cards} cards AT RANDOM,
+        // the dark door removes one card the player CHOOSES. Both option ids carry no
+        // wording, so the generic scorer rated them equal and the page order decided —
+        // measured live 2026-09-29 (seed 9F4Q3R2BV8HQ), all four seats spent the event
+        // on two random upgrades. The random upgrade IS knowable: the event's own
+        // generator is replayed on a cloned RNG. Price those two, not the deck's best.
+        var doors = Player.CreateForNewRun<Deprived>(UnlockState.all, 9);
+        doors.MaxEnergy = 3; // Deprived's 100-energy default is not an ordinary event deck.
+        var doorsRun = RunState.CreateForTest(new[] { doors }, seed: "DOORS-LIGHT-DARK");
+        var doorsCombat = new CombatState(runState: doorsRun);
+        foreach (var card in doors.Deck.Cards.ToList()) doors.Deck.RemoveInternal(card);
+        void AddDoor<T>(int count = 1) where T : CardModel
+        {
+            for (var i = 0; i < count; i++) doors.Deck.AddInternal(doorsCombat.CreateCard<T>(doors));
+        }
+        AddDoor<StrikeIronclad>(6); AddDoor<DefendIronclad>(5);
+        AddDoor<Bash>(1); AddDoor<Uppercut>(1);
+        CardModel ByEntry(string id) => doors.Deck.Cards.First(card => card.Id.Entry == id);
+        double SumOf(IEnumerable<CardModel> cards)
+        {
+            var selected = cards.ToHashSet();
+            var after = doors.Deck.Cards.Select(card => selected.Contains(card)
+                ? CardProfile.Upgraded(card, BuildValue.StableEnergy(doors))!.Value.Card : card).ToArray();
+            return BuildValue.Deck(after, doors) - BuildValue.Deck(doors.Deck.Cards.ToArray(), doors);
+        }
+        // The worst hand the generator can deal: two basics.
+        var handed = new[] { ByEntry("STRIKE_IRONCLAD"), ByEntry("DEFEND_IRONCLAD") };
+        var bestTwo = doors.Deck.Cards.Where(card => card.IsUpgradable)
+            .OrderByDescending(card => BuildValue.UpgradeDelta(card, doors).Total).Take(2).ToList();
+        var doorsValue = DoorsOfLightAndDarkHandler.PriceWith(doors, handed);
+        Check(Math.Abs(doorsValue.Light - SumOf(handed)) < 0.01,
+            $"The light door must be priced from the cards it will ACTUALLY take: got {doorsValue.Light:F1}, "
+            + $"expected {SumOf(handed):F1} for [{string.Join(",", handed.Select(c => c.Id.Entry))}].");
+        Check(SumOf(bestTwo) > SumOf(handed) + 0.1,
+            $"Fixture must distinguish the prediction from the best case ({SumOf(bestTwo):F1} vs {SumOf(handed):F1}).");
+        // With the owner's -15 starter prior, these two BASIC upgrades (12.8)
+        // lose to removing a basic (16.0). Preserve the actual-upgrade assertion
+        // above and check the chosen value, rather than forcing the old policy.
+        // R2 prior15-r2/door.log: reversing Decide's comparison exits 1:
+        // "Tablet regression: The higher-valued door must win whichever order the page lists the two options in."
+        var lightWins = doorsValue.Light > doorsValue.Dark;
+        Check(DoorsOfLightAndDarkHandler.Decide(light: 0, dark: 1, doorsValue) == (lightWins ? 0 : 1)
+            && DoorsOfLightAndDarkHandler.Decide(light: 1, dark: 0, doorsValue) == (lightWins ? 1 : 0),
+            "The higher-valued door must win whichever order the page lists the two options in.");
+        Console.WriteLine($"PASS: the light door is priced from the cards it will really upgrade "
+            + $"({doorsValue.Light:F1}) versus the chosen removal ({doorsValue.Dark:F1}).");
+
+        // T1: an option that grants a NAMED card must be priced by the reward-pick
+        // model. The generic scorer gave every non-power card 0, so a card-granting
+        // option could not be told from an empty one.
+        var tipper = Player.CreateForNewRun<Deprived>(UnlockState.all, 11);
+        var tipRun = RunState.CreateForTest(new[] { tipper }, seed: "EVENT-T1");
+        var tipCombat = new CombatState(runState: tipRun);
+        foreach (var card in tipper.Deck.Cards.ToList()) tipper.Deck.RemoveInternal(card);
+        for (var i = 0; i < 5; i++) tipper.Deck.AddInternal(tipCombat.CreateCard<StrikeIronclad>(tipper));
+        for (var i = 0; i < 4; i++) tipper.Deck.AddInternal(tipCombat.CreateCard<DefendIronclad>(tipper));
+        var weakCard = tipCombat.CreateCard<DefendIronclad>(tipper);
+        var strongCard = tipCombat.CreateCard<Bash>(tipper);
+        var weakValue = BuildValue.Add(weakCard, tipper).Total;
+        var strongValue = BuildValue.Add(strongCard, tipper).Total;
+        Check(strongValue > weakValue + 0.01,
+            $"Fixture must give the two cards different values ({strongValue:F1} vs {weakValue:F1}).");
+        EventModel Tips(params (string Suffix, IHoverTip[] Tips)[] options)
+        {
+            var model = ModelDb.Event<Reflections>().ToMutable();
+            var list = new List<EventOption>();
+            foreach (var (suffix, tips) in options)
+                list.Add(new EventOption(model, () => Task.CompletedTask, new LocString("events", "test.title"),
+                    new LocString("events", "test.description"), "EVENT.pages.INITIAL.options." + suffix, tips));
+            typeof(EventModel).GetField("_currentOptions", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(model, list);
+            return model;
+        }
+        // The BETTER card is listed second on purpose: with the old zero-for-cards
+        // scorer the tie broke to index 0 and the worse card won.
+        var giveaway = Tips(("WEAK", [new CardHoverTip(weakCard)]), ("STRONG", [new CardHoverTip(strongCard)]));
+        var giveawayIndex = (int)choose.Invoke(null, new object[] { tipper, giveaway })!;
+        Check(giveaway.CurrentOptions[giveawayIndex].TextKey.EndsWith("STRONG", StringComparison.Ordinal),
+            $"A named card must be priced by the reward model: got "
+            + $"{giveaway.CurrentOptions[giveawayIndex].TextKey} ({weakValue:F1} vs {strongValue:F1}).");
+        Console.WriteLine($"PASS: a granted card is priced by the reward model "
+            + $"({weakValue:F1} vs {strongValue:F1}), not scored zero.");
+
+        // T3: the resource-trade events. The generic scorer has no signal for any of
+        // these (no option id carries a keyword), so before this they were decided by
+        // page order. Each is pinned on both sides of its own break-even.
+        EventModel Trade<T>(params string[] suffixes) where T : EventModel
+        {
+            var model = ModelDb.Event<T>().ToMutable();
+            var list = new List<EventOption>();
+            foreach (var suffix in suffixes)
+                list.Add(new EventOption(model, () => Task.CompletedTask, new LocString("events", "test.title"),
+                    new LocString("events", "test.description"),
+                    typeof(T).Name.ToUpperInvariant() + ".pages.INITIAL.options." + suffix,
+                    Array.Empty<IHoverTip>()));
+            typeof(EventModel).GetField("_currentOptions", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(model, list);
+            return model;
+        }
+        string PickedBy(IEventSpecialHandler handler, EventModel model, Player who)
+        {
+            var index = handler.Choose(who, model);
+            return index is { } value && value >= 0 && value < model.CurrentOptions.Count
+                ? model.CurrentOptions[value].TextKey : "(none)";
+        }
+
+        var statue = Trade<SunkenStatue>("DIVE_INTO_WATER", "GRAB_SWORD");
+        // Preserve the fixture's stated surplus after the shared gold scale
+        // changes: forty value points clearly cover the wound and the relic.
+        statue.DynamicVars["Gold"].BaseValue = (decimal)(40 * BotShopPlanner.GoldPerDeckValue);
+        statue.DynamicVars["HpLoss"].BaseValue = 7;
+        Check(PickedBy(new SunkenStatueHandler(), statue, doors).EndsWith("DIVE_INTO_WATER", StringComparison.Ordinal),
+            "Sunken Statue must dive when the gold clearly outweighs a seven-point wound: "
+            + new SunkenStatueHandler().Explain(doors, statue) + ".");
+        statue.DynamicVars["Gold"].BaseValue = 0;
+        statue.DynamicVars["HpLoss"].BaseValue = 60;
+        Check(PickedBy(new SunkenStatueHandler(), statue, doors).EndsWith("GRAB_SWORD", StringComparison.Ordinal),
+            "Sunken Statue must take the relic rather than a fatal dive: "
+            + new SunkenStatueHandler().Explain(doors, statue) + ".");
+
+        var treasury = Trade<SunkenTreasury>("FIRST_CHEST", "SECOND_CHEST");
+        treasury.DynamicVars["SmallChestGold"].BaseValue = 60;
+        treasury.DynamicVars["LargeChestGold"].BaseValue = 333;
+        Check(PickedBy(new SunkenTreasuryHandler(), treasury, doors).EndsWith("SECOND_CHEST", StringComparison.Ordinal),
+            "Sunken Treasury must take the large chest when it pays for the Greed curse.");
+        treasury.DynamicVars["LargeChestGold"].BaseValue = 66;
+        Check(PickedBy(new SunkenTreasuryHandler(), treasury, doors).EndsWith("FIRST_CHEST", StringComparison.Ordinal),
+            "Sunken Treasury must refuse a large chest that only just covers its curse.");
+
+        var maze = Trade<JungleMazeAdventure>("JOIN_FORCES", "SOLO_QUEST");
+        maze.DynamicVars["JoinForcesGold"].BaseValue = 50;
+        maze.DynamicVars["SoloGold"].BaseValue = 150;
+        maze.DynamicVars["SoloHp"].BaseValue = 18;
+        Check(PickedBy(new JungleMazeAdventureHandler(), maze, doors).EndsWith("SOLO_QUEST", StringComparison.Ordinal),
+            "Jungle Maze must take the larger purse when the wound is cheap.");
+        maze.DynamicVars["SoloHp"].BaseValue = 140;
+        Check(PickedBy(new JungleMazeAdventureHandler(), maze, doors).EndsWith("JOIN_FORCES", StringComparison.Ordinal),
+            "Jungle Maze must share when the solo wound is unaffordable.");
+
+        var thisOrThat = Trade<ThisOrThat>("ORNATE", "PLAIN");
+        thisOrThat.DynamicVars["Gold"].BaseValue = 0;
+        thisOrThat.DynamicVars["HpLoss"].BaseValue = 6;
+        Check(PickedBy(new ThisOrThatHandler(), thisOrThat, doors).EndsWith("ORNATE", StringComparison.Ordinal),
+            "This or That must take the relic when the plain side offers nothing.");
+        thisOrThat.DynamicVars["Gold"].BaseValue = 90;
+        Check(PickedBy(new ThisOrThatHandler(), thisOrThat, doors).EndsWith("PLAIN", StringComparison.Ordinal),
+            "This or That must prefer the gold once it outweighs a relic minus the curse.");
+
+        var unrest = Trade<UnrestSite>("KILL", "REST");
+        unrest.DynamicVars["MaxHpLoss"].BaseValue = 8;
+        doors.Creature.SetMaxHpInternal(80); doors.Creature.SetCurrentHpInternal(80);
+        Check(PickedBy(new UnrestSiteHandler(), unrest, doors).EndsWith("KILL", StringComparison.Ordinal),
+            "Unrest Site must trade Max HP for the relic when there is nothing to heal.");
+        doors.Creature.SetCurrentHpInternal(20);
+        Check(PickedBy(new UnrestSiteHandler(), unrest, doors).EndsWith("REST", StringComparison.Ordinal),
+            "Unrest Site must heal a badly hurt player, curse and all.");
+
+        var well = Trade<Wellspring>("BATHE", "BOTTLE");
+        well.DynamicVars["BatheCurses"].BaseValue = 1;
+        AddDoor<Injury>(); // Chosen removal now has a genuine curse to clean up.
+        Check(PickedBy(new WellspringHandler(), well, doors).EndsWith("BATHE", StringComparison.Ordinal),
+            "Wellspring must take the removal when a starter-heavy deck still has dead draws.");
+        Console.WriteLine("PASS: the resource-trade events are decided on both sides of their break-even.");
+
+        // T2: the RANDOM outcome is read from the game's own generator on a cloned
+        // RNG, so a "random relic/potion/card" option is priced by what it will give
+        // instead of being unknown. Probed here rather than assumed: the prediction
+        // needs the event's owner, and a harness that cannot supply one must make the
+        // handler fall back rather than decide on nothing.
+        // EventModel.Owner is get-only; the prediction reads it, so the harness
+        // must supply one explicitly (the live game sets it when the event starts).
+        void SetOwner(EventModel model, Player? owner) => typeof(EventModel)
+            .GetField("<Owner>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(model, owner);
+
+        var automaton = ModelDb.Event<InfestedAutomaton>().ToMutable();
+        SetOwner(automaton, doors);
+        var automatonOptions = new List<EventOption>();
+        foreach (var suffix in new[] { "STUDY", "TOUCH_CORE" })
+            automatonOptions.Add(new EventOption(automaton, () => Task.CompletedTask,
+                new LocString("events", "test.title"), new LocString("events", "test.description"),
+                "INFESTED_AUTOMATON.pages.INITIAL.options." + suffix, Array.Empty<IHoverTip>()));
+        typeof(EventModel).GetField("_currentOptions", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(automaton, automatonOptions);
+        var study = EventTrade.Grants(doors, automaton, automaton.CurrentOptions[0]);
+        var touch = EventTrade.Grants(doors, automaton, automaton.CurrentOptions[1]);
+        // The harness draws from a mock card pool: STUDY's random Power resolves, while
+        // TOUCH_CORE's zero-cost filter finds nothing there. So this pins the plumbing
+        // (a prediction really is produced and priced) and the comparison (the option
+        // whose predicted grant loses value is rejected), not the live card values.
+        // 2026-10-03: an unknown MockPowerCard no longer gets a fabricated positive dividend.
+        Check(study.Value < 0 && study.Detail.Length > 0,
+            $"The RandomForeseer prediction must be priced: study={study.Value:F1}({study.Detail}) "
+            + $"touch={touch.Value:F1}({touch.Detail})");
+        var automatonPick = (int)choose.Invoke(null, new object[] { doors, automaton })!;
+        Check(automaton.CurrentOptions[automatonPick].TextKey.EndsWith("TOUCH_CORE", StringComparison.Ordinal),
+            $"A predicted harmful mock grant must not beat the neutral alternative: {study.Value:F1} vs {touch.Value:F1}.");
+
+        // Brain Leech: RIP pays HP for a colourless card reward; SHARE takes a random
+        // card for free. With both sides predicted the handler must compare the card
+        // against the wound, not the option order.
+        var leech = ModelDb.Event<BrainLeech>().ToMutable();
+        SetOwner(leech, doors);
+        leech.DynamicVars["RipHpLoss"].BaseValue = 5;
+        var leechOptions = new List<EventOption>();
+        foreach (var suffix in new[] { "RIP", "SHARE_KNOWLEDGE" })
+            leechOptions.Add(new EventOption(leech, () => Task.CompletedTask,
+                new LocString("events", "test.title"), new LocString("events", "test.description"),
+                "BRAIN_LEECH.pages.INITIAL.options." + suffix, Array.Empty<IHoverTip>()));
+        typeof(EventModel).GetField("_currentOptions", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(leech, leechOptions);
+        var leechIndex = new BrainLeechHandler().Choose(doors, leech);
+        Check(leechIndex is { } leechPick && leechPick >= 0,
+            "Brain Leech must make a choice rather than defer.");
+        Console.WriteLine($"PASS: T2 predicted grants (study={study.Value:F1}, touch={touch.Value:F1}); "
+            + $"Brain Leech picked {leech.CurrentOptions[leechIndex!.Value].TextKey}.");
+
+        // Owner policy 2026-10-04: Battleworn Dummy always picks the second
+        // tier (two random upgrades). Listed shuffled on purpose: the choice must
+        // be by setting identity, not page order or the old shortest-fight price.
+        var dummy = Trade<BattlewornDummy>("SETTING_3", "SETTING_2", "SETTING_1");
+        SetOwner(dummy, null);
+        dummy.DynamicVars["Setting1Hp"].BaseValue = 75;
+        dummy.DynamicVars["Setting2Hp"].BaseValue = 150;
+        dummy.DynamicVars["Setting3Hp"].BaseValue = 300;
+        var dummyPick = PickedBy(new BattlewornDummyHandler(), dummy, doors);
+        Check(dummyPick.EndsWith("SETTING_2", StringComparison.Ordinal),
+            $"Battleworn Dummy must always choose the second tier (two upgrades); got {dummyPick} "
+            + $"({new BattlewornDummyHandler().Explain(doors, dummy)}).");
+        Console.WriteLine("PASS: the dummy event always chooses the second tier.");
+
+        // T4: trading a curse or a permanent cost for a benefit.
+        //
+        // LOST_WISP — the curse is the price. It must be charged EXACTLY ONCE whether
+        // the game names it on the option or not: charging it twice rejects a relic
+        // the deck should take, charging it never takes a curse for free.
+        var wisp = Trade<LostWisp>("CLAIM", "SEARCH");
+        wisp.DynamicVars["Gold"].BaseValue = 60;
+        var curseCard = doorsCombat.CreateCard<Decay>(doors);
+        var claimOption = wisp.CurrentOptions[0];
+        var unnamedCurse = EventTrade.GrantsWithCurses(doors, wisp, "CLAIM", 1);
+        Check(EventTrade.PricesCurse(wisp, claimOption) == false && unnamedCurse < 0,
+            $"An unnamed curse must be charged by the handler: {unnamedCurse:F1}.");
+        var namedOption = new EventOption(wisp, () => Task.CompletedTask, new LocString("events", "t"),
+            new LocString("events", "d"), "LOST_WISP.pages.INITIAL.options.CLAIM",
+            [new CardHoverTip(curseCard)]);
+        typeof(EventModel).GetField("_currentOptions", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(wisp, new List<EventOption> { namedOption, wisp.CurrentOptions[1] });
+        Check(EventTrade.PricesCurse(wisp, wisp.CurrentOptions[0]),
+            "A curse the option names must be recognised as already priced.");
+        var onceOnly = EventTrade.GrantsWithCurses(doors, wisp, "CLAIM", 1);
+        Check(Math.Abs(onceOnly - unnamedCurse) < 0.01,
+            $"A named curse must not be charged a second time: {onceOnly:F1} vs {unnamedCurse:F1}.");
+        // And the choice follows: 60 gold beats a curse when no relic is offered.
+        var wispBack = Trade<LostWisp>("CLAIM", "SEARCH");
+        wispBack.DynamicVars["Gold"].BaseValue = 60;
+        Check(PickedBy(new LostWispHandler(), wispBack, doors).EndsWith("SEARCH", StringComparison.Ordinal),
+            "Lost Wisp must walk away when the relic side has no value and the curse does.");
+
+        // SPIRIT_GRAFTER — the heal is capped at what the pool can take, so the same
+        // option is worth 25 more at 20/80 than at full health.
+        var grafter = Trade<SpiritGrafter>("LET_IT_IN", "REJECTION");
+        grafter.DynamicVars["LetItInHealAmount"].BaseValue = 25;
+        doors.Creature.SetMaxHpInternal(80); doors.Creature.SetCurrentHpInternal(80);
+        var fedFull = SpiritGrafterHandler.Price(doors, grafter).Accept;
+        doors.Creature.SetCurrentHpInternal(20);
+        var fedHurt = SpiritGrafterHandler.Price(doors, grafter).Accept;
+        Check(Math.Abs((fedHurt - fedFull) - 25) < 0.01,
+            $"The graft's heal must be worth the missing pool, not its face value: {fedFull:F1} -> {fedHurt:F1}.");
+        doors.Creature.SetCurrentHpInternal(80);
+
+        // DROWNING_BEACON — climbing costs permanent Max HP and that price must be
+        // charged even when the relic is not named on the option.
+        var beacon = Trade<DrowningBeacon>("BOTTLE", "CLIMB");
+        beacon.DynamicVars["HpLoss"].BaseValue = 13;
+        var (bottle, climb) = DrowningBeaconHandler.Price(doors, beacon);
+        Check(climb < bottle && Math.Abs(climb - (-13)) < 0.01,
+            $"Climbing must be charged its Max HP cost: bottle={bottle:F1} climb={climb:F1}.");
+        Check(PickedBy(new DrowningBeaconHandler(), beacon, doors).EndsWith("BOTTLE", StringComparison.Ordinal),
+            "Drowning Beacon must take the potion when the relic side is unpriced and the climb costs 13 Max HP.");
+        Console.WriteLine($"PASS: T4 charges the curse once ({onceOnly:F1} vs {unnamedCurse:F1}), caps the "
+            + $"graft's heal at the missing pool (+25), and prices the climb's Max HP ({climb:F1}).");
+
+        // The three events the live logs met most often among the unmodelled.
+        void ClearDeck(Player player)
+        {
+            foreach (var card in player.Deck.Cards.ToArray()) player.Deck.RemoveInternal(card);
+        }
+        void AddDeck<T>(Player player, CombatState combat, int count) where T : CardModel
+        {
+            for (var i = 0; i < count; i++) player.Deck.AddInternal(combat.CreateCard<T>(player));
+        }
+
+        // SELF_HELP_BOOK — three pages, each enchanting ONE card type: an Attack with
+        // SHARP, a Skill with NIMBLE, a Power with SWIFT. The ids say nothing, so the
+        // page must be chosen from the enchantment's printed effect and whether the
+        // deck can take it. Listed POWER FIRST so page order would pick the wrong one.
+        var book = Trade<SelfHelpBook>("READ_ENTIRE_BOOK", "READ_PASSAGE", "READ_THE_BACK");
+        book.DynamicVars["Enchantment1"].GetType().GetProperty("StringValue")!.SetValue(book.DynamicVars["Enchantment1"], "SHARP.title");
+        book.DynamicVars["Enchantment2"].GetType().GetProperty("StringValue")!.SetValue(book.DynamicVars["Enchantment2"], "NIMBLE.title");
+        book.DynamicVars["Enchantment3"].GetType().GetProperty("StringValue")!.SetValue(book.DynamicVars["Enchantment3"], "SWIFT.title");
+        foreach (var key in new[] { "Enchantment1Amount", "Enchantment2Amount", "Enchantment3Amount" })
+            book.DynamicVars[key].BaseValue = 2;
+        ClearDeck(doors); AddDeck<StrikeIronclad>(doors, doorsCombat, 8);
+        Check(PickedBy(new SelfHelpBookHandler(), book, doors).EndsWith("READ_THE_BACK", StringComparison.Ordinal),
+            $"An attack-only deck must take the Attack page: {new SelfHelpBookHandler().Explain(doors, book)}.");
+        ClearDeck(doors); AddDeck<DefendIronclad>(doors, doorsCombat, 8);
+        Check(PickedBy(new SelfHelpBookHandler(), book, doors).EndsWith("READ_PASSAGE", StringComparison.Ordinal),
+            $"A skill-only deck must take the Skill page: {new SelfHelpBookHandler().Explain(doors, book)}.");
+        ClearDeck(doors); AddDeck<InfiniteBlades>(doors, doorsCombat, 8);
+        Check(PickedBy(new SelfHelpBookHandler(), book, doors).EndsWith("READ_ENTIRE_BOOK", StringComparison.Ordinal),
+            $"A power-only deck must take the Power page: {new SelfHelpBookHandler().Explain(doors, book)}.");
+
+        // Owner 2026-10-05: when every page is takeable the Power page is a HARD
+        // preference, not a price tie. Listed in the game's real page order
+        // (Back=first, Entire=third) so page order alone would pick the Attack page.
+        var orderedBook = Trade<SelfHelpBook>("READ_THE_BACK", "READ_PASSAGE", "READ_ENTIRE_BOOK");
+        foreach (var key in new[] { "Enchantment1", "Enchantment2", "Enchantment3" })
+            orderedBook.DynamicVars[key].GetType().GetProperty("StringValue")!.SetValue(orderedBook.DynamicVars[key], "SHARP.title");
+        // The Power page is deliberately the CHEAPEST so the old printed-price
+        // comparison (and page order) would take the Attack page instead.
+        orderedBook.DynamicVars["Enchantment1Amount"].BaseValue = 5;
+        orderedBook.DynamicVars["Enchantment2Amount"].BaseValue = 4;
+        orderedBook.DynamicVars["Enchantment3Amount"].BaseValue = 1;
+        ClearDeck(doors); AddDeck<StrikeIronclad>(doors, doorsCombat, 4);
+        AddDeck<DefendIronclad>(doors, doorsCombat, 4); AddDeck<InfiniteBlades>(doors, doorsCombat, 4);
+        Check(PickedBy(new SelfHelpBookHandler(), orderedBook, doors).EndsWith("READ_ENTIRE_BOOK", StringComparison.Ordinal),
+            $"A deck with every type must hard-prefer the Power page: "
+            + $"{new SelfHelpBookHandler().Explain(doors, orderedBook)}.");
+        Console.WriteLine($"PASS: the book follows the deck's card types "
+            + $"({new SelfHelpBookHandler().Explain(doors, book)}).");
+
+        // STONE_OF_ALL_TIME — drink a random potion for Max HP, or take a wound for a
+        // Vigorous attack. Both sides priced: the potion at its reserve value, the
+        // wound 1:1, Vigorous at its printed first-play damage.
+        var stone = Trade<StoneOfAllTime>("LIFT", "PUSH");
+        stone.DynamicVars["DrinkMaxHpGain"].BaseValue = 10;
+        stone.DynamicVars["PushHpLoss"].BaseValue = 6;
+        stone.DynamicVars["PushVigorousAmount"].BaseValue = 8;
+        Check(PickedBy(new StoneOfAllTimeHandler(), stone, doors).EndsWith("PUSH", StringComparison.Ordinal),
+            $"A cheap Vigorous attack must beat ten Max HP for a potion: {new StoneOfAllTimeHandler().Explain(doors, stone)}.");
+        stone.DynamicVars["DrinkMaxHpGain"].BaseValue = 30;
+        Check(PickedBy(new StoneOfAllTimeHandler(), stone, doors).EndsWith("LIFT", StringComparison.Ordinal),
+            $"Thirty Max HP must beat the Vigorous attack: {new StoneOfAllTimeHandler().Explain(doors, stone)}.");
+
+        // WELCOME_TO_WONGOS — a shop, and LEAVING is not free: the game downgrades one
+        // of the upgraded cards. A shelf nobody can price must not be bought blind.
+        var wongos = Trade<WelcomeToWongos>("BARGAIN_BIN", "FEATURED_ITEM", "MYSTERY_BOX", "LEAVE");
+        wongos.DynamicVars["BargainBinCost"].BaseValue = 100;
+        wongos.DynamicVars["FeaturedItemCost"].BaseValue = 200;
+        wongos.DynamicVars["MysteryBoxCost"].BaseValue = 300;
+        ClearDeck(doors); AddDeck<StrikeIronclad>(doors, doorsCombat, 5); AddDeck<DefendIronclad>(doors, doorsCombat, 4);
+        AddDeck<Bash>(doors, doorsCombat, 1);
+        Check(PickedBy(new WelcomeToWongosHandler(), wongos, doors).EndsWith("LEAVE", StringComparison.Ordinal),
+            $"An unpriced shelf must not be bought blind: {new WelcomeToWongosHandler().Explain(doors, wongos)}.");
+        Console.WriteLine("PASS: Wongos prices its shelves against the cost of leaving.");
+
+        // THE_LEGENDS_WERE_TRUE — nail down the map, or slowly find an exit for an
+        // unblockable 8-point wound and a random potion. The map is a Quest card:
+        // unplayable in combat, so the combat deck-value model refuses it with its
+        // -1000 guard sentinel and the generic scorer started from -237 (measured
+        // 2026-09-30), declining the map without ever reading the 600 gold the quest
+        // pays or the treasure node it guarantees. Both sides must now be priced.
+        var spoilsMap = doorsCombat.CreateCard<SpoilsMap>(doors);
+        var questGold = (double)spoilsMap.DynamicVars["Gold"].BaseValue;
+        Check(questGold > 0, "The fixture must expose SPOILS_MAP's quest gold.");
+        EventModel LegendsPage(bool withReward)
+        {
+            var model = ModelDb.Event<TheLegendsWereTrue>().ToMutable();
+            SetOwner(model, doors);
+            EventOption Map() => new(model, () => Task.CompletedTask, new LocString("events", "t"),
+                new LocString("events", "d"),
+                "THE_LEGENDS_WERE_TRUE.pages.INITIAL.options.NAB_THE_MAP",
+                withReward ? new IHoverTip[] { new CardHoverTip(spoilsMap) } : Array.Empty<IHoverTip>());
+            EventOption Exit() => new(model, () => Task.CompletedTask, new LocString("events", "t"),
+                new LocString("events", "d"),
+                "THE_LEGENDS_WERE_TRUE.pages.INITIAL.options.SLOWLY_FIND_AN_EXIT", Array.Empty<IHoverTip>());
+            var options = new List<EventOption> { Map(), Exit() };
+            typeof(EventModel).GetField("_currentOptions", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(model, options);
+            return model;
+        }
+        int Slot(EventModel model, string suffix) => model.CurrentOptions
+            .Select((option, index) => (option, index))
+            .First(pair => pair.option.TextKey.EndsWith(suffix, StringComparison.Ordinal)).index;
+
+        var legends = LegendsPage(withReward: true);
+        var mapIndex = Slot(legends, "NAB_THE_MAP");
+        var exitIndex = Slot(legends, "SLOWLY_FIND_AN_EXIT");
+        // The combat model still refuses the card as unplayable; only the event layer
+        // prices the quest. That layering is the point: BuildValue stays combat-only.
+        Check(BuildValue.Add(spoilsMap, doors).Total < 0,
+            "SPOILS_MAP must stay combat-dead in the deck-value model.");
+        var mapGrant = EventTrade.Grants(doors, legends, legends.CurrentOptions[mapIndex]);
+        var pricedQuestGold = questGold / BotShopPlanner.GoldPerDeckValue;
+        Check(mapGrant.Value > pricedQuestGold - 10 && mapGrant.Detail.Contains("SPOILS_MAP"),
+            $"The map's quest reward must be priced, not refused as unplayable: "
+            + $"{mapGrant.Value:F1} ({mapGrant.Detail}).");
+        Check(mapGrant.Value < pricedQuestGold + 0.01,
+            $"Holding the Quest card must still cost its draw slot: {mapGrant.Value:F1} vs {pricedQuestGold:F1}.");
+        var legendsPrice = LegendsWereTrueHandler.Price(doors, legends);
+        Check(legendsPrice.Map > legendsPrice.Exit,
+            $"The map must beat the wound-plus-potion exit once its reward is priced: "
+            + $"map={legendsPrice.Map:F1} exit={legendsPrice.Exit:F1}.");
+        Check(LegendsWereTrueHandler.Decide(mapIndex, exitIndex, legendsPrice) == mapIndex
+            && LegendsWereTrueHandler.Decide(exitIndex, mapIndex, legendsPrice) == exitIndex,
+            "The map must be chosen by identity, not by page order.");
+        var legendsPick = (int)choose.Invoke(null, new object[] { doors, legends })!;
+        Check(legends.CurrentOptions[legendsPick].TextKey.EndsWith("NAB_THE_MAP", StringComparison.Ordinal),
+            $"The Legends Were True must nail down the map: got {legends.CurrentOptions[legendsPick].TextKey} "
+            + $"({new LegendsWereTrueHandler().Explain(doors, legends)}).");
+
+        // Negative control: strip the reward and the SAME handler must take the exit,
+        // so the map win above comes from the priced quest and not from its id.
+        var bare = LegendsPage(withReward: false);
+        var bareMapIndex = Slot(bare, "NAB_THE_MAP");
+        var bareExitIndex = Slot(bare, "SLOWLY_FIND_AN_EXIT");
+        var barePrice = LegendsWereTrueHandler.Price(doors, bare);
+        Check(barePrice.Exit > barePrice.Map && new LegendsWereTrueHandler().Choose(doors, bare) == bareExitIndex,
+            $"With no reward attached the exit must win: map={barePrice.Map:F1} exit={barePrice.Exit:F1}.");
+        Console.WriteLine($"PASS: The Legends Were True prices the map's quest ({mapGrant.Value:F1} of "
+            + $"{pricedQuestGold:F1} value from gold) against the wound-plus-potion exit ({legendsPrice.Exit:F1}).");
     }
 }

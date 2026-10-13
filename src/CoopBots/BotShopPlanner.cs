@@ -2,7 +2,9 @@ using CoopBots.Building;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Merchant;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Logging;
 
 namespace CoopBots;
 
@@ -17,43 +19,31 @@ internal static class BotShopPlanner
         MerchantCardRemovalEntry => "remove",
         _ => "unknown",
     };
-    // Gold a permanent deck improvement is worth per point of deck value. Stated
-    // once here so every shop entry is compared in the same unit — including
-    // removals, which previously compared raw deck value against a gold price and
-    // so could never beat the 75 gold a first removal costs.
-    // Read by the draft pipeline (tests/PatchSmoke/DraftSim) so the simulated shop
-    // and the live shop cannot disagree about what a deck improvement is worth in gold.
-    // A permanent deck point is worth this many gold. Raised from 2.2 after the
-    // 2026-09-22 live run: 24 shop visits bought 15 removals, 7 potions/relics and
-    // ZERO cards, because a card valued 10-20 deck points converted to only 22-44
-    // gold while a starter removal converted to 121+. 3.0 lets a genuinely good
-    // card (score ~20-25) clear a 60-75 gold shelf, and the repeated-removal
-    // discount below stops the removal line from buying the whole shop forever.
-    internal const double GoldPerDeckValue = 3.0;
+    // Price the same deck-strength gain for additions and removals over the
+    // remaining investment horizon. Native shop prices already make later
+    // removals more expensive; there is no second removal discount.
+    // Finite encounter utility has a different scale from the old unbounded
+    // throughput. Calibrate one conversion for every permanent deck purchase.
+    internal const double GoldPerDeckValue = 3.6;
     private static double GoldFor(double deckValue) => Math.Max(0, deckValue) * GoldPerDeckValue;
 
-    /// <summary>
-    /// A card offer's gold value. The generic <see cref="BuildValue.Add"/> value is
-    /// shared with the reward screen; the route-core premium is the shop's answer to
-    /// a removal's raw deck-point value. A missing signature/payoff of the current
-    /// route is worth paying for, while a copy already in the deck is discounted so
-    /// the third copy is not priced like the missing key card.
-    /// </summary>
+    // Native shops enforce affordability without an investment score.
+    // Owner 2026-10-04: convert spare cash into permanent strength now. The
+    // first 150 gold keeps its full opportunity cost; larger purses lower that
+    // cost continuously. Recompute after each purchase, including pair previews.
+    internal static double PriceFactor(Player player, int gold)
+        => Math.Min(RunDepth.ShopThresholdFactor(player), Math.Clamp(150d / Math.Max(150, gold), .35, 1));
+
+    /// <summary>The reward score converted with the common permanent-investment price.</summary>
     private static double CardGold(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
     {
-        var deck = deckOverride ?? player.Deck.Cards.ToList();
-        var terms = Building.BuildValue.AddDetailed(card, player, deckOverride);
-        var value = terms.Total;
-        // Hand experiments already price what this deck can use. Adding the old
-        // route premium on top would give the prior a second, unbounded vote.
-        var premium = terms.Contextual ? 0 : Archetypes.CorePremium(CardProfile.Of(card), card, deck, player, out _);
-        if (premium > 0)
-        {
-            var copies = deck.Count(existing => existing.Id == card.Id);
-            value += premium / (1 + 0.5 * copies);
-        }
-        return GoldFor(value);
+        var value = BuildValue.AddForDecision(card, player, deckOverride);
+        return GoldFor(PermanentValue(value, player));
     }
+
+    internal static double PermanentValue(BuildValue.Valuation value, Player player)
+        => value.Total * BotRestSitePatch.InvestmentHorizon(player);
+
     // The native MawBank only disables on a positive spend (AfterItemPurchased
     // returns early when goldSpent <= 0), so a free purchase leaves its income
     // alive. Matches the single-purchase evaluation exactly.
@@ -63,6 +53,20 @@ internal static class BotShopPlanner
     // Shared with the potion policy: past this line nothing is worth holding for.
     internal const int FinalAct = 2;
 
+    // Owner policy 2026-10-04: with two exceptions, a shop must not spend gold
+    // on a potion. Fruit Juice and Fairy in a Bottle carry value beyond one
+    // fight, so they stay legal everywhere; every other bottle is legal only in
+    // the third-layer shop when no later shop remains.
+    internal const string FruitJuiceId = "FRUIT_JUICE";
+    internal const string FairyInABottleId = "FAIRY_IN_A_BOTTLE";
+
+    internal static bool PotionPurchaseAllowed(string potionId, bool finalActLastShop)
+        => finalActLastShop || potionId is FruitJuiceId or FairyInABottleId;
+
+    internal static bool PotionPurchaseAllowed(Player player, PotionModel potion)
+        => PotionPurchaseAllowed(potion.Id.Entry,
+            RunDepth.Act(player) >= FinalAct && RunDepth.LastShopBeforeBoss(player));
+
     /// <summary>
     /// Cards whose removal is never worth it, whatever the deck-value model says. A map is the
     /// clearest case: its whole value happens outside combat, where the model cannot see it.
@@ -70,7 +74,7 @@ internal static class BotShopPlanner
     /// already been bitten by an id that came back empty, and a guard that silently stops
     /// matching is worse than no guard at all.
     /// </summary>
-    private static bool IsNeverRemoved(CardModel card) =>
+    internal static bool IsNeverRemoved(CardModel card) =>
         card.Id.Entry.Contains("SPOILS_MAP", StringComparison.OrdinalIgnoreCase)
         || card.GetType().Name.Contains("SpoilsMap", StringComparison.OrdinalIgnoreCase)
         || card.GetType().Name.Contains("TreasureMap", StringComparison.OrdinalIgnoreCase);
@@ -92,24 +96,8 @@ internal static class BotShopPlanner
         // cards whose Id.Entry was blank), and a guard that silently stops matching is worse
         // than no guard.
         if (IsNeverRemoved(card)) return -1000;
-        var value = Building.BuildValue.Remove(card, player, deckOverride).Total;
-        // A curse is always worth paying to remove, even in a deck so poor that
-        // nothing looks below average — and more so later, when the next chance
-        // to remove one may be the one being offered right now.
-        if (card.Type == CardType.Curse)
-        {
-            value = Math.Max(value, 155 * RunDepth.BloatFactor(player));
-        }
-        else
-        {
-            // Repeated removals compete with buying the cards the run still needs.
-            // The 2026-09-22 live run bought 15 removals and 0 cards; the fifth
-            // removal is not worth what the first was, so scale it by how many this
-            // seat already bought. Curses keep the full value above.
-            var used = player.ExtraFields?.CardShopRemovalsUsed ?? 0;
-            value /= 1.0 + 0.35 * used;
-        }
-        return value;
+        if (BuildValue.RemovalProtection(card, deckOverride ?? player.Deck.Cards.ToArray()).Protected) return 0;
+        return PermanentValue(BuildValue.RemoveForDecision(card, player, deckOverride), player);
     }
 
     // The decision plus the comparison that produced it, so the two-purchase
@@ -124,24 +112,48 @@ internal static class BotShopPlanner
 
     internal static ShopPlan ChooseDetailed(MerchantInventory inventory)
     {
+        using var evaluation = DeckStrength.BeginEvaluation();
         var player = inventory.Player;
         var entries = inventory.AllEntries.ToList();
-        var removal = BestRemoval(player.Deck.Cards.ToList(), player);
+        var deck = player.Deck.Cards.ToList();
+        var removalEntry = entries.FindIndex(e => e is MerchantCardRemovalEntry
+            && e.IsStocked && e.Cost >= 0 && e.Cost <= player.Gold);
+        // Native shops leave target selection to the player. Owner 2026-10-01:
+        // an affordable removable curse is an immediate purchase, without a
+        // deck search or a comparison against other goods. Native legality and
+        // stock/price checks still apply when the driver submits the purchase.
+        var curse = deck.FindIndex(c => c.IsRemovable && c.Type == CardType.Curse && !IsNeverRemoved(c));
+        if (removalEntry >= 0 && curse >= 0)
+        {
+            var price = entries[removalEntry].Cost;
+            return ShopPlan.Single(new Choice(removalEntry, curse, price, price), 0);
+        }
+        var removal = removalEntry >= 0 ? BestRemoval(deck, player) : (index: -1, value: 0d);
         var offers = new List<PurchaseComparison.Offer>();
+        var diagnostics = new List<string>();
         for (var index = 0; index < entries.Count; index++)
         {
             var entry = entries[index];
-            if (!entry.IsStocked || entry.Cost < 0 || entry.Cost > player.Gold) continue;
+            if (!entry.IsStocked || entry.Cost < 0 || entry.Cost > player.Gold)
+            {
+                diagnostics.Add($"{index}:{Key(entry)}:cost={entry.Cost}:eligible=false:reason={(entry.IsStocked ? "affordability" : "stock")}");
+                continue;
+            }
             var value = entry switch
             {
-                // Cards must clearly improve the deck, not just be playable filler:
-                // the reward screen's Add value plus the current route's core premium,
-                // priced in gold. The premium is what lets a build-defining card beat
-                // a starter removal's raw deck-point value.
                 MerchantCardEntry card when card.CreationResult is not null =>
                     CardGold(card.CreationResult.Card, player),
                 MerchantRelicEntry relic when relic.Model is not null => RelicWillingness(relic.Model, player, inventory),
-                MerchantPotionEntry potion when potion.Model is not null && player.HasOpenPotionSlots => PotionValue(potion.Model, player),
+                // 上游怎么做：货架上有什么就卖什么；游戏在 *购买* 那一刻用
+                //            Hook.ShouldProcurePotion 把关（PotionCmd.TryToProcure）。
+                // 我们怎么做：推销之前先问同一道钩子，拿不到的药水不进候选。
+                // 为什么：实机 2026-09-29 第 25 层商店（读档后复现第二次）：SOZU 在身的席位
+                //        空着两个药水格，规划器照卖 DEXTERITY_POTION，游戏按 Sozu 拒绝，
+                //        驱动遂 Fail、整桌卡死在商店。绝不推销这一席拿不到的东西。
+                MerchantPotionEntry potion when potion.Model is not null && player.HasOpenPotionSlots
+                    && Hook.ShouldProcurePotion(player.RunState, player.Creature.CombatState, potion.Model, player)
+                    && PotionPurchaseAllowed(player, potion.Model)
+                    => PotionValue(potion.Model, player),
                 MerchantCardRemovalEntry => GoldFor(removal.value),
                 _ => 0,
             };
@@ -153,23 +165,25 @@ internal static class BotShopPlanner
             // and bought nothing. Only an unpriced relic gets this floor; one with
             // a modelled downside (Brimstone, PhilosophersStone) is priced, stays
             // at zero and is still refused.
-            if (value <= 0 && entry is MerchantRelicEntry { Model: not null } speculative
+            if (entry is MerchantRelicEntry { Model: not null } speculative
                 && RunDepth.LastShopBeforeBoss(player)
                 && !HumanCoopAdvisor.RelicPriced(speculative.Model, player))
-                value = entry.Cost;
+                value = Math.Max(value, entry.Cost);
             // Spending switches off MawBank; retain a modest allowance for lost future income.
             if (entry.Cost > 0 && ActiveMawBank(player)) value -= 24;
-            var finalAct = player.RunState.CurrentActIndex >= FinalAct;
-            // Keeping a reserve only pays off if another shop is coming. In the
-            // last act it just ends up in the save file.
-            if (!finalAct && player.Gold - entry.Cost < 25 && value < entry.Cost * 1.6) continue;
+            // Native purchases require affordability. Our opportunity cost is
+            // the shared price/remaining-shop threshold below. Owner 2026-09-30:
+            // spending the final 25 gold must not impose a second discontinuous
+            // threshold on removal while a 75-gold card escapes it.
             // The bar falls with the run: in the last act gold is nearly dead,
             // and at the last shop that can be reached before the boss it is dead
             // outright, so anything that does not make the deck worse is bought.
-            if (value > entry.Cost * RunDepth.ShopThresholdFactor(player))
+            if (value > entry.Cost * PriceFactor(player, player.Gold))
                 offers.Add(new PurchaseComparison.Offer(index, entry is MerchantCardRemovalEntry ? removal.index : -1,
                     entry, value, entry.Cost, entry is MerchantPotionEntry, IsVariablePrice(entry),
                     entry is MerchantRelicEntry));
+            diagnostics.Add($"{index}:{Key(entry)}:value={value:F2}:cost={entry.Cost}:net={value-entry.Cost*PriceFactor(player,player.Gold):F2}"
+                + $":eligible={value>entry.Cost*PriceFactor(player,player.Gold)}");
         }
 
         // SHOPS ARE FOR THE DECK. A potion is a one-shot consumable whose whole value is
@@ -189,6 +203,8 @@ internal static class BotShopPlanner
         if (offers.Any(offer => !offer.IsPotion))
             offers = offers.Where(offer => !offer.IsPotion).ToList();
 
+        if (ConstructionDecision.AwaitingValues) return new ShopPlan(null, null, null, 0, 0, false);
+        Log.Info($"CoopBots shop candidates: bot={player.NetId} gold={player.Gold} removal={removal.index}:{removal.value:F2} all=[{string.Join(';',diagnostics)}]");
         if (offers.Count == 0) return new ShopPlan(null, null, null, 0, 0, false);
         var bestSingle = offers
             .OrderByDescending(offer => offer.Net).ThenBy(offer => offer.Cost).ThenBy(offer => offer.Index).First();
@@ -244,16 +260,39 @@ internal static class BotShopPlanner
         return ShopPlan.Single(single, bestSingle.Net);
     }
 
-    // The best removal target and its value inside a given deck. Non-removable
-    // cards are skipped outright: a zero-valued invalid candidate must never beat
-    // a negative-valued valid one.
-    private static (int index, double value) BestRemoval(IReadOnlyList<CardModel> deck, Player player)
+    // Legal removal candidates in deck order, narrowed by the one priority tier
+    // every removal path shares (see RemovalPlan.PriorityPool): a removable
+    // curse, else unupgraded basic Strikes/Defends, else everything legal. This
+    // is the probe/enumeration view; the actual choice goes through BestRemoval
+    // so the role-protection pass runs too.
+    internal static IReadOnlyList<int> RemovalCandidates(IReadOnlyList<CardModel> deck)
     {
+        var legal = LegalRemovalIndices(deck);
+        var tier = RemovalPlan.PriorityTier(legal.Select(i => deck[i]).ToList());
+        return legal.Where(i => tier.Any(card => ReferenceEquals(card, deck[i]))).ToArray();
+    }
+
+    private static int[] LegalRemovalIndices(IReadOnlyList<CardModel> deck)
+        => Enumerable.Range(0, deck.Count)
+            .Where(i => deck[i].IsRemovable && !IsNeverRemoved(deck[i])).ToArray();
+
+    // The best removal target and its value inside a given deck, through the
+    // same priority the event and rest-site removals use. Non-removable and
+    // never-removed cards are skipped outright: a zero-valued invalid candidate
+    // must never beat a negative-valued valid one. Protected cards are only
+    // reached when nothing unprotected is left.
+    internal static (int index, double value) BestRemoval(IReadOnlyList<CardModel> deck, Player player)
+    {
+        var legal = LegalRemovalIndices(deck);
+        if (legal.Length == 0) return (-1, 0);
+        var pool = RemovalPlan.PriorityPool(legal.Select(i => deck[i]).ToList(), deck, out _);
         var bestIndex = -1;
         var bestValue = 0.0;
-        for (var index = 0; index < deck.Count; index++)
+        foreach (var card in pool)
         {
-            if (!deck[index].IsRemovable) continue;
+            var legalPosition = Array.FindIndex(legal, i => ReferenceEquals(deck[i], card));
+            if (legalPosition < 0) continue;
+            var index = legal[legalPosition];
             var value = RemovalValue(deck[index], player, deck);
             if (bestIndex < 0 || value > bestValue)
             {
@@ -266,7 +305,7 @@ internal static class BotShopPlanner
 
     // Whether the existing single-purchase driver would actually take the second
     // item after paying for the first. This mirrors the single-item gates
-    // (affordability, item threshold, reserve) on the projected state, so a pair
+    // (affordability and item threshold) on the projected state, so a pair
     // cannot win on combined arithmetic the driver itself would refuse to
     // execute. Its value is the freshly recomputed second value (no MawBank fee).
     internal static bool SecondExecutable(PurchaseComparison.Offer second, double secondValue, Player player,
@@ -274,9 +313,7 @@ internal static class BotShopPlanner
     {
         if (second.Cost > goldAfterFirst) return false;
         if (second.IsPotion && projectedPotionCount >= player.MaxPotionCount) return false;
-        var finalAct = player.RunState.CurrentActIndex >= FinalAct;
-        if (!finalAct && goldAfterFirst - second.Cost < 25 && secondValue < second.Cost * 1.6) return false;
-        return secondValue > second.Cost * RunDepth.ShopThresholdFactor(player);
+        return secondValue > second.Cost * PriceFactor(player, goldAfterFirst);
     }
 
     // The second purchase's value against the deck the first would leave. Relics
@@ -347,7 +384,10 @@ internal static class BotShopPlanner
         // kernel simulates (rescue, damage, buffs, energy).
         var useful = id is "BlockPotion" or "BloodPotion" or "FirePotion" or "ExplosiveAmpoule"
             or "WeakPotion" or "StrengthPotion" or "DexterityPotion" or "FocusPotion"
-            or "EnergyPotion" or "SwiftPotion" or "VulnerablePotion";
+            or "EnergyPotion" or "SwiftPotion" or "VulnerablePotion"
+            // The two owner-whitelisted permanent/survival bottles must not be
+            // filtered as "unknown" when the policy does allow them.
+            or "FruitJuice" or "FairyInABottle";
         if (!useful) return 0; // Do not spend scarce gold on an unknown potion effect.
         return (low ? 160 : 65) / (1 + potionCount * .5);
     }
@@ -362,8 +402,9 @@ internal static class BotShopPlanner
                 .Sum(e => e switch
                 {
                     MerchantCardEntry c when c.CreationResult is not null
-                        && Building.BuildValue.Add(c.CreationResult.Card, player).Total > 0 => e.Cost,
-                    MerchantCardRemovalEntry when player.Deck.Cards.Any(c => RemovalValue(c, player) > 0) => e.Cost,
+                        && Building.BuildValue.AddForDecision(c.CreationResult.Card, player).Total > 0 => e.Cost,
+                    MerchantCardRemovalEntry when player.Deck.Cards.Any(c => c.IsRemovable && c.Type == CardType.Curse && !IsNeverRemoved(c))
+                        || BestRemoval(player.Deck.Cards, player).value > 0 => e.Cost,
                     MerchantPotionEntry p when p.Model is not null && player.HasOpenPotionSlots && PotionValue(p.Model, player) > 0 => e.Cost,
                     _ => 0,
                 });

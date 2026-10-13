@@ -77,6 +77,18 @@ internal static class TeamCoordinator
     // `team-fit` alone into a deck that could not support them; an unmodeled
     // ally power is not evidence of a team payoff, so it earns nothing.
     private const double UnknownAllySupport = 0.0;
+    // The payoff side of the same shared-debuff economy: a card that reads the
+    // party's Vulnerable stacks (Bully / Dominate / Molten Fist) is worth more
+    // when the party actually produces them. Same order as DebuffWhenMissing /
+    // DebuffWhenCovered; the MaxTeamBonus ceiling and the caller's share cap
+    // still bound it.
+    private const double PayoffWithSupply = 14.0;
+    private const double PayoffThinSupply = 8.0;
+    // Dominate turns the stock into Strength; without attacks of its own the
+    // seat cannot cash it. Mirrors the supplier-side "Vulnerable only pays when
+    // the party has attacks" discount.
+    private const double PayoffWithoutAttacks = 0.5;
+    private const int PayoffAttackFloor = 3;
 
     /// <summary>
     /// What a card is worth to the party beyond its own line: an ally-targeted
@@ -119,7 +131,8 @@ internal static class TeamCoordinator
 
         var bonus = card.TargetType == TargetType.AnyAlly
             ? AllySupportBonus(card, facts, run, player, party, own, ownSupport, ownCopies)
-            : DebuffBonus(card, facts, run, player, party, own, ownCopies);
+            : DebuffBonus(card, facts, run, player, party, own, ownCopies)
+              + PayoffBonus(card, facts, run, player, party, own, ownCopies, ownDeck);
         return Math.Clamp(bonus, 0, MaxTeamBonus);
     }
 
@@ -229,6 +242,72 @@ internal static class TeamCoordinator
         return bonus;
     }
 
+    /// <summary>
+    /// The mirror of <see cref="DebuffChannel"/> on the resource's PAYOFF side:
+    /// a card that reads the party's Vulnerable stacks is worth more when the
+    /// party actually produces them, and nothing extra when it does not.
+    ///
+    /// 供应侧只奖励施加者，本通道奖励读者（Bully/Dominate/MoltenFist）。供应是
+    /// 机械读取的——任何带 VulnerablePower 变量的牌已经带 "vulnerable" 角色——
+    /// 所以这里没有第二份施加者名单可与卡片模型漂移；读者侧才是需要手工表的
+    /// 那一半（<see cref="Building.VulnerablePin"/>）。
+    ///
+    /// 实机证据（2026-10-05 A10 四人 seed 2B1D65QTZ1F2）：全队一直维持 8-27 层
+    /// 易伤（S-jie 三张 TAUNT、两个铁甲 BASH、Leg Sweep），Bully 只在商店出现
+    /// 一次（74 金，当时现金 113 金）却以 −0.1 分被跳过，Molten Fist 的两次拾取
+    /// 是 0.7 / −1.9 分——供应侧拿满 team-fit，变现侧一分没有。
+    /// </summary>
+    private static double PayoffBonus(CardModel card, CardProfile.Facts facts, IRunState run,
+        Player player, IReadOnlyList<Player> party, DeckStructure.Summary own, int ownCopies,
+        IReadOnlyList<CardModel> ownDeck)
+    {
+        if (!Building.VulnerablePin.IsPayoff(card.Id.Entry)) return 0;
+        if (!TargetsEnemies(card)) return 0;
+
+        var supply = own.RoleCounts.GetValueOrDefault("vulnerable");
+        var payoffs = own.RoleCounts.GetValueOrDefault("vulnerable-payoff");
+        // Dominate applies its own stack before reading it. A candidate that is
+        // not yet in the deck is invisible to the role count, so it adds itself
+        // exactly once; an already-held instance is already inside the count.
+        if (facts.Vulnerable > 0 && !ownDeck.Any(c => ReferenceEquals(c, card))) supply += 1;
+        foreach (var mate in party)
+        {
+            if (mate.NetId == player.NetId) continue;
+            var snap = TeamBuildingContext.TryGet(run, mate.NetId);
+            if (snap is null) continue; // unknown is not supply
+            supply += snap.RoleCounts.GetValueOrDefault("vulnerable");
+            payoffs += snap.RoleCounts.GetValueOrDefault("vulnerable-payoff");
+        }
+        if (supply <= 0) return 0;
+
+        var bonus = (supply >= 2 ? PayoffWithSupply : PayoffThinSupply)
+            / (1 + 0.4 * payoffs + ownCopies);
+        bonus *= PayoffConversionScale(card, facts);
+        if (card is MegaCrit.Sts2.Core.Models.Cards.Dominate && own.Attacks < PayoffAttackFloor)
+            bonus *= PayoffWithoutAttacks;
+        return bonus;
+    }
+
+    // How much of the supply this copy converts, relative to its own base
+    // printing. Clamped to [1,2]: an amount change can double the team term at
+    // most, and the caller bounds it again by a share of the card's own line.
+    // The base rates come from pinned tests, not from a guess:
+    //   Bully      ExtraDamage 2 (2 -> 3 upgraded), the same var
+    //              SustainedDeckValue.DamagePerVulnerable already reads.
+    //   Dominate   applies 4 Vulnerable before reading ("stacks + 4" in
+    //              DecisionFixScenarios); an upgrade that raises the read shows
+    //              up in the same var, one that does not earns no team delta.
+    //   Molten Fist doubles the standing stock; the doubling has no amount.
+    private static double PayoffConversionScale(CardModel card, CardProfile.Facts facts)
+        => card switch
+        {
+            MegaCrit.Sts2.Core.Models.Cards.Bully
+                => Math.Clamp(SustainedDeckValue.DamagePerVulnerable(card) / 2.0, 1.0, 2.0),
+            MegaCrit.Sts2.Core.Models.Cards.Dominate
+                => Math.Clamp(facts.Vulnerable / 4.0, 1.0, 2.0),
+            _ => 1.0,
+        };
+
     // Debuffs that land on an enemy are shared setup; a debuff applied to self or
     // an ally is a downside and gets no team credit. Unknown/missing target data
     // is conservative (no credit).
@@ -249,6 +328,26 @@ internal static class TeamCoordinator
     internal static Dictionary<ulong, int?> AssignRelics(IReadOnlyList<Player> bots, IReadOnlyList<RelicModel> relics,
         IReadOnlySet<int> reserved)
     {
+        var scores = EvaluateRelics(bots, relics);
+        return AssignRelicScores(bots, relics.Count, reserved, (p, i) => scores[(p.NetId, i)]);
+    }
+
+    internal static Dictionary<(ulong Player, int Relic), double> EvaluateRelics(
+        IReadOnlyList<Player> players, IReadOnlyList<RelicModel> relics)
+    {
+        using var evaluation = DeckStrength.BeginEvaluation();
+        var scores = new Dictionary<(ulong, int), double>();
+        foreach (var player in players)
+            for (var i = 0; i < relics.Count; i++)
+                scores[(player.NetId, i)] = HumanCoopAdvisor.RelicValue(relics[i], player).Score;
+        return scores;
+    }
+
+    // The objective and tie order are unchanged. DFS reads numbers only: native
+    // relic prediction/deck evaluation must never be repeated per search edge.
+    internal static Dictionary<ulong, int?> AssignRelicScores(IReadOnlyList<Player> bots, int relicCount,
+        IReadOnlySet<int> reserved, Func<Player, int, double> value)
+    {
         var ordered = bots.OrderBy(p => p.NetId).ToList();
         var current = new Dictionary<ulong, int?>();
         var best = new Dictionary<ulong, int?>();
@@ -262,12 +361,12 @@ internal static class TeamCoordinator
                 return;
             }
             var player = ordered[seat];
-            for (var i = 0; i < relics.Count; i++)
+            for (var i = 0; i < relicCount; i++)
             {
                 if (!used.Add(i)) continue;
                 current[player.NetId] = i;
                 // Unknown relics get neutral utility rather than a fabricated synergy.
-                Search(seat + 1, score + 1 + HumanCoopAdvisor.RelicValue(relics[i], player).Score);
+                Search(seat + 1, score + 1 + value(player, i));
                 used.Remove(i);
             }
             current[player.NetId] = null; Search(seat + 1, score);

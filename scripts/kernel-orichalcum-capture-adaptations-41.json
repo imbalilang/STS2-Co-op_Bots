@@ -1,0 +1,50 @@
+{
+  "Engine/InCombat/Mirrors/Hooks/TurnEnd/OrichalcumMirrors.cs": {
+    "base_sha256": "97a6d6ee456ea1a48100a5244ea1fd0f08d61f65ae46f8978be773f5d6b3bdea",
+    "target_sha256": "3899a4c386cafbf90536b28f746c3e7499a0796ef76fdbc20328f0f896d58756",
+    "changes": [
+      {
+        "old": "using MegaCrit.Sts2.Core.Models;\n",
+        "new": "using MegaCrit.Sts2.Core.Models;\nusing MegaCrit.Sts2.Core.Models.Relics;\n"
+      },
+      {
+        "old": "    private static State GetState(RelicModel relic, BeforeSideTurnEndMirrorContext context)\n    {\n        return context.StateStore.Get<State>(relic);\n    }\n\n    private sealed class State : IPredictionStateForkable\n    {\n        public bool ShouldTrigger { get; set; }\n\n        public object Fork(PredictionForkContext context) => MemberwiseClone();\n    }\n}",
+        "new": "    private static OrichalcumPredictionState GetState(RelicModel relic, BeforeSideTurnEndMirrorContext context)\n        => context.StateStore.Get(relic, static model => new OrichalcumPredictionState(model));\n}\n\n// One owned payload at capture and during every mirror hook. False is real\n// state too; allocating it on first use must not change planning evidence.\ninternal sealed class OrichalcumPredictionState(RelicModel relic) : IPredictionStateForkable\n{\n    public bool ShouldTrigger { get; set; } = relic switch\n    {\n        Orichalcum value => value._shouldTrigger,\n        FakeOrichalcum value => value._shouldTrigger,\n        _ => throw new InvalidOperationException(\"Orichalcum state requires its native relic type.\")\n    };\n\n    public object Fork(PredictionForkContext context) => MemberwiseClone();\n}"
+      }
+    ]
+  },
+  "Prediction/RelicPredictionStateSupport.cs": {
+    "base_sha256": "7e710e3904115cac8a8ced58a259d2e4565ccc761bce15840e9525db01332ddf",
+    "target_sha256": "a3ebae9e14b7af9a785c15c6a1ce570d26b8250c781075c049f411fd61b26489",
+    "changes": [
+      {
+        "old": "using CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks.Orb;\n",
+        "new": "using CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks.Orb;\nusing CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks.TurnEnd;\n"
+      },
+      {
+        "old": "            or OrnamentalFan\n",
+        "new": "            or OrnamentalFan\n            or Orichalcum\n            or FakeOrichalcum\n"
+      },
+      {
+        "old": "            case (Metronome target, Metronome source):\n",
+        "new": "            case (Orichalcum target, Orichalcum source):\n                _ = simulator.StateStore.GetReadOnly((AbstractModel)target, () => new OrichalcumPredictionState(source));\n                break;\n            case (FakeOrichalcum target, FakeOrichalcum source):\n                _ = simulator.StateStore.GetReadOnly((AbstractModel)target, () => new OrichalcumPredictionState(source));\n                break;\n            case (Metronome target, Metronome source):\n"
+      },
+      {
+        "old": "    public static void ResetBeforeSideTurnStart(\n        CombatPredictionSimulator simulator,\n        RelicModel relic)\n    {\n        switch (relic)\n        {\n            case BeatingRemnant value:\n",
+        "new": "    public static void ResetBeforeSideTurnStart(\n        CombatPredictionSimulator simulator,\n        RelicModel relic)\n    {\n        switch (relic)\n        {\n            case Orichalcum or FakeOrichalcum:\n                simulator.StateStore.Get(relic, static model => new OrichalcumPredictionState(model)).ShouldTrigger = false;\n                break;\n            case BeatingRemnant value:\n"
+      },
+      {
+        "old": "            case LizardTail value:\n                fingerprint.Add(simulator.StateStore\n                    .Peek(value, static relic => new LizardTailPredictionState(relic))\n                    .WasUsed);\n                break;\n",
+        "new": "            case LizardTail value:\n                fingerprint.Add(simulator.StateStore\n                    .Peek(value, static relic => new LizardTailPredictionState(relic))\n                    .WasUsed);\n                break;\n            case Orichalcum or FakeOrichalcum:\n                fingerprint.Add(simulator.StateStore\n                    .Peek(relic, static model => new OrichalcumPredictionState(model)).ShouldTrigger);\n                break;\n"
+      },
+      {
+        "old": "            LizardTail value => Bool(value.WasUsed),\n",
+        "new": "            LizardTail value => Bool(value.WasUsed),\n            Orichalcum value => Bool(value._shouldTrigger),\n            FakeOrichalcum value => Bool(value._shouldTrigger),\n"
+      },
+      {
+        "old": "            LizardTail value => Bool(simulator.StateStore\n                .Peek((AbstractModel)value, () => new LizardTailPredictionState(value)).WasUsed),\n",
+        "new": "            LizardTail value => Bool(simulator.StateStore\n                .Peek((AbstractModel)value, () => new LizardTailPredictionState(value)).WasUsed),\n            Orichalcum or FakeOrichalcum => Bool(simulator.StateStore\n                .Peek((AbstractModel)relic, () => new OrichalcumPredictionState(relic)).ShouldTrigger),\n"
+      }
+    ]
+  }
+}

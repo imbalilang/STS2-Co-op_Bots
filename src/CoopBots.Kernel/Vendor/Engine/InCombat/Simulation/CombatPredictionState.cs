@@ -3,6 +3,7 @@ using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Models;
+using CoopBots.Kernel;
 using CoopBots.Kernel.Vendor.Engine.Common;
 
 namespace CoopBots.Kernel.Vendor.Engine.InCombat.Simulation;
@@ -190,7 +191,18 @@ internal sealed class CombatPredictionState
 
     public PredictedCard? FindCard(CardModel card)
     {
-        return GetPlayerCombatState(card.Owner).FindCard(card);
+        var originalOwner = card.Owner;
+        var found = GetPlayerCombatState(originalOwner).FindCard(card);
+        if (found is not null) return found;
+        // Transferred cards preserve their physical Original identity. Only the
+        // branch preview changes owner, so resolve that identity across this party.
+        foreach (var player in CombatState.Players)
+        {
+            if (ReferenceEquals(player, originalOwner)) continue;
+            found = GetPlayerCombatState(player).FindCard(card);
+            if (found is not null) return found;
+        }
+        return null;
     }
 
     internal void MaterializeRoot()
@@ -226,7 +238,8 @@ internal sealed class CombatPredictionState
                 $"Combat state {CombatState.GetType().FullName} does not implement " +
                 $"{nameof(ICombatPredictionForkableState)}.");
         }
-        ICombatState combatState = forkableCombatState.Fork(context);
+        ICombatState combatState;
+        using (AllocationProbe.Measure(AllocationProbe.Phase.CombatStateFork)) combatState = forkableCombatState.Fork(context);
         CombatPredictionState fork = new(
             combatState,
             creatures,

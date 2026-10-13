@@ -73,6 +73,33 @@ internal static class PotionOverlapScenarios
             if(root.Hp(p.Creature)!=80 || root.HeldPotionCount(p)!=1 || root.Energy(p)!=3)
                 throw new Exception("Potion counterfactuals must not consume root HP, potions or energy.");
         }
+        // OWNER RULE 2026-10-05: round one of a boss encounter spends EVERY usable bottle before
+        // the first card, so "died with potions unused" is unrepresentable. PowerPotion is the case
+        // that matters: it is a CHOOSER bottle the kernel refuses to simulate, which is why the
+        // benefit-based passes never picked it up and the party died holding SKILL/COLORLESS/POWER
+        // on the 2026-10-05 act-3 boss.
+        {
+            var owner = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 9, 1));
+            var bossCombat = new CombatState(runState: RunState.CreateForTest([owner], seed: "BOSS-OPENING"));
+            owner.ResetCombatState(); bossCombat.AddPlayer(owner);
+            owner.Creature.SetMaxHpInternal(80); owner.Creature.SetCurrentHpInternal(80);
+            owner.PlayerCombatState!.Phase = PlayerTurnPhase.Play; owner.PlayerCombatState.GainEnergy(3);
+            var bossEnemy = bossCombat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "0");
+            bossCombat.AddCreature(bossEnemy); bossEnemy.Monster!.SetUpForCombat();
+            bossEnemy.SetMaxHpInternal(400); bossEnemy.SetCurrentHpInternal(400);
+            owner.AddPotionInternal(ModelDb.Potion<PowerPotion>().ToMutable(), silent: true);
+            var bossRoot = KernelSession.Capture(bossCombat);
+            if (KernelPotionOpportunity.Choose(bossRoot, [owner], [owner]) is not null)
+                throw new Exception("with no full belt and no predicted death, a healthy party must not "
+                    + "drink on an ordinary round.");
+            var opening = KernelPotionOpportunity.Choose(bossRoot, [owner], [owner], bossOpening: true);
+            if (opening?.Action.Potion is null)
+                throw new Exception("round one of a boss encounter must spend a usable bottle before "
+                    + "the first card.");
+            if (!opening!.Reason.StartsWith("boss-opening", StringComparison.Ordinal))
+                throw new Exception($"the boss-opening spend must name its policy (reason={opening.Reason}).");
+        }
+        Console.WriteLine("PASS: a boss opening dumps the usable belt before the first card.");
         Console.WriteLine("PASS: control potions use marginal plan value, preserve useful later turns and keep healthy joint plans intact.");
     }
 }

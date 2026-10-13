@@ -11,6 +11,10 @@ namespace CoopBots.Building;
 // hidden second boss / shuffled draw order. It is not a native win forecast.
 internal static class BossPreparation
 {
+    internal static double Strength(Player player, IReadOnlyList<CardModel> deck, int energy)
+        => !AgainstWither(player) || deck.Count == 0 ? 0
+            : -6 * new[] { 6, 9 }.Average(turns => Burden(deck, energy, Plays(deck, energy), turns) / turns);
+
     internal static bool AgainstWither(Player player)
     {
         try { return player.RunState.Act.BossEncounter is AeonglassBoss; }

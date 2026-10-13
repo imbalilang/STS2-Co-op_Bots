@@ -516,7 +516,7 @@ internal static class KernelRolloutScenarios
     // turns this red, verbatim:
     //
     //   System.Exception: parallel rollouts must pick the same action
-    //   (sequential=STRIKE_IRONCLAD@76561198109201343->0 parallel=STRIKE_IRONCLAD@12716757972810793217->0)
+    //   (sequential=STRIKE_IRONCLAD@90000000000000001->0 parallel=STRIKE_IRONCLAD@12716757972810793217->0)
     //      at KernelRolloutScenarios.ParallelRolloutsMatchSequentialOnes() ... line 188
     //
     // Note the card NAME is identical on both sides — the seat is what moved. That is why the
@@ -758,7 +758,10 @@ internal static class KernelRolloutScenarios
     // red, verbatim:
     //   System.Exception: Piercing Wail into a turn whose attack is already fully blocked
     //   must be held, not exhausted for 2 damage.
-    private static void HoldOptionAppearsForLowThreatExhaust()
+    // R2 repeated with corrected two-total-HP fixture, 2026-10-03, exit 1:
+    // System.Exception: Piercing Wail into a turn whose attack is already fully blocked must be held, not exhausted for 2 damage.
+    // work/decision-followup-20261003/r2-minor-hold.log (production hold disabled, restored).
+    internal static void HoldOptionAppearsForLowThreatExhaust()
     {
         var (party, combat) = Board("HOLD-WAIL");
         var owner = party[0];
@@ -766,6 +769,10 @@ internal static class KernelRolloutScenarios
         foreach (var card in state.Hand.Cards.ToArray()) state.Hand.RemoveInternal(card);
         if (state.Energy > 1) state.LoseEnergy(state.Energy - 1);
         owner.Creature.GainBlockInternal(50);
+        // 2026-10-03: the old fixture exposed THREE allies to 2 HP each,
+        // despite its assertion saying "2 damage". Preserve the minor-total
+        // conservation case; aggregate 9/24 HP pressure has separate coverage.
+        foreach (var ally in party.Skip(2)) ally.Creature.GainBlockInternal(50);
         var wail = combat.CreateCard<PiercingWail>(owner);
         state.Hand.AddInternal(wail);
         var root = KernelSession.Capture(combat);
@@ -985,12 +992,27 @@ internal static class KernelRolloutScenarios
             + "and the full winning script for every board where an action exists.");
     }
 
+    // The stored-step emitter now runs TWO owner-ordered reviews BEFORE it will replay a cached
+    // step: ReviewVictoryAtRound (owner 2026-10-04: a win predicted before an enemy choice must
+    // not permanently exempt a changed live state) and CompareShortVictory (act2-priority
+    // 2026-10-04: an execution-time short kill may replace the line only when a native replay
+    // confirms it is strictly better). Those reviews have their own fixtures; the two
+    // cache-contract fixtures below inject a stored line directly and assert the stored step is
+    // emitted, so they must mark the round reviewed and stamp the short-victory comparison for
+    // the current board. Without this the emitter starts a review, returns false, and the
+    // assertion fails for a reason that is not the cache contract it exists to pin.
+    private static void StandardizeCachedScriptGuards(KernelCombatPlanner planner, Type plannerType, CombatState combat)
+    {
+        plannerType.GetField("victoryCheckedRound", Flags)!.SetValue(planner, combat.RoundNumber);
+        plannerType.GetField("shortVictoryStamp", Flags)!.SetValue(planner, KernelSession.CaptureLivePartyText(combat));
+    }
+
     // (5b) THE SCRIPT CACHE. The measured final-boss failure was: first card finds VICTORY,
     // every later re-search finds WIPE hp=0/0/0/0, and the line dies after one step. Keep the
     // winning roll-out's whole action list and play its next step while the fresh tournament
     // cannot beat its ending. This asserts both halves: the comparator boundary and that a
     // cached step can actually be emitted as a decision.
-    private static void TournamentScriptCacheKeepsTheCachedLine()
+    internal static void TournamentScriptCacheKeepsTheCachedLine()
     {
         var (party, combat) = Board("TOURNAMENT-SCRIPT");
         var actors = party.ToArray();
@@ -1042,6 +1064,7 @@ internal static class KernelRolloutScenarios
         plannerType.GetField("tournamentScriptIndex", Flags)!.SetValue(planner, step);
         plannerType.GetField("tournamentScriptAliveStates", Flags)!.SetValue(planner, result.ScriptAliveStates);
         plannerType.GetField("tournamentScriptEnemyStates", Flags)!.SetValue(planner, result.ScriptEnemyStates);
+        StandardizeCachedScriptGuards(planner, plannerType, combat);
         var emit = plannerType.GetMethod("TryEmitFromTournamentScript", Flags)!;
         // Match TryEmitFromTournamentScript(combat, actors, humansFinished, out decision).
         // This fixture is all-bot, so end-turn steps are allowed.
@@ -1094,6 +1117,7 @@ internal static class KernelRolloutScenarios
         var enemiesAtOpening = combat.HittableEnemies.Where(e => e.IsAlive).ToArray();
         plannerType.GetField("tournamentScriptEnemyStates", Flags)!.SetValue(planner,
             new[] { enemiesAtOpening, enemiesAtOpening });
+        StandardizeCachedScriptGuards(planner, plannerType, combat);
 
         var decided = DriveTournament(planner, combat, party, out var decision, "script-wiring-point");
         Check(decided && decision is not null,
@@ -1126,7 +1150,10 @@ internal static class KernelRolloutScenarios
     // 180 times on one fight, each one a full fresh tournament (both passes) whose only finding
     // was the same WIPE. The step is VALID — it just cannot be submitted yet — so the planner
     // must keep the line and park until the humans finish.
-    private static void EndTurnStepWaitsForTheHumansInsteadOfDroppingTheScript()
+    // R2 2026-10-09: actual production parking fault, compiled baseline 0 -> RED 1 -> exact restore GREEN 0.
+    // Proof: work/architecture-refactor-20261009/r2/mixed-endturn-contract-v1/proof-v2/proof.json
+    // Actual RED: System.Exception: parking on the humans must not run a fresh tournament; that churn was the mixed-table stutter.
+    internal static void EndTurnStepWaitsForTheHumansInsteadOfDroppingTheScript()
     {
         var (party, combat) = MixedBoard("MIXED-END-TURN");
         Check(!KernelCombatPlanner.AllSeatsDriven(combat),
@@ -1147,6 +1174,15 @@ internal static class KernelRolloutScenarios
         plannerType.GetField("tournamentScriptAliveStates", Flags)!.SetValue(planner, new[] { alive });
         plannerType.GetField("tournamentScriptEnemyStates", Flags)!.SetValue(planner,
             new[] { combat.HittableEnemies.Where(e => e.IsAlive).ToArray() });
+        StandardizeCachedScriptGuards(planner, plannerType, combat);
+
+        // This intentionally mixed fixture needs the same native root and
+        // continuation lease that production adoption captures. The human
+        // remains human; an unbound injected tail must legitimately re-root.
+        var mixedRoot = KernelCombatCapture.Capture(combat);
+        plannerType.GetField("tournamentRoot", Flags)!.SetValue(planner, mixedRoot);
+        plannerType.GetMethod("CaptureMixedContinuation", Flags)!.Invoke(planner,
+            new object?[] { mixedRoot, combat, new[] { endTurn }, 0 });
 
         var method = plannerType.GetMethod("TryTournamentDecision", Flags)!;
         var args = new object?[] { combat, party, false, "mixed-end-turn-point", null };
@@ -1199,6 +1235,9 @@ internal static class KernelRolloutScenarios
         // so only the living-seat check can catch this; the old skip loop would have played it.
         party[0].Creature.SetCurrentHpInternal(0);
         Check(!party[0].Creature.IsAlive, "the fixture must actually kill the first seat.");
+        // Stamp AFTER the kill: the short-victory comparison caches on the captured text, and
+        // the emitter reads the live board, so the guard must describe the board it will see.
+        StandardizeCachedScriptGuards(planner, plannerType, combat);
 
         var emit = plannerType.GetMethod("TryEmitFromTournamentScript", Flags)!;
         var args = new object?[] { combat, party, true, null };
@@ -1243,6 +1282,9 @@ internal static class KernelRolloutScenarios
 
         party[0].Creature.SetCurrentHpInternal(0);
         Check(!party[0].Creature.IsAlive, "the fixture must actually kill the first seat.");
+        // Stamp AFTER the kill: the short-victory comparison caches on the captured text, and
+        // the emitter reads the live board, so the guard must describe the board it will see.
+        StandardizeCachedScriptGuards(planner, plannerType, combat);
 
         var emit = plannerType.GetMethod("TryEmitFromTournamentScript", Flags)!;
         var args = new object?[] { combat, party, true, null };

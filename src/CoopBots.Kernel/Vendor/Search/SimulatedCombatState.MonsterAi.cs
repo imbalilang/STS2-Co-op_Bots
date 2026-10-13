@@ -71,6 +71,7 @@ internal sealed partial class SimulatedCombatState
             Current = move,
             NeedsInitialRoll = false,
         };
+        RefreshPredictedEnemyIntent(creature);
     }
 
     public void ForceStunnedMove(Creature creature, string? nextMoveId = null)
@@ -89,6 +90,7 @@ internal sealed partial class SimulatedCombatState
     {
         BranchMonsterAiState current = GetMonsterAiState(creature);
         (_monsterAiStates ??= [])[creature] = BranchMonsterAi.Advance(current, simulator, this);
+        RefreshPredictedEnemyIntent(creature);
     }
 
     public void PrepareMonsterMovesForNextRound(
@@ -112,6 +114,7 @@ internal sealed partial class SimulatedCombatState
         if (current.NeedsInitialRoll)
         {
             (_monsterAiStates ??= [])[enemy] = BranchMonsterAi.RollInitial(current, simulator, this);
+            RefreshPredictedEnemyIntent(enemy);
             return;
         }
         // Newly summoned creatures retain an already selected first move until they act.
@@ -143,6 +146,7 @@ internal sealed partial class SimulatedCombatState
             log,
             0,
             BranchMonsterStaticSnapshot.Capture(monster));
+        RefreshPredictedEnemyIntent(creature);
     }
 
     public void RegisterPendingInitialMonsterAi(Creature creature)
@@ -164,6 +168,24 @@ internal sealed partial class SimulatedCombatState
             0,
             BranchMonsterStaticSnapshot.Capture(monster),
             NeedsInitialRoll: rolledInitial == null);
+        RefreshPredictedEnemyIntent(creature);
+    }
+
+    // Native MonsterModel.IntendsToAttack reads the selected move's intent
+    // types. Every branch-owned AI rewrite refreshes the same per-owner value;
+    // neither live MonsterModel.NextMove nor old root intent data is consulted.
+    private void RefreshPredictedEnemyIntent(Creature creature)
+    {
+        _hasPredictedEnemyIntents = true;
+        var current = GetMonsterAiState(creature);
+        // Pending initial registration carries an unpublished placeholder.
+        // Only the completed initial roll can publish its attack membership.
+        var attacking = !current.NeedsInitialRoll && current.Current.Intents.Any(intent =>
+            intent.IntentType is IntentType.Attack or IntentType.DeathBlow);
+        if (ContainsCreature(creature) && attacking)
+            (_enemiesIntendingAttack ??= []).Add(creature);
+        else
+            _enemiesIntendingAttack?.Remove(creature);
     }
 
     private BranchMonsterAiState GetMonsterAiState(Creature creature)

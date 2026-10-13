@@ -80,12 +80,42 @@ internal static class RunDepth
     /// ahead; the same card taken once no shop remains is permanent. Plans are
     /// not priced with this — only the cards nothing asked for.
     /// </summary>
-    internal static double BloatFactor(Player player) => BloatFactor(Act(player), ShopAhead(player));
+    /// <summary>
+    /// Whether any removal opportunity remains in the RUN: a shop still
+    /// reachable this act, or another act still to come — every act generates
+    /// its own shops. The old test walked only the current act, so at an act
+    /// boss it read "no shop left, this dilution can never be undone" while two
+    /// more acts of shops were still ahead. Measured live 2026-09-29: that
+    /// charged the 1.35x permanent factor on an Act-1 boss reward.
+    /// </summary>
+    internal static bool RemovalLeftInRun(Player player)
+    {
+        try
+        {
+            var state = player.RunState;
+            return RemovalLeftInRun(ShopAhead(player), state.CurrentActIndex, state.Acts.Count);
+        }
+        catch
+        {
+            // An unreadable map must not read as "there is nothing ahead".
+            return true;
+        }
+    }
 
-    // Act 3 with a shop still ahead pays 1.5x; with no shop left it pays just
+    /// <summary>
+    /// The run-level rule on its own, so it can be pinned without a live map: a
+    /// removal opportunity is reachable either through a shop left in this act, or
+    /// through any act still to come (every act generates its own shops).
+    /// </summary>
+    internal static bool RemovalLeftInRun(bool shopAhead, int actIndex, int actCount)
+        => shopAhead || actIndex < actCount - 1;
+
+    internal static double BloatFactor(Player player) => BloatFactor(Act(player), RemovalLeftInRun(player));
+
+    // Act 3 with a removal still reachable pays 1.5x; with none left it pays just
     // over 2x, because that dilution can never be undone.
-    internal static double BloatFactor(int act, bool shopAhead)
-        => (1 + 0.25 * Math.Max(0, act)) * (shopAhead ? 1.0 : 1.35);
+    internal static double BloatFactor(int act, bool removalLeft)
+        => (1 + 0.25 * Math.Max(0, act)) * (removalLeft ? 1.0 : 1.35);
 
     /// <summary>
     /// The share of its price a purchase must be worth before it is bought. The

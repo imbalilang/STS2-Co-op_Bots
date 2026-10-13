@@ -52,6 +52,16 @@ internal static partial class EndTurnPowerSupport
                 case EscapeArtistPower when ownerParticipates && power.Amount > 1:
                     combat.SetAmount<EscapeArtistPower>(owner, power.Amount - 1);
                     break;
+                // LIVE 2026-09-29 (A10 4-bot, ENTOMANCER_ELITE floor 25): only the damage half
+                // of FLANKING was mirrored, so a single application rode every later round of
+                // the cached rollout. The script was replayed action-for-action and the party
+                // still wiped with 218/789 left on the elite, while the rollout had "killed" it
+                // during R7 — the verified VICTORY was this multiplier outliving its turn.
+                // FlankingPower.AfterSideTurnEnd removes the power when its owner's side ends
+                // its turn; FlankingLifetimeScenarios pins that lifetime.
+                case FlankingPower when ownerParticipates:
+                    combat.SetPowerAmount(power, 0);
+                    break;
                 case GravityPower when ownerParticipates:
                     combat.SetAmount<GravityPower>(owner, 0);
                     break;
@@ -78,6 +88,11 @@ internal static partial class EndTurnPowerSupport
                     simulator.StateStore
                         .Get(juggling, () => new JugglingPredictionState(juggling))
                         .AttacksPlayedThisTurn = 0;
+                    break;
+                // Same shape as FLANKING above: KnockdownPower.AfterSideTurnEnd removes the
+                // teammate multiplier when its owner's side ends its turn.
+                case KnockdownPower when ownerParticipates:
+                    combat.SetPowerAmount(power, 0);
                     break;
                 case TenderPower when ownerParticipates:
                     RestoreTender(combat, owner, power.Applier);

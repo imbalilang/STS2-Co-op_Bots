@@ -1,0 +1,198 @@
+{
+  "Prediction/KnowledgeDemonChoiceSupport.cs": {
+    "base_sha256": "a22990992470b4b86bf4fe6bd1fecf853a148e26506914d882304556beb22117",
+    "changes": [
+      {
+        "start": 873,
+        "end": 874,
+        "old": "v",
+        "new": "b"
+      },
+      {
+        "start": 875,
+        "end": 877,
+        "old": "id",
+        "new": "ol"
+      },
+      {
+        "start": 1027,
+        "end": 1027,
+        "old": "",
+        "new": ",\n        bool autoResolve = false,\n        int? currentHp = null"
+      },
+      {
+        "start": 1646,
+        "end": 1646,
+        "old": "",
+        "new": "if (!autoResolve)\n            {\n                "
+      },
+      {
+        "start": 1733,
+        "end": 1733,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 1757,
+        "end": 1757,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 1764,
+        "end": 1764,
+        "old": "",
+        "new": ",\n                    sourceId,\n                    optionIds));\n                return false;\n            }\n            // Shared with the live screen; native Disintegration is blockable.\n            var defaultId = KernelKnowledgeChoice.Choose(player.Player!, optionIds, 6 + counter,\n                currentHp ?? player.CurrentHp, combat.GetAmount<DisintegrationPower>(player));\n            choice = new PlanCardChoice(\n                PlanChoiceEffect.ApplyKnowledgeCurse,\n                PileType.None,\n                [new PlanCardToken(defaultId, 0, string.Empty, 0, 0, defaultId)]"
+      },
+      {
+        "start": 1808,
+        "end": 1808,
+        "old": "",
+        "new": "Timing: PlanCh"
+      },
+      {
+        "start": 1809,
+        "end": 1811,
+        "old": "pt",
+        "new": ""
+      },
+      {
+        "start": 1812,
+        "end": 1813,
+        "old": "o",
+        "new": "ceTimi"
+      },
+      {
+        "start": 1814,
+        "end": 1834,
+        "old": "Ids));\n            r",
+        "new": "g.En"
+      },
+      {
+        "start": 1835,
+        "end": 1836,
+        "old": "t",
+        "new": "myT"
+      },
+      {
+        "start": 1839,
+        "end": 1839,
+        "old": "",
+        "new": ")"
+      },
+      {
+        "start": 2855,
+        "end": 2855,
+        "old": "",
+        "new": "// The move-level "
+      },
+      {
+        "start": 2856,
+        "end": 2859,
+        "old": "omb",
+        "new": ""
+      },
+      {
+        "start": 2860,
+        "end": 2863,
+        "old": "t.A",
+        "new": "ller a"
+      },
+      {
+        "start": 2869,
+        "end": 2874,
+        "old": "Knowl",
+        "new": "s th"
+      },
+      {
+        "start": 2875,
+        "end": 2889,
+        "old": "dgeDemonCurseC",
+        "new": " c"
+      },
+      {
+        "start": 2895,
+        "end": 2896,
+        "old": "(",
+        "new": " exactly once after every target\n        // has re"
+      },
+      {
+        "start": 2898,
+        "end": 2899,
+        "old": "u",
+        "new": "lved. Doing it he"
+      },
+      {
+        "start": 2900,
+        "end": 2900,
+        "old": "",
+        "new": "e advan"
+      },
+      {
+        "start": 2902,
+        "end": 2904,
+        "old": ");",
+        "new": "d once per party member in 4-player play."
+      },
+      {
+        "start": 2954,
+        "end": 2954,
+        "old": "",
+        "new": ";\n        return true"
+      }
+    ]
+  },
+  "Prediction/MonsterMoveEffects.cs": {
+    "base_sha256": "3f5b67975677cde7fcc4f4100c94c73902417937d6eca141a29b16f15eb23306",
+    "changes": [
+      {
+        "start": 11302,
+        "end": 11302,
+        "old": "",
+        "new": ",\n        bool autoResolveKnowledgeChoices = false"
+      },
+      {
+        "start": 16385,
+        "end": 16385,
+        "old": "",
+        "new": "{\n"
+      },
+      {
+        "start": 16389,
+        "end": 16389,
+        "old": "",
+        "new": "                if (!"
+      },
+      {
+        "start": 16446,
+        "end": 16446,
+        "old": "",
+        "new": "        "
+      },
+      {
+        "start": 16454,
+        "end": 16454,
+        "old": "",
+        "new": "        "
+      },
+      {
+        "start": 16486,
+        "end": 16486,
+        "old": "",
+        "new": "        "
+      },
+      {
+        "start": 16539,
+        "end": 16539,
+        "old": "",
+        "new": "        "
+      },
+      {
+        "start": 16553,
+        "end": 16553,
+        "old": "",
+        "new": ",\n                            autoResolveKnowledgeChoices,\n                            simulator.State.GetCreature(partyTarget).CurrentHp))\n                    {\n                        // A planned branch is waiting for its explicit choice; do not\n                        // advance the counter for a move that has not resolved.\n                        return true;\n                    }\n                }\n                // ONE move, ONE counter increment. The native CurseOfKnowledgeMove\n                // selects for every target, then increments once after Task.WhenAll;\n                // doing it inside Resolve advanced once per party member and threw at\n                // counter >= 3 (measured: 69 round-exception decisions in the 2026-09-22\n                // Knowledge Demon fight).\n                combat.AdvanceKnowledgeDemonCurseCounter(move.Owner"
+      }
+    ]
+  }
+}

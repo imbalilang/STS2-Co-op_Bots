@@ -147,9 +147,8 @@ internal sealed partial class CombatPredictionSimulator
     /// Mirrors <see cref="CardModel.CanPlay()"/>.
     /// </summary>
     /// <remarks>
-    /// Unlike <see cref="CardModel.CanPlay()"/>, this mirror does not check whether there are living allies
-    /// for <see cref="TargetType.AnyAlly"/> cards, since <see cref="CardModel.IsValidTarget(Creature?)"/>
-    /// already rejects null or dead ally targets.
+    /// Native AnyAlly allows a self target while another player is alive, but
+    /// CardModel.CanPlay rejects the card when only one living player remains.
     /// </remarks>
     public bool CanPlay(PredictedCard card)
         => CanPlay(card, out _, out _);
@@ -160,6 +159,9 @@ internal sealed partial class CombatPredictionSimulator
     {
         energyCost = 0;
         starCost = 0;
+        if (GetTargetType(card) == TargetType.AnyAlly && State.Players.Count(player =>
+                State.GetCreature(player.Creature).IsAlive) <= 1)
+            return false;
         if (card.HasKeyword(State, CardKeyword.Unplayable))
         {
             return false;

@@ -1,4 +1,5 @@
-using System.Reflection;
+﻿using System.Reflection;
+using CoopBots.Kernel;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -16,6 +17,7 @@ namespace CoopBots;
 
 public static class BotRuntime
 {
+    internal static void ExternalInputSettled() => KernelPlanner.CancelPendingForExternalInput();
     private static readonly MethodInfo EnqueueAs = AccessTools.Method(
         typeof(ActionQueueSynchronizer),
         "EnqueueAction",
@@ -29,12 +31,25 @@ public static class BotRuntime
     private static object? _combatIdentity;
     private static readonly CombatPacing Pacing = new();
     private static readonly KernelCombatPlanner KernelPlanner = new();
+    private static readonly TreasureRelicPlanner TreasurePlanner = new();
     private static long ClockMs => Environment.TickCount64;
 
     internal static void ResumeAfterPause()
     {
         foreach (var id in TurnState.Keys.ToList())
             if (TurnState[id].Actions >= 80) TurnState[id] = (TurnState[id].Turn, 0);
+    }
+
+    internal static void NotifyPlannedChoiceDivergence(CombatState? combat, string detail)
+    {
+        if (combat is null || !ReferenceEquals(_combatIdentity, combat)) return;
+        KernelPlanner.InvalidateChoiceDependentState(combat, detail);
+    }
+
+    internal static void NotifyFutureChoiceExternalInput(CombatState? combat, string detail)
+    {
+        if (combat is null || !ReferenceEquals(_combatIdentity, combat)) return;
+        KernelPlanner.InvalidateExternalTurnChoiceState(combat, detail);
     }
 
     public static void Tick()
@@ -87,6 +102,7 @@ public static class BotRuntime
             // Idempotent, so the per-frame cost is one null check.
             BotCardSelector.SyncForRun(state.Players);
             var combatIdentity = state.Players.FirstOrDefault()?.Creature.CombatState;
+            KernelInputObserver.Observe(manager.ActionQueueSet, combatIdentity);
             if (!ReferenceEquals(_combatIdentity, combatIdentity))
             {
                 _combatIdentity = combatIdentity;
@@ -127,6 +143,7 @@ public static class BotRuntime
                 Pacing.Reset();
                 KernelPlanner.Reset(newCombat: true);
                 BotChoicePlanSync.Cancel();
+                BotTurnStartChoiceSync.Reset();
             }
             // ALL NON-COMBAT DECISIONS ARE THROTTLED at NonCombatSettleMs. This is a POLL
             // INTERVAL, not a correctness gate — every driver in the block below gates on the
@@ -175,6 +192,10 @@ public static class BotRuntime
             { KernelPlanner.Reset(); _planStartedAt = 0; return; }
             HumanFinisherHints.Invalidate();
             if (BotCooperation.Gate.Paused) HumanFinisherHints.Reset();
+            if (!BotCooperation.Gate.Paused && CombatManager.Instance.IsInProgress
+                && !CombatManager.Instance.IsPaused && !CombatManager.Instance.IsEnding
+                && combatIdentity is CombatState refiningCombat)
+                KernelPlanner.AdvanceRefinement(refiningCombat);
             if (DateTime.UtcNow < _nextActionAt)
             {
                 // Pacing throttles submission, not planning. Preserve an in-flight
@@ -209,6 +230,18 @@ public static class BotRuntime
             var humansFinished = BotCooperation.HumansFinished(state);
             var teamDifficulty = TeamDifficulty(state);
             if (combatIdentity is not MegaCrit.Sts2.Core.Combat.CombatState combat) return;
+            if (BotTurnStartChoiceSync.Resume(combat, out var pendingTurnAction, out var nativeEnqueue))
+            {
+                if (pendingTurnAction is not null)
+                {
+                    if (nativeEnqueue is not null) nativeEnqueue();
+                    else EnqueueAs.Invoke(manager.ActionQueueSynchronizer,
+                        new object[] { pendingTurnAction, pendingTurnAction.OwnerId });
+                    _lastProgressAt = ClockMs; _idleLast = false;
+                    Pacing.MarkAction(ClockMs, _planStartedAt);
+                }
+                return;
+            }
             Pacing.Observe(combat, combat.RoundNumber, ClockMs);
 
             // Drives, not IsBot: a seat handed over from the room panel is planned
@@ -273,6 +306,7 @@ public static class BotRuntime
             // the legacy planner below and leave the bots with no action at all.
             KernelCombatPlanner.Status kernelStatus;
             TeamCombatPlanner.Decision? joint;
+            KernelCombatPlanner.PotionPlan? resumedPotion = null;
             try
             {
                 // The team spends most of a long human turn with nothing playable:
@@ -288,7 +322,12 @@ public static class BotRuntime
                 // bottle for a board the search had never finished thinking about. The
                 // panel had already published `Searching` for this tick, so the player
                 // watched "searching for the optimal line" while the bottle was used.
-                if (botsIdle && !KernelPlanner.IsSearching)
+                // An ACK-pending potion has already advanced the script cursor.
+                // Resume it before idle/Poll can clear or emit another step.
+                if (BotChoicePlanSync.Resume(combat, out joint, out resumedPotion))
+                    kernelStatus = joint is not null || resumedPotion is not null
+                        ? KernelCombatPlanner.Status.Ready : KernelCombatPlanner.Status.Pending;
+                else if (botsIdle && !KernelPlanner.IsSearching)
                 {
                     if (++_idleSkips % 40 == 0) ReportIdleIdle();
                     KernelPlanner.Reset();
@@ -301,8 +340,6 @@ public static class BotRuntime
                     kernelStatus = KernelCombatPlanner.Status.Fallback;
                     joint = null;
                 }
-                else if (BotChoicePlanSync.Resume(combat, out joint))
-                    kernelStatus = joint is null ? KernelCombatPlanner.Status.Pending : KernelCombatPlanner.Status.Ready;
                 else kernelStatus = KernelPlanner.Poll(combat, eligible, manager.ActionQueueSet.NextActionId,
                     BotCooperation.FocusTarget, humansFinished, teamDifficulty, out joint);
             }
@@ -312,6 +349,7 @@ public static class BotRuntime
                 KernelPlanner.Reset();
                 kernelStatus = KernelCombatPlanner.Status.Fallback;
                 joint = null;
+                resumedPotion = null;
             }
             if (kernelStatus == KernelCombatPlanner.Status.Pending) return;
             // HumanFinisherHints alone publishes verified, current-board requests.
@@ -362,8 +400,23 @@ public static class BotRuntime
             // its index advanced, so the very next tick failed the L1 check and dropped the
             // plan. That is the "the plan resets right after drinking" symptom: not a failed
             // check, but a step that was skipped by a second decision source.
-            if (joint is null && KernelPlanner.ConfirmedPotion is { } proactivePotion)
+            if (joint is null && (resumedPotion ?? KernelPlanner.ConfirmedPotion) is { } proactivePotion)
             {
+                // TouchOfInsanity.OnUse (native v0.111.0) selects target.Player's
+                // hand. Do not answer a human menu or enqueue an unrecorded choice.
+                var recipient = proactivePotion.Target is null
+                    ? proactivePotion.Potion.Owner : proactivePotion.Target.Player;
+                if (KernelSession.RequiresPotionChoiceContract(proactivePotion.Potion)
+                    && (proactivePotion.Choices is not { Count: > 0 } || recipient is null || !AutoPilot.Drives(recipient.NetId)))
+                {
+                    BotChoicePlanSync.Cancel();
+                    NotifyPlannedChoiceDivergence(combat, "planned potion has no executable delegated choice");
+                    return;
+                }
+                // False means ACK waiting, not a refused bottle. Keep both the
+                // confirmation and installed transaction until Resume returns it.
+                if (!BotChoicePlanSync.Prepare(proactivePotion, combat)) return;
+                if (!PrepareFuturePotion(combat, proactivePotion)) return;
                 if (TryUsePotion(proactivePotion.Potion, proactivePotion.Target))
                 {
                     BotCooperation.LastAction = "按剧本用药：" + proactivePotion.Potion.Id.Entry;
@@ -376,13 +429,17 @@ public static class BotRuntime
                 // The game refused the bottle, so the confirmation is spent. Drop it
                 // and fall through: the rest of the tick still plays a card or ends
                 // the turn instead of retrying a plan that cannot be carried out.
+                BotChoicePlanSync.Cancel();
+                if (KernelSession.RequiresPotionChoiceContract(proactivePotion.Potion))
+                    NotifyPlannedChoiceDivergence(combat, "planned potion could not enqueue its recorded choice");
                 KernelPlanner.DiscardConfirmation();
             }
             if (earlyPotion is null && joint is null && KernelPlanner.ConfirmedEndTurn is { } endingPlan
                 && humansFinished && eligible.Contains(endingPlan))
             {
-                EnqueueAs.Invoke(manager.ActionQueueSynchronizer,
-                    new object[] { new EndPlayerTurnAction(endingPlan, endingPlan.PlayerCombatState!.TurnNumber), endingPlan.NetId });
+                var endAction = new EndPlayerTurnAction(endingPlan, endingPlan.PlayerCombatState!.TurnNumber);
+                if (!BotTurnStartChoiceSync.Prepare(combat, endAction, KernelPlanner.ConfirmedEndTurnChoices)) return;
+                EnqueueAs.Invoke(manager.ActionQueueSynchronizer, new object[] { endAction, endingPlan.NetId });
                 _lastProgressAt = ClockMs;
                 _idleLast = false;
                 Pacing.MarkAction(ClockMs, _planStartedAt);
@@ -484,9 +541,13 @@ public static class BotRuntime
                 }
                 _badPlans = 0;
                 if (best.Move.Choices is { Count: > 0 }
-                    && !BotChoicePlanSync.Prepare(new(best.Player, best.Move, joint?.PlannedCards ?? 1), combat)) return;
+                    && !BotChoicePlanSync.Prepare(new TeamCombatPlanner.Decision(best.Player, best.Move, joint?.PlannedCards ?? 1), combat)) return;
+                var cardAction = new PlayCardAction(chosen, best.Move.Target);
+                void SubmitChosenCard()
+                {
+                LiveCombatCapture.TraceTeamAction(combat, chosen, best.Move.Target);
                 EnqueueAs.Invoke(manager.ActionQueueSynchronizer,
-                    new object[] { new PlayCardAction(chosen, best.Move.Target), best.Player.NetId });
+                    new object[] { cardAction, best.Player.NetId });
                 TeamFocus.ObserveSubmitted(combat, best.Move, BotCooperation.FocusTarget);
                 var progress = TurnState[best.Player.NetId];
                 TurnState[best.Player.NetId] = (progress.Turn, progress.Actions + 1);
@@ -508,10 +569,14 @@ public static class BotRuntime
                     _ => "legacy",
                 };
                 Log.Info($"CoopBots team: {best.Player.NetId} plays {chosen.Id.Entry} on {best.Move.Target?.LogName}; "
-                    + $"score={best.Move.Score:F1}; via={attribution}; {best.Move.Reason}");
+                    + $"score={(viaKernel ? "terminal-plan" : best.Move.Score.ToString("F1"))}; via={attribution}; {best.Move.Reason}");
                 _lastProgressAt = ClockMs;
                 _idleLast = false;
                 Pacing.MarkAction(ClockMs, _planStartedAt);
+                }
+                if (!BotTurnStartChoiceSync.Prepare(combat, cardAction, best.Move.TurnStartChoices,
+                    best.Move.TurnStartChoices is { OwnersTurnNumbers.Count: > 0 } ? SubmitChosenCard : null)) return;
+                SubmitChosenCard();
                 return;
             }
             if (faulty.Count > 0)
@@ -694,6 +759,23 @@ public static class BotRuntime
     // the game makes — checked first so a stale reference costs a skipped action
     // instead of an exception. A search can confirm a bottle that the belt no
     // longer holds: the plan outlives the state it was computed from.
+    private static bool PrepareFuturePotion(CombatState combat, KernelCombatPlanner.PotionPlan plan)
+    {
+        if (plan.TurnStartChoices is not { OwnersTurnNumbers.Count: > 0 }
+            || plan.Potion.Owner is not { } owner || !owner.Potions.Contains(plan.Potion)) return true;
+        var target = plan.Target;
+        if (target is null && plan.Potion.IsValidTarget(owner.Creature)) target = owner.Creature;
+        var action = new UsePotionAction(plan.Potion, target, CombatManager.Instance.IsInProgress);
+        // Keep PotionModel's BeforeUse/IsQueued/native request when ACK arrives.
+        return BotTurnStartChoiceSync.Prepare(combat, action, plan.TurnStartChoices, () => {
+            if (!TryUsePotion(plan.Potion, plan.Target))
+            {
+                BotTurnStartChoiceSync.Cancel();
+                NotifyPlannedChoiceDivergence(combat, "turn-start causal potion could not enqueue");
+            }
+        });
+    }
+
     private static bool TryUsePotion(MegaCrit.Sts2.Core.Models.PotionModel potion,
         MegaCrit.Sts2.Core.Entities.Creatures.Creature? target)
     {
@@ -725,10 +807,12 @@ public static class BotRuntime
         _lastState = null;
         _lastAct = -1;
         BotCooperation.Reset(); BotEventDriver.Reset();
+        TreasurePlanner.Clear();
         HumanFinisherHints.Reset();
         Pacing.Reset();
         KernelPlanner.Reset(newCombat: true);
         BotChoicePlanSync.Cancel();
+        BotTurnStartChoiceSync.Reset();
         CrystalSphereSync.Reset();
     }
     private static bool TryPickTreasureRelic(RunManager manager, RunState state)
@@ -736,7 +820,7 @@ public static class BotRuntime
         var synchronizer = manager.TreasureRoomRelicSynchronizer;
         var relics = synchronizer.CurrentRelics;
         if (relics is null)
-            return false;
+        { TreasurePlanner.Clear(); return false; }
 
         // Let humans inspect the advice and register their preferences before bots vote.
         // A handed-over seat is not a human here: waiting for it would wait forever.
@@ -744,9 +828,10 @@ public static class BotRuntime
             .Any(p => !synchronizer.GetPlayerVote(p).voteReceived)) return false;
 
         var waitingBots = state.Players.Where(p => AutoPilot.Drives(p.NetId) && !synchronizer.GetPlayerVote(p).voteReceived).ToList();
+        if (waitingBots.Count == 0) { TreasurePlanner.Clear(); return false; }
         var reserved = state.Players.Select(p => synchronizer.GetPlayerVote(p))
             .Where(v => v.voteReceived && v.index.HasValue).Select(v => v.index!.Value).ToHashSet();
-        var assignment = TeamCoordinator.AssignRelics(waitingBots, relics, reserved);
+        if (!TreasurePlanner.TryAssign(state.Players, relics, waitingBots, reserved, out var assignment)) return false;
         foreach (var player in waitingBots)
         {
             if (synchronizer.GetPlayerVote(player).voteReceived)
@@ -784,6 +869,11 @@ public static class BotRuntime
 
     private static bool TryVoteOnMap(RunManager manager, RunState state)
     {
+        if (RoomWork.Waiting(manager, state) is { } waiting)
+        {
+            ReportMapWait(waiting);
+            return false;
+        }
         // Most rooms open the shared map as an overlay when they finish. In that
         // state CurrentRoom is still CombatRoom/EventRoom/etc., not MapRoom. The
         // map screen itself is the authoritative signal that votes are accepted.

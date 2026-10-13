@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -20,19 +20,10 @@ using ICardSelector = MegaCrit.Sts2.Core.TestSupport.ICardSelector;
 namespace CoopBots;
 
 /// <summary>
-/// The card-reward seam for a handed-over seat.
-///
-/// A synthetic bot never touches this: <c>CardReward.OnSelect</c> only reads
-/// <see cref="CardSelectCmd.Selector"/> when the reward's owner is the LOCAL player
-/// and no screen was opened, and a bot's reward resolves remotely instead. A real
-/// player's seat handed over from the room panel is exactly that case — local owner,
-/// and we want no screen — so the game's own test hatch is the right seam rather than
-/// a reimplementation of the reward body (which also writes the run history and moves
-/// the card into the deck).
-///
-/// <see cref="CardRewardScreenSuppression"/> supplies the other half: with the screen
-/// suppressed the selection falls through to this selector; with the screen shown it
-/// would wait for a click that a watching player has handed away.
+/// Native test-selector integration for driven seats. Permanent grid choices
+/// await construction workers. Local card rewards normally retain the native
+/// screen and its async completion (BotLocalRewardChoicePatch); the synchronous
+/// reward method remains for native test callers that have no screen.
 /// </summary>
 internal sealed class BotCardSelector : ICardSelector
 {
@@ -56,11 +47,8 @@ internal sealed class BotCardSelector : ICardSelector
     /// patch and the remote-choice patch); this is the only one that cannot decline per
     /// seat, so it has to be scoped at install time instead.
     ///
-    /// WHAT THIS COSTS ON A MIXED TABLE: a handed-over seat's CARD REWARD falls back to
-    /// the pre-0.37.0 behaviour (`CardReward` finds no screen and no selector, throws
-    /// "Card selector unset during test!", and that seat skips the card). Its card
-    /// *choices* are unaffected: those go through the per-seat CardSelectCmd prefixes.
-    /// Card rewards for synthetic bots are unaffected too — they never use this seam.
+    /// Card rewards use their native asynchronous screen/remote choice seams,
+    /// including handed-over seats on a mixed human/bot table.
     /// </summary>
     public static void SyncForRun(IReadOnlyList<Player>? players)
     {
@@ -91,7 +79,7 @@ internal sealed class BotCardSelector : ICardSelector
         _scope = null;
     }
 
-    public Task<IEnumerable<CardModel>> GetSelectedCards(IEnumerable<CardModel> options, int minSelect, int maxSelect)
+    public async Task<IEnumerable<CardModel>> GetSelectedCards(IEnumerable<CardModel> options, int minSelect, int maxSelect)
     {
         // `options` is an IEnumerable, not a list, and the caller may hand back a
         // lazy filter over a live pile: materialise once so the brain and the answer
@@ -99,13 +87,16 @@ internal sealed class BotCardSelector : ICardSelector
         var cards = options.ToList();
         var player = cards.FirstOrDefault()?.Owner;
         if (player is null || cards.Count == 0)
-            return Task.FromResult<IEnumerable<CardModel>>(Array.Empty<CardModel>());
+            return Array.Empty<CardModel>();
 
         // minSelect == 0 is how a declinable screen says so; the brain treats an
         // empty answer as a real option only then.
         var maySkip = minSelect == 0;
-        var chosen = BotBrain.SelectCards(player, cards, minSelect, maxSelect, "CardSelector", maySkip).ToList();
-        return Task.FromResult<IEnumerable<CardModel>>(chosen);
+        if (MegaCrit.Sts2.Core.Combat.CombatManager.Instance.IsInProgress)
+            return BotBrain.SelectCards(player, cards, minSelect, maxSelect, "CardSelector", maySkip).ToList();
+        return await Building.ConstructionDecision.RunAsync(player,
+            () => BotBrain.SelectCards(player, cards, minSelect, maxSelect, "CardSelector", maySkip).ToList(),
+            () => { if (!AutoPilot.Drives(player.NetId)) throw new OperationCanceledException(); return Building.ConstructionDecision.Cards(cards); });
     }
 
     public CardRewardSelection GetSelectedCardReward(
@@ -120,28 +111,70 @@ internal sealed class BotCardSelector : ICardSelector
         // "the player skipped", so a skip is a null card rather than an out-of-range
         // index — a negative index reaches the reward's own list indexer unguarded
         // and throws (see RewardPatches, which is where that bit the live log 17
-        // times per run).
-        var index = BotBrain.ChooseCardReward(player, cards);
-        if (index < 0 || index >= cards.Count)
+        // times per run). With Pael's Wing the skip becomes the SACRIFICE
+        // alternative; that is the only case the alternative is returned.
+        var decision = BotBrain.ChooseCardRewardDecision(player, cards, alternatives.Select(candidate => candidate.OptionId).ToList());
+        if (decision.AlternativeId is { } alternativeId
+            && alternatives.FirstOrDefault(candidate => string.Equals(
+                candidate.OptionId, alternativeId, StringComparison.OrdinalIgnoreCase)) is { } alternative)
+            return new CardRewardSelection { alternative = alternative };
+        if (decision.Index < 0 || decision.Index >= cards.Count)
             return default;
-        return new CardRewardSelection { card = cards[index] };
+        return new CardRewardSelection { card = cards[decision.Index] };
     }
 }
 
-/// <summary>
-/// Keeps the reward screen from opening for a seat that has been handed over. The
-/// screen is the only thing standing between <c>CardReward.OnSelect</c> and the
-/// selector path, and it is created only for the local player — so suppressing it
-/// here is what makes the local seat behave like the remote one.
-/// </summary>
-[HarmonyPatch(typeof(NCardRewardSelectionScreen), nameof(NCardRewardSelectionScreen.ShowScreen))]
-internal static class CardRewardScreenSuppression
+// Keep the native reward screen and its completion source. The local selector
+// interface is synchronous; using the screen's existing asynchronous wait keeps
+// animation, manual selection and native choice synchronization intact.
+[HarmonyPatch(typeof(NCardRewardSelectionScreen), nameof(NCardRewardSelectionScreen.OptionSelected))]
+internal static class BotLocalRewardChoicePatch
 {
-    private static bool Prefix(ref NCardRewardSelectionScreen? __result)
+    private static readonly System.Reflection.FieldInfo Completion = AccessTools.Field(
+        typeof(NCardRewardSelectionScreen), "_completionSource");
+    private static readonly System.Reflection.FieldInfo ExtraOptions = AccessTools.Field(
+        typeof(NCardRewardSelectionScreen), "_extraOptions");
+    private static void Postfix(NCardRewardSelectionScreen __instance, Task<int?> __result)
     {
-        if (LocalContext.NetId is not { } me || !AutoPilot.IsAutopiloted(me))
-            return true;
-        __result = null;
-        return false;
+        if (LocalContext.NetId is not { } me || !AutoPilot.Drives(me)
+            || BotRewardDriver.ActiveReward(me) is not { } reward) return;
+        _ = Complete(__instance, __result, reward);
+    }
+    private static async Task Complete(NCardRewardSelectionScreen screen, Task<int?> native,
+        MegaCrit.Sts2.Core.Rewards.CardReward reward)
+    {
+        using var cancellation = new CancellationTokenSource();
+        async Task StopWhenAnswered()
+        {
+            try { await native; }
+            catch { /* Native screen owns its own completion failure. */ }
+            try { cancellation.Cancel(); } catch (ObjectDisposedException) { }
+        }
+        _ = StopWhenAnswered();
+        try
+        {
+            var choice = await BotBrain.ChooseCardRewardAsync(reward.Player, reward.Cards.ToArray(), cancellation.Token);
+            if (native.IsCompleted || !Godot.GodotObject.IsInstanceValid(screen)
+                || !AutoPilot.Drives(reward.Player.NetId)
+                || !ReferenceEquals(BotRewardDriver.ActiveReward(reward.Player.NetId), reward)) return;
+            // The screen's completion index counts the alternatives AFTER the cards
+            // (`_options.Count + altIndex`). With Pael's Wing a skipped reward becomes
+            // the SACRIFICE alternative rather than a plain skip.
+            var index = choice;
+            if (index < 0
+                && ExtraOptions.GetValue(screen) is IReadOnlyList<MegaCrit.Sts2.Core.Entities.CardRewardAlternatives.CardRewardAlternative> extras)
+            {
+                var decision = BotBrain.ApplySkipPolicy(reward.Player, index,
+                    extras.Select(candidate => candidate.OptionId).ToList());
+                if (decision.AlternativeId is { } alternativeId
+                    && extras.ToList().FindIndex(candidate => string.Equals(
+                        candidate.OptionId, alternativeId, StringComparison.OrdinalIgnoreCase)) is var sacrifice
+                    && sacrifice >= 0)
+                    index = reward.Cards.Count() + sacrifice;
+            }
+            ((TaskCompletionSource<int?>)Completion.GetValue(screen)!).TrySetResult(index < 0 ? null : index);
+        }
+        catch (OperationCanceledException) { /* Native screen remains available to its human owner. */ }
+        catch (Exception error) { Log.Error($"CoopBots local reward computation failed: {error}"); }
     }
 }

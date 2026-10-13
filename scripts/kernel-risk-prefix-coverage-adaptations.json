@@ -1,0 +1,76 @@
+{
+  "status": "PRIVATE STATIC PROPOSAL ONLY: no build/runtime/performance/R2 evidence yet",
+  "predecessor": "shared fullfreeze1220 as captured; no zero-count shortcut retained",
+  "files": [
+    {
+      "path": "Engine/InCombat/Simulation/CombatPredictionHistory.cs",
+      "stage": "after existing namespace/profile/model adaptations",
+      "base_file_sha256": "AFFED8AD7E6FA5E7735C1D409A629AC0AF8B64A12B157C3B0C27FA9F95C1E6B3",
+      "base_normalized_sha256": "758D2FF56D487CF9D3CA08D4E6A2DCADF90458F73C9655F8415087A719D7CDD2",
+      "upstream_file_sha256": "1C91C45D95819DE9A1E98009E495CC6BAC08C9B2C0A1BF940BF1B87604917C9C",
+      "candidate_file_sha256": "EA79BAF4D384D2116D202306692DF7610B253043491A10CD0B5043B91F676930",
+      "candidate_normalized_sha256": "3963B5FB4799EA4BF5A40031B47D8E9C00E23F95B0FFA78EDA8F9E7A50482224",
+      "changes": [
+        {
+          "start": 3401,
+          "end": 3401,
+          "old": "",
+          "new": "\n\n        // Owner 2026-10-08: index only immutable segment references. Classification\n        // remains live in PredictionCoverage for EVERY original risk occurrence.\n        private CombatPredictionRiskEntry[]? _riskEntries;\n\n        public CombatPredictionRiskEntry[] GetRiskEntries()\n        {\n            var cached = System.Threading.Volatile.Read(ref _riskEntries);\n            if (cached is not null)\n                return cached;\n            int count = 0;\n            foreach (CombatPredictionHistoryEntry entry in Entries)\n                if (entry is CombatPredictionRiskEntry)\n                    count++;\n            var risks = count == 0 ? Array.Empty<CombatPredictionRiskEntry>()\n                : new CombatPredictionRiskEntry[count];\n            int index = 0;\n            foreach (CombatPredictionHistoryEntry entry in Entries)\n                if (entry is CombatPredictionRiskEntry risk)\n                    risks[index++] = risk;\n            // Forks share this immutable segment. Publish a fully initialized array;\n            // a concurrent loser discards only its equivalent pure CLR filtering.\n            return System.Threading.Interlocked.CompareExchange(ref _riskEntries, risks, null) ?? risks;\n        }"
+        },
+        {
+          "start": 17932,
+          "end": 17932,
+          "old": "",
+          "new": "// Match GetEnumerator's first-MoveNext prefix snapshot and late tail lookup.\n    // Never snapshot the mutable tail: keep its original List version checks even\n    // when a DescribeGap callback appends an ordinary non-risk history entry.\n    internal IEnumerable<CombatPredictionRiskEntry> RiskEntries()\n    {\n        if (_prefix is not null)\n        {\n            HistorySegment[] ordered = GetOrderedSegments();\n            for (int segmentIndex = 0; segmentIndex < ordered.Length; segmentIndex++)\n            {\n                foreach (CombatPredictionRiskEntry risk in ordered[segmentIndex].GetRiskEntries())\n                    yield return risk;\n            }\n        }\n        if (_tail is not null)\n        {\n            foreach (CombatPredictionHistoryEntry entry in _tail)\n                if (entry is CombatPredictionRiskEntry risk)\n                    yield return risk;\n        }\n    }\n\n    "
+        }
+      ]
+    },
+    {
+      "path": "Prediction/PredictionCoverage.cs",
+      "stage": "after existing namespace/profile/model adaptations",
+      "base_file_sha256": "6FEB08D3B849731BAC3439D36E1D8D68ECEC55E0F47601EF8D752D1B3E1D79F1",
+      "base_normalized_sha256": "B14701F39952B86776C32B352116145F8FFA09A298E4761D60BC1B4B13ADD029",
+      "upstream_file_sha256": "2F81EF2DF443831F28FCCB74784AB33357ED49036416BBF6A0412BBB51A315D5",
+      "candidate_file_sha256": "77CC8F8295526BE48D9879B960948DB3AE5ECEB0F4761EE4B68217A896772A9E",
+      "candidate_normalized_sha256": "A357F120E54BA354EAFFB6C95A131AAFDC3588BCD35FC8F4454E4136E256D262",
+      "changes": [
+        {
+          "start": 1033,
+          "end": 1034,
+          "old": "H",
+          "new": "R"
+        },
+        {
+          "start": 1036,
+          "end": 1040,
+          "old": "tory",
+          "new": "k"
+        },
+        {
+          "start": 1046,
+          "end": 1049,
+          "old": "ent",
+          "new": ""
+        },
+        {
+          "start": 1050,
+          "end": 1051,
+          "old": "y",
+          "new": "isk"
+        },
+        {
+          "start": 1072,
+          "end": 1072,
+          "old": "",
+          "new": ".RiskEntries()"
+        },
+        {
+          "start": 1083,
+          "end": 1170,
+          "old": "\n            if (entry is not CombatPredictionRiskEntry risk)\n                continue;",
+          "new": ""
+        }
+      ]
+    }
+  ]
+}

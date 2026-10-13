@@ -67,8 +67,9 @@ internal sealed class DraggablePanel
     // holes in the grip; only controls that take a click themselves are kept.
     private static void MakeClickThrough(Control control)
     {
-        foreach (var child in control.GetChildren())
+        for (var i = 0; i < control.GetChildCount(); i++)
         {
+            var child = control.GetChild(i);
             if (child is not Control descendant || descendant is BaseButton) continue;
             descendant.MouseFilter = Control.MouseFilterEnum.Ignore;
             MakeClickThrough(descendant);

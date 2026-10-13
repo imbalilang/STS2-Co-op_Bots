@@ -8,7 +8,7 @@
     <RootNamespace>CoopBots</RootNamespace>
     <DebugType>portable</DebugType>
     <Deterministic>true</Deterministic>
-    <STS2DataDir Condition="'$(STS2DataDir)' == ''">/Users/xiwa/Library/Application Support/Steam/steamapps/common/Slay the Spire 2/SlayTheSpire2.app/Contents/Resources/data_sts2_macos_arm64</STS2DataDir>
+    <STS2DataDir Condition="'$(STS2DataDir)' == ''"></STS2DataDir>
     <STS2ReferenceVersion Condition="'$(STS2ReferenceVersion)' == ''"></STS2ReferenceVersion>
   </PropertyGroup>
 
@@ -20,7 +20,7 @@
     <!--
       CombatSolver 0.41.0, shipped as its OWN assembly rather than source vendored into
       the kernel. Its RootNamespace is `CombatSolver`, so its type identities do not
-      collide with the vendored 0.33.9 engine under `CoopBots.Kernel.Vendor` — both load
+      collide with the vendored engine under `CoopBots.Kernel.Vendor` — both load
       side by side, and only game types cross the boundary.
 
       COPIED, not ProjectReference'd. A reference would make every consumer of this

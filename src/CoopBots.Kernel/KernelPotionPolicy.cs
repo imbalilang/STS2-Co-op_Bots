@@ -1,4 +1,8 @@
+using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Potions;
+using MegaCrit.Sts2.Core.Models.Powers;
 
 namespace CoopBots.Kernel;
 
@@ -10,6 +14,21 @@ namespace CoopBots.Kernel;
 public static class KernelPotionPolicy
 {
     public static readonly ObjectiveConfig Objective = new(ConsumableUnitCost: 6);
+
+    // Future healing is uncertain, so reserve three quarters of its native
+    // capacity. An extra turn earns value only when the actual continuation
+    // takes it; an unused AmbergrisPower at victory earns no speculative bonus.
+    public const double HealingReservationDiscount = .75;
+
+    public static double PreservationValue(PotionModel potion, IReadOnlyList<Player> party)
+        => potion is Ambergris && party.Count > 0
+            ? party.Max(p => p.Creature.MaxHp) * (double)potion.DynamicVars["HealPercent"].BaseValue / 100
+                * HealingReservationDiscount
+            : Objective.ConsumableUnitCost;
+
+    internal static double ConsumedPreservationPremium(KernelSession session, IReadOnlyList<Player> party)
+        => party.SelectMany(p => p.Potions).Where(p => p is Ambergris && !session.HoldsPotion(p))
+            .Sum(p => Math.Max(0, PreservationValue(p, party) - Objective.ConsumableUnitCost));
 
     public static bool WorthComparing(KernelSession root, IReadOnlyList<Player> actors,
         IReadOnlyList<Player> party, TerminalRecord? baseline)
@@ -41,10 +60,24 @@ public static class KernelPotionPolicy
         KernelTeamSearch.Action? opening, IReadOnlyList<KernelTeamSearch.Action>? plan = null)
     {
         if (opening?.Potion is not { } potion) return 0;
+        // A damage bottle spent into IntangiblePower is a 1-damage bottle. Do not
+        // let the "both lines wipe, prefer a useful effect" fallback count it.
+        var potionName = potion.GetType().Name;
+        if (potionName is "FirePotion" or "PotionShapedRock" or "ExplosiveAmpoule")
+        {
+            if (opening.Target is Creature target && root.Power<IntangiblePower>(target) > 0)
+                return 0;
+            if (potionName == "ExplosiveAmpoule"
+                && root.Enemies.Count > 0
+                && root.Enemies.All(e => root.Power<IntangiblePower>(e) > 0))
+                return 0;
+        }
         var branch = root.Fork();
-        if (!branch.UsePotion(potion, opening.Target, out _)) return 0;
+        var resolved = KernelSession.RequiresPotionChoiceContract(potion)
+            ? branch.ReplayPlanned(opening, 80, out _) : branch.UsePotion(potion, opening.Target, out _);
+        if (!resolved) return 0;
         var raw = KernelTacticalPolicy.Value(branch, party) - KernelTacticalPolicy.Value(root, party);
-        if (plan is null || potion.GetType().Name is not ("ShacklingPotion" or "BeetleJuice" or "WeakPotion" or "BlockPotion")) return raw;
+        if (plan is null || potion.GetType().Name is not ("ShacklingPotion" or "BeetleJuice" or "WeakPotion" or "BlockPotion" or "Fortifier")) return raw;
         var baseline = root.Fork();
         foreach (var action in plan.Take(64))
         {

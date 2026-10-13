@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>BuildingDecisionProbe</AssemblyName>
+    <RootNamespace>BuildingDecisionProbe</RootNamespace>
+    <Deterministic>true</Deterministic>
+    <!-- Same convention as tests/PatchSmoke: the real game assemblies come from
+         -p:STS2DataDir=..., and RitsuLib 0.6.x paths are derived by
+         src/CoopBots.Kernel/KernelDependencies.props. -->
+    <STS2DataDir Condition="'$(STS2DataDir)' == ''"></STS2DataDir>
+  </PropertyGroup>
+  <Import Project="../../src/CoopBots.Kernel/KernelDependencies.props" />
+  <ItemGroup>
+    <!-- The probe references the current CoopBots project so BuildValue is this
+         checkout's production code. BuildValue is internal and only visible to
+         PatchSmoke, so the probe calls it by reflection rather than pretending to
+         be PatchSmoke. -->
+    <ProjectReference Include="../../src/CoopBots/CoopBots.csproj" />
+    <ProjectReference Include="../../src/CoopBots.Kernel/CoopBots.Kernel.csproj" />
+    <!-- RitsuLib 0.6.x splits its runtime across several assemblies; the console
+         process has no mod loader to resolve them, so all of them are copied. -->
+    <Reference Include="STS2-RitsuLib" HintPath="$(RitsuLibDir)/STS2-RitsuLib.dll" Private="true" />
+    <Reference Include="STS2-RitsuLib.Runtime" HintPath="$(RitsuLibDir)/STS2-RitsuLib.Runtime.dll" Private="true" />
+    <Reference Include="STS2-RitsuLib.Shared" HintPath="$(RitsuLibSharedDir)/STS2-RitsuLib.Shared.dll" Private="true" />
+    <Reference Include="STS2-RitsuLib.Ui" HintPath="$(RitsuLibSharedDir)/STS2-RitsuLib.Ui.dll" Private="true" />
+    <Reference Include="STS2-RitsuLib.Settings" HintPath="$(RitsuLibSharedDir)/STS2-RitsuLib.Settings.dll" Private="true" />
+    <Reference Include="System.IO.Hashing" HintPath="$(STS2DataDir)/System.IO.Hashing.dll" Private="true" />
+    <Reference Include="sts2" HintPath="$(STS2DataDir)/sts2.dll" Private="true" />
+    <Reference Include="GodotSharp" HintPath="$(STS2DataDir)/GodotSharp.dll" Private="true" />
+    <Reference Include="0Harmony" HintPath="$(STS2DataDir)/0Harmony.dll" Private="true" />
+  </ItemGroup>
+</Project>

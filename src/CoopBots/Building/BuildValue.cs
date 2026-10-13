@@ -1,6 +1,7 @@
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Logging;
 
 namespace CoopBots.Building;
 
@@ -11,8 +12,8 @@ namespace CoopBots.Building;
 /// Every decision is a difference against the deck as it stands, which makes
 /// skipping a real candidate instead of an afterthought: a card is only worth
 /// taking when its own contribution exceeds the draws it takes away from the
-/// rest of the deck. Nothing here reads an authored tier list; the inputs come
-/// from the card's own model, so modded cards are judged on what they do.
+/// rest of the deck. The shared potential combines native card effects and
+/// documented community priors; missing effects carry an explicit estimate.
 /// </summary>
 internal static class BuildValue
 {
@@ -49,41 +50,73 @@ internal static class BuildValue
     // Modest and absolute-free so it self-normalises across cards; it is what
     // stops a large flat team term from carrying a card the deck cannot use.
     private const double TeamBonusBuildShare = 0.5;
-    // Thinning a starter card out of a real deck is worth this much before any
-    // comparison against the rest of the deck. Lowered from 40 to 30 on 2026-09-23:
-    // a first starter removal was worth 100 deck points (300 gold), which outbid every
-    // build-defining card even after the route-core premium; the same 2.5x dead-draw
-    // pressure still makes a 150-gold removal payable (75 x 3.0 = 225 gold).
-    private const double StarterRemovalBaseline = 30;
-    // Thinning is worth more the more dead draws the deck still carries: the
-    // first removal takes one Strike out of fifteen, the eighth takes one out of
-    // eight that are left. A flat baseline could never outbid the shop's growing
-    // price — 40 x 3.0 = 120 gold, and the 2.5x dead-draw pressure carries it past
-    // a 150-gold removal — so the decks that most needed thinning can still buy it.
-    // The shop also discounts repeated removals once the starter pile has shrunk;
-    // see BotShopPlanner.RemovalValue.
-    private static double StarterPressure(IReadOnlyList<CardModel> deck)
-    {
-        var starters = deck.Count(IsPlainStarter);
-        return Math.Min(2.5, 1 + 0.35 * Math.Max(0, starters - 1));
-    }
     /// <summary>
-    /// A Basic card with nothing else on it: the dead draw the starter removal
-    /// floor and the dead-draw pressure are priced against. An ENCHANTED Basic is
-    /// not one — the enchantment is a printed upgrade, and Replay in particular is
-    /// only visible through GetEnchantedReplayCount. Shared by <see cref="Remove"/>
-    /// and <see cref="StarterPressure"/> so the floor and the pressure cannot
-    /// disagree about which cards are junk (R3: one shape, one rule).
+    /// Cards the bot must never acquire, whatever any prior says about them.
+    ///
+    /// 上游怎么做：CombatSolver 没有牌名黑名单，获取只看 Elo / 结构先验 —— 任何牌都可能被拿走。
+    /// 我们怎么做：命中即返回固定的 <see cref="AcquisitionBlacklistTotal"/>，
+    /// 在 <see cref="AddDetailed"/> 的第一行短路，压在全部先验与情境加成之前，
+    /// 因此它低于 skip 的 0，也低于任何真实候选。
+    /// 为什么：THE_GAMBIT 打出后挂 THE_GAMBIT_POWER —— 吃到任意一次未被格挡的
+    /// powered attack 伤害就直接处决（TheGambitPower.AfterDamageReceived →
+    /// CreatureCmd.Kill），**无视剩余血量**，是"构筑里带一颗地雷"而不是"少一点数值"。
+    /// 实机 2026-09-29 二层第一战 THIEVING_HOPPER_WEAK（floor 18）：B2 自己的剧本在
+    /// 第 25/26 步连打 THE_GAMBIT + PANIC_BUTTON（后者 NoBlockPower 让格挡全变 0），
+    /// turn3 被 HAT_TRICK 触发处决，52/80 血满着死；而模拟器因漏掉敌人 Power 的
+    /// 多人缩放（Flutter 实机 24 层 vs 内核 5 层）预测 4 人全活 VICTORY、一步未拒。
+    /// 也就是说估值模型在这里**读不出**这张牌的代价，只能人工拉黑。
+    /// 用户 2026-09-29：「直接把 THE_GAMBIT 拉入黑名单……-100 获取意向分数（赌狗不得好死）」。
     /// </summary>
+    private static readonly HashSet<string> AcquisitionBlacklist = new(StringComparer.Ordinal)
+    {
+        // 用户 2026-09-29：赌狗不得好死。
+        "THE_GAMBIT",
+        // 用户 2026-10-02：梦魇。内核**能**模拟它——--nightmare-probe 显示选择走
+        // CardChoiceSupport，NightmarePower 落地，下回合真的多 3 张复制；缺 OnPlay
+        // 镜像只让 PredictionCoverage 记一个 compensated 风险，不是空操作。
+        // 问题在锦标赛的终局目标（剩余敌人/HP/回合）不评价"延迟复制"这个 setup turn，
+        // 实机 12 场 0 次出牌。修搜索目标的成本远高于收益，按用户"太难就压死"的授权，
+        // 获取阶段直接 -100；等终局目标能评价 setup 再撤。
+        "NIGHTMARE",
+        // 用户 2026-10-02：应急按钮。本地卡面是"获得 X 格挡；接下来 N 回合无法从卡牌获得格挡"。
+        // 内核确实应用了 NoBlockPower（CardEffectSpecRegistry.cs:85 Owner<NoBlockPower>("Turns")），
+        // 所以不是模拟缺口；但锦标赛目标只看本回合剩余敌人/HP，不评价这条跨回合的格挡封锁。
+        // 实机日志里 PANIC_BUTTON 被打了 22 次，多次是在不需要防御的回合先拿快照格挡，
+        // 随后 Boss 输出时无法再叠甲。按"内核不会打"处理，获取阶段压死。
+        "PANIC_BUTTON",
+    };
+
+    private const double AcquisitionBlacklistTotal = -100;
+
+    // Starter composition is retained as a diagnostic, not a removal-price floor.
     private static bool IsPlainStarter(CardModel card)
         => card.Rarity == CardRarity.Basic && !card.IsUpgraded
            && (card.Tags.Contains(CardTag.Strike) || card.Tags.Contains(CardTag.Defend))
            && card.Enchantment is null && card.GetEnchantedReplayCount() <= 0;
-    // Draws per turn a hand represents, used to price the dilution a new card
-    // imposes on the cards already in the deck.
-    private const double HandSize = 5;
+    internal readonly record struct Valuation(double Total, string Reason)
+    {
+        internal double RepeatablePerFight { get; init; }
+        // Owner upgrade preference; never a fabricated deck-potential gain.
+        internal int UpgradePriority { get; init; }
+    }
 
-    internal readonly record struct Valuation(double Total, string Reason);
+    internal static IOrderedEnumerable<(CardModel Card, Valuation Value)> RankUpgrades(
+        IEnumerable<(CardModel Card, Valuation Value)> upgrades)
+    {
+        var all=upgrades.ToArray();
+        if(all.Length>0 && !ConstructionDecision.AwaitingValues)
+            Log.Info($"CoopBots upgrade candidates: bot={all[0].Card.Owner.NetId} all=["
+                +string.Join(';',all.Select(e=>$"{e.Card.Id.Entry}+{e.Card.CurrentUpgradeLevel}:priority={e.Value.UpgradePriority}:value={e.Value.Total:F2}:reason={e.Value.Reason}"))+"]");
+        return all.OrderByDescending(e=>e.Value.UpgradePriority)
+            .ThenByDescending(e=>e.Value.Total).ThenBy(e=>e.Card.Id.Entry,StringComparer.Ordinal);
+    }
+
+    internal static IReadOnlyList<CardModel> EligibleUpgrades(IEnumerable<CardModel> cards)
+    {
+        var all=cards.Where(c=>c.IsUpgradable).ToArray();
+        var allowed=all.Where(c=>!BotBrain.IsForbiddenUpgrade(c)).ToArray();
+        return allowed.Length>0?allowed:all;
+    }
 
     /// <summary>
     /// Whether a removal is refused because the card is the deck's last copy of
@@ -94,33 +127,10 @@ internal static class BuildValue
 
     internal sealed record DeckCard(CardModel Card, int Upgrades) { }
 
-    // A card whose cost the deck cannot pay, refusing it outright. Only Star has a
-    // structured cost field (`star_cost`, and the X variant), so it is the only
-    // resource this can be decided for today; the others would need the same kind
-    // of baked consumer table their producer side already has.
-    //
-    // "No producer yet, but one may still turn up" is deliberately NOT softened
-    // here. That is the continuous half of the design — how likely the enabler is
-    // still findable, how much of the card depends on it, how thin the deck's
-    // production is — and it belongs with parameters that can be validated
-    // against the community anchor rather than guessed at.
-    private static readonly BakedResources.Resource? StarResource =
-        BakedResources.All.FirstOrDefault(resource => resource.Name == "star");
-
-    private static Valuation? UnplayableForMissingResource(CardModel card, IReadOnlyList<CardModel> deck)
-    {
-        // An empty deck is a probe, not a draft: everything looks unpayable there.
-        if (deck.Count == 0 || StarResource is null || !SpendsStars(card)) return null;
-        return deck.Any(existing => StarResource.Producers.Contains(existing.Id.Entry, StringComparer.Ordinal))
-            ? null
-            : new Valuation(0, "unplayable:no-star");
-    }
-
-    private static bool SpendsStars(CardModel card)
-    {
-        try { return card.HasStarCostX || card.CanonicalStarCost > 0; }
-        catch { return false; }
-    }
+    private static Valuation? UnplayableForMissingResource(CardModel card, IReadOnlyList<CardModel> deck, Player player)
+        => ResourceStartup.Missing(card, deck, player) is { } resource
+            ? new Valuation(-ResourceStartup.Penalty, "unplayable:no-" + resource + ",missing-startup:" + resource)
+            : null;
 
     /// <summary>
     /// What this card is worth to this deck right now: its own output, weighted
@@ -153,6 +163,11 @@ internal static class BuildValue
         DeckStructure.Summary summary)
     {
         var facts = CardProfile.Of(card);
+        if (card is MegaCrit.Sts2.Core.Models.Cards.GrandFinale)
+        {
+            var candidateDeck = deck.Any(c => ReferenceEquals(c, card)) ? deck : deck.Append(card).ToArray();
+            facts = facts with { Damage = facts.Damage * GrandFinaleAvailability.Estimate(candidateDeck, StableEnergy(player)) };
+        }
         // A curse or status is never a card the deck wants: it occupies a draw
         // without contributing. This has to come first, because the cost and
         // rarity terms below would otherwise make one look roughly neutral.
@@ -164,7 +179,7 @@ internal static class BuildValue
         // their printed numbers regardless, so a Regent whose producers had been
         // stolen still picked it up, and so did a cross-class bot that can make no
         // Stars at all. Both are the same fact, so they get the same refusal.
-        if (UnplayableForMissingResource(card, deck) is { } unpayable) return unpayable;
+        if (UnplayableForMissingResource(card, deck, player) is { } unpayable) return unpayable;
         // Membership is instance identity, not id count: a new reward card is a
         // different instance from any copy already held, and an upgraded instance
         // can fill a different role. Only the actual candidate may be treated as
@@ -309,55 +324,9 @@ internal static class BuildValue
 
     /// <summary>Value of the whole deck as it stands.</summary>
     internal static double Deck(IReadOnlyList<CardModel> deck, Player player)
-    {
-        var summary = DeckStructure.Build(deck, StableEnergy(player));
-        var total = 0.0;
-        foreach (var card in deck) total += MarginalCore(card, player, deck, summary).Total;
-        return total;
-    }
+        => DeckStrength.Evaluate(deck, player).Total;
 
-    // The Elo-first policy: the community all-runs Elo baseline leads, and the
-    // legacy heuristic survives only as a bounded, clearly logged correction.
-    // These constants are tunable policy, not calibrated victory probabilities.
-    private const double EloPerPoint = 10.0;
-    private const double RulesPivot = 20.0;
-    private const double RulesScale = 0.25;
-    // A card the deck itself has a use for is not an average-play question, so a
-    // structural fit is priced against a lower break-even: it reaches the same
-    // ceiling from a lower legacy score, and the ceiling itself never moves.
-    //
-    // This used to be a steeper *slope* on the same pivot (0.5 against 0.25).
-    // Read on a live A10 four-player log (2026-09-19), a fitted card's legacy
-    // total clusters below RulesPivot, so a steeper slope did not lift it toward
-    // the ceiling - it doubled its penalty. Concretely the Silent bot scored
-    // BLUR at -7.8 and skipped it (rules -15.88 against -7.94 on the flat scale),
-    // while the community's four-player winners run Blur. The pivot is the lever
-    // this comment always described; the slope was the wrong knob.
-    private const double FitPivot = 10.0;
-    private const double RulesMin = -20.0;
-    private const double RulesMax = 8.0;
-    // THE POPULATION ELO MAY OPINE, NOT VETO FOREVER. The Elo term is unbounded below while
-    // every term that can answer it is capped (rules <= RulesMax, development <= 2), so a card
-    // the community rated below ~1460 could never be taken however well it fitted the deck.
-    //
-    // Measured on the 2026-09-25/26 live A5 rounds, that is precisely the damage those runs
-    // were missing: FIGHT_ME was skipped at rules=+8.00 (its own ceiling) with eloBase=-14.20,
-    // and SETUP_STRIKE five times at rules=+7.22 with eloBase=-12.56 — both `damage,
-    // scaling-supported:strength` cards the model itself flagged as fitting the route — while
-    // the party needed ~15 turns to kill a 972-hp four-player act-1 boss and survived six to
-    // ten. What got taken instead was TAUNT / SHRUG_IT_OFF / COLOSSUS.
-    //
-    // The bound is RulesMax rather than a new number: Elo may not veto by more than the largest
-    // structural credit the model can award, so a strong structural case always has a way to
-    // win, and a mediocre one still does not (below the break-even it fails anyway).
-    private const double EloVetoCap = -RulesMax;
-
-    // Tokens the legacy heuristic only ever emits when the deck has a
-    // demonstrable use for the card: a functional gap it fills, a mechanism whose
-    // trigger is already present, a route the deck is already on, or a teammate's
-    // plan. Everything else in the legacy total ("generically decent") stays on
-    // the generic scale, which is why the whole apparatus used to be
-    // indistinguishable from filler once it was clamped into one scalar.
+    // Structural traits are diagnostics and the imputation input for unseen effects.
     private static readonly string[] FitTokens =
     {
         "needs-block", "needs-damage", "needs-aoe", "needs-draw", "needs-energy",
@@ -367,381 +336,190 @@ internal static class BuildValue
 
     private static bool HasDeckFit(string reason) =>
         FitTokens.Any(token => reason.Contains(token, StringComparison.Ordinal));
-    // A small early-deck bonus, NOT a target to fill. The previous +8 at deck size 12
-    // carried cards with a negative community baseline over the skip line — measured live
-    // 2026-09-22: HAND_TRICK (elo-base -8.00, rules +0.22) scored +0.2 and was taken, and
-    // act 1 took 19/20 rewards before act 3 skipped 13/20. The bonus stays bounded and
-    // small enough that a below-skip card cannot ride it alone; deciding to add a card must
-    // still come from the card's own Elo/rules/affinity.
-    private const double DevelopmentDeckTarget = 22.0;
-    private const double DevelopmentPerCard = 0.25;
-    private const double DevelopmentMax = 2.0;
+    internal readonly record struct AddBreakdown(double Total, string Reason, double Coverage,
+        bool DeckFit, bool UsedFallback, bool GuardRefusal, bool Contextual = true, double RepeatablePerFight = 0);
 
-    // A compiled table with a finite SKIP row is the only state in which the
-    // Elo-first branch may run. The empty placeholder keeps the exact legacy
-    // behavior instead of inventing an Elo.
-    private static bool HasBakedBaseline =>
-        BakedCardElo.CardCount > 0
-        && BakedCardElo.SkipElo > double.NegativeInfinity
-        && BakedCardElo.SkipElo < double.PositiveInfinity;
-
-    /// <summary>
-    /// Numeric terms behind one Elo-first addition, for logging and tests. The
-    /// legacy value is the old heuristic total with its own affinity removed;
-    /// its bounded contribution is <see cref="Rules"/>. A guard refusal or a
-    /// missing-Elo fallback sets <see cref="UsedFallback"/> so the exact reason
-    /// is not folded into the numeric line.
-    /// </summary>
-    internal readonly record struct AddBreakdown(
-        double Elo,
-        double SkipElo,
-        double EloBase,
-        double Rules,
-        bool DeckFit,
-        double Development,
-        double Affinity,
-        double Multiplayer,
-        double LegacyTotal,
-        double LegacyAffinity,
-        string LegacyReason,
-        double Total,
-        bool UsedFallback,
-        bool GuardRefusal,
-        CounterfactualDraft.Result? HandExperiment = null,
-        double ContextualPrior = 0,
-        bool Contextual = false);
-
-    private readonly record struct LegacyAdd(double Total, double Affinity, string Reason);
-
-    /// <summary>
-    /// Adding a card under the community-Elo policy. The hard eligibility guards
-    /// still run first and unchanged; a card the snapshot does not cover falls
-    /// back to the legacy heuristic with the reason labeled, never to an invented
-    /// zero. The result is a real quantity compared against skipping.
-    ///
-    /// Scope note: only <c>Add</c> (reward picks and the card shop) takes this
-    /// path. Marginal, Deck, Remove and UpgradeDelta keep their algorithms.
-    /// </summary>
+    /// <summary>Addition is the common deck strength difference, subject to acquisition vetoes.</summary>
     internal static Valuation Add(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
     {
         var terms = AddDetailed(card, player, deckOverride);
-        if (terms.GuardRefusal) return new Valuation(terms.Total, terms.LegacyReason);
-        if (terms.Contextual)
-        {
-            var hand = terms.HandExperiment;
-            return new Valuation(terms.Total, hand is null
-                ? $"hand-model:unsupported,structural-fallback,{FormatTerms(terms)}"
-                : $"hand-delta:{hand.Delta:F2},mean:{hand.MeanBefore:F1}->{hand.MeanAfter:F1},"
-                    + $"tail:{hand.TailBefore:F1}->{hand.TailAfter:F1},dead-hand:{hand.DeadBefore:P0}->{hand.DeadAfter:P0},"
-                    + $"prior:{terms.ContextualPrior:F2},legacy:{terms.LegacyReason}");
-        }
-        if (terms.UsedFallback)
-            return new Valuation(terms.Total, "elo-missing:legacy-fallback," + terms.LegacyReason);
-        return new Valuation(terms.Total, FormatTerms(terms));
+        return new Valuation(terms.Total, terms.Reason) { RepeatablePerFight = terms.RepeatablePerFight };
     }
 
-    private static string FormatTerms(AddBreakdown terms) =>
-        $"elo:{terms.Elo:F1},skip:{terms.SkipElo:F1},elo-base:{terms.EloBase:F2},"
-        + $"rules:{terms.Rules:F2},fit:{terms.DeckFit},development:{terms.Development:F2},affinity:{terms.Affinity:F2},"
-        + $"multiplayer:{terms.Multiplayer:F2},legacy:{terms.LegacyReason}";
+    /// <summary>
+    /// Greedy marginal picks for a screen that lets you take ANY NUMBER of an offer
+    /// (OROBAS / Sea Glass), plus the per-candidate scores in the order they were judged.
+    ///
+    /// Each pick is scored against the deck as it would stand WITH the picks already made —
+    /// through the same <c>deckOverride</c> seam <see cref="Add"/> already exposes — so the
+    /// fifth good card is not priced as if it were the first. Stops at the first candidate
+    /// that no longer pays for the draws it costs, which is the "skipping is a real
+    /// candidate" rule the reward screen uses; a mandatory floor (<paramref name="min"/>)
+    /// is still honoured when nothing scores.
+    ///
+    /// Two callers share this so the price and the behaviour cannot disagree: the selector
+    /// that answers the grid, and the relic valuation that prices the option which opens it.
+    /// </summary>
+    internal static (List<CardModel> Picked, List<(CardModel Card, double Value, string Reason)> Ranked)
+        GreedyPick(Player player, IReadOnlyList<CardModel> offer, int min, int max)
+    {
+        using var evaluation = DeckStrength.BeginEvaluation();
+        var working = player.Deck.Cards.ToList();
+        var ranked = new List<(CardModel Card, double Value, string Reason)>();
+        var picked = new List<CardModel>();
+        var remaining = offer.Distinct()
+            .OrderBy(card => card.Id.Entry, StringComparer.Ordinal).ToList();
+        while (picked.Count < max && remaining.Count > 0)
+        {
+            var best = remaining
+                .Select(card => (Card: card, Value: AddForDecision(card, player, working)))
+                .OrderByDescending(entry => entry.Value.Total)
+                .ThenBy(entry => entry.Card.Id.Entry, StringComparer.Ordinal)
+                .First();
+            ranked.Add((best.Card, best.Value.Total, best.Value.Reason));
+            if (ConstructionDecision.AwaitingValues) break;
+            if (best.Value.Total <= 0 && picked.Count >= min) break;
+            picked.Add(best.Card);
+            remaining.Remove(best.Card);
+            working.Add(best.Card);
+        }
+        return (picked, ranked);
+    }
 
     internal static AddBreakdown AddDetailed(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
     {
         var deck = deckOverride ?? player.Deck.Cards.ToList();
-        // Curse, status and unplayable-resource refuse before any Elo lookup: no
-        // community prior can make a curse takeable or pay a resource the deck
-        // cannot produce. These are the same guards the marginal valuation uses,
-        // and they stay byte-for-byte in effect on this path.
+        // Acquisition policy remains outside the strength model. These are
+        // owner-requested/legality vetoes, not a second scoring algorithm.
+        if (AcquisitionBlacklist.Contains(card.Id.Entry))
+            return Guard($"blacklist:{card.Id.Entry.ToLowerInvariant()}", AcquisitionBlacklistTotal);
         var facts = CardProfile.Of(card);
         if (facts.Unplayable || card.Type is CardType.Curse or CardType.Status)
             return Guard(card.Type == CardType.Curse ? "curse" : "status", -1000);
-        if (UnplayableForMissingResource(card, deck) is { } unpayable)
-            return Guard(unpayable.Reason, 0);
-        // Card eligibility precedes the lookup: a card without a finite Elo is
-        // not rejected and is not assigned a zero, it is evaluated the old way
-        // and the reason says so.
-        if (!HasBakedBaseline || !BakedCardElo.TryGet(card.Id.Entry, out var candidateElo)
-            || !CommunityDraft.IsFinite(candidateElo))
-            return ContextualAddition(Fallback(card, player, deck, "legacy", null), card, player, deck);
-        var legacy = AddLegacy(card, player, deck);
-        var oldWithoutAffinity = legacy.Total - legacy.Affinity;
-        // Capped: for these cards the breakdown does NOT satisfy elo-base == (elo - skip) / 10.
-        // The raw Elo is still printed as `elo:` in the log, and this field is the veto AFTER
-        // the bound. Kept as its own term rather than folded elsewhere so the log stays checkable.
-        var eloBase = Math.Max(EloVetoCap, (candidateElo - BakedCardElo.SkipElo) / EloPerPoint);
-        var deckFit = HasDeckFit(legacy.Reason);
-        var rules = Math.Clamp((oldWithoutAffinity - (deckFit ? FitPivot : RulesPivot)) * RulesScale,
-            RulesMin, RulesMax);
-        var development = Math.Clamp((DevelopmentDeckTarget - deck.Count) * DevelopmentPerCard, 0, DevelopmentMax);
-        var affinity = CommunityDraft.Affinity(card, deck);
-        // The four-player correction rides beside the single-player Elo: the baked table is
-        // the same one, only its four-player bias is added. Zero on a one-seat run by
-        // construction (MultiplayerPickLift.MinimumSeats), so no single-player number moves.
-        var multiplayer = MultiplayerPickLift.Term(card.Id.Entry, player.RunState?.Players.Count ?? 1);
-        var total = eloBase + rules + development + affinity + multiplayer;
-        return ContextualAddition(new AddBreakdown(candidateElo, BakedCardElo.SkipElo, eloBase, rules, deckFit, development, affinity,
-            multiplayer, legacy.Total, legacy.Affinity, legacy.Reason, total, UsedFallback: false, GuardRefusal: false),
-            card, player, deck);
-    }
-
-    // Multiplayer construction is decided by the change to affordable hands.
-    // Population Elo and route rules remain a small prior for effects the hand
-    // model cannot describe; they no longer have an unbounded veto or bonus.
-    private static AddBreakdown ContextualAddition(AddBreakdown terms, CardModel card,
-        Player player, IReadOnlyList<CardModel> deck)
-    {
-        if ((player.RunState?.Players.Count ?? 1) < 2 || deck.Count < 8 || terms.GuardRefusal) return terms;
-        var boss = BossPreparation.Change(player, deck, card, null, StableEnergy(player));
-        terms = terms with { LegacyReason = terms.LegacyReason + (BossPreparation.AgainstWither(player)
-            ? $",boss:AEONGLASS,cleanup:{boss:+0.00;-0.00;0.00}" : "") };
-        var cycle = SustainedDeckValue.Compare(deck, card, null, StableEnergy(player), !BossPreparation.AgainstWither(player));
-        var experiment = cycle ?? CounterfactualDraft.Compare(deck, card, StableEnergy(player));
-        // Unsupported is absence of evidence, not a zero-valued experiment.
-        // Preserve the complete structural/community policy instead of squeezing
-        // every unmodeled engine into the same [-6,6] residual prior.
-        if (experiment is null) return terms with { Total = terms.Total + boss, Contextual = true, ContextualPrior = terms.Total };
-        var prior = Math.Clamp(terms.Total / 10, -2, 2);
-        return terms with { Total = CounterfactualDraft.DeckPoints(experiment, deck.Count + 1) + prior + boss,
-            HandExperiment = experiment, ContextualPrior = prior, Contextual = true,
-            LegacyReason = terms.LegacyReason + (cycle is null ? "" : $",six-turn:{cycle.Delta:F2}") };
+        var added = deck.Any(c => ReferenceEquals(c, card)) ? (CardModel)card.MutableClone() : card;
+        var change = DeckStrength.Change(deck, deck.Append(added).ToArray(), player);
+        var traits = Marginal(card, player, deck);
+        var known = BakedCardElo.TryGet(card.Id.Entry, out var elo) && CommunityDraft.IsFinite(elo);
+        return new AddBreakdown(change.Total, change.Reason + $",card-coverage:{BuildCoverage.Of(card):F2},traits:" + traits.Reason,
+            BuildCoverage.Of(card), HasDeckFit(traits.Reason), UsedFallback: !known,
+            GuardRefusal: false, RepeatablePerFight: change.Total);
     }
 
     private static AddBreakdown Guard(string reason, double total) =>
-        new(0, 0, 0, 0, false, 0, 0, 0, total, 0, reason, total, UsedFallback: true, GuardRefusal: true);
+        new(total, reason, 0, false, UsedFallback: true, GuardRefusal: true, Contextual: false);
 
-    // The fallback path keeps the legacy total exactly and labels the reason.
-    private static AddBreakdown Fallback(CardModel card, Player player, IReadOnlyList<CardModel> deck,
-        string reason, double? forcedTotal)
+    // Legacy composition diagnostics; neither changes the strength potential.
+    private const double MaturityStart = 0.6;
+    private const int HardSize = 32;
+    private const int HardSizeRamp = 8;
+    private static double BasicShare(IReadOnlyList<CardModel> deck)
+        => deck.Count == 0 ? 0 : deck.Count(IsPlainStarter) / (double)deck.Count;
+
+    /// <summary>Legacy diagnostic: 0 for plain starters, 1 for no plain starter.</summary>
+    internal static double Maturity(Player player, IReadOnlyList<CardModel> deck)
+        => Math.Clamp(1 - BasicShare(deck), 0, 1);
+
+    /// <summary>Legacy composition diagnostic; not a pricing input.</summary>
+    internal static double MaturityGate(Player player, IReadOnlyList<CardModel> deck)
     {
-        if (forcedTotal is { } total)
-            return new AddBreakdown(0, 0, 0, 0, false, 0, 0, 0, total, 0, reason, total, UsedFallback: true, GuardRefusal: false);
-        var legacy = AddLegacy(card, player, deck);
-        return new AddBreakdown(0, 0, 0, 0, false, 0, 0, 0, legacy.Total, legacy.Affinity, legacy.Reason,
-            legacy.Total, UsedFallback: true, GuardRefusal: false);
+        var formed = Math.Clamp((Maturity(player, deck) - MaturityStart) / (1 - MaturityStart), 0, 1);
+        var oversized = Math.Clamp((deck.Count - HardSize) / (double)HardSizeRamp, 0, 1);
+        return Math.Max(formed, oversized);
     }
 
     /// <summary>
-    /// The pre-Elo heuristic, kept verbatim as a bounded auxiliary and the
-    /// missing-Elo fallback. Its own affinity is returned separately so the
-    /// Elo-first path can subtract it and never double count.
-    /// </summary>
-    private static LegacyAdd AddLegacy(CardModel card, Player player, IReadOnlyList<CardModel> deck)
-    {
-        var summary = DeckStructure.Build(deck, StableEnergy(player));
-        var own = MarginalCore(card, player, deck, summary);
-        var average = deck.Count == 0
-            ? 0
-            : deck.Average(existing => MarginalCore(existing, player, deck, summary).Total);
-        var dilution = Math.Max(0, average - own.Total) * (HandSize / (deck.Count + 1.0));
-        // Past its forming stage a deck is not improved by "another fine card": it
-        // is improved by thinning and by the cards the plan actually asked for.
-        // This pressure is what lets a reward be skipped — or a shop card be
-        // declined — because it is not closer to the target build, rather than
-        // because it is weak.
-        //
-        // The relief is continuous and bounded. Two independent signals feed it:
-        // a real functional deficit (the deck cannot block, clear groups, draw or
-        // pay), and a mechanism-supported fit whose trigger is already present.
-        // Community affinity no longer touches the size penalty at all — it was
-        // only ever a small additive prior, and letting a +2 lift switch off a
-        // 30-point dilution cost was a discontinuity no data supports. A generic
-        // mined route likewise grants no relief on its own.
-        var facts = CardProfile.Of(card);
-        var candidateInDeck = deck.Any(existing => ReferenceEquals(existing, card));
-        var mechanism = DeckMechanisms.Assess(card, facts, summary, candidateInDeck);
-        var relief = Math.Clamp(
-            FunctionalDeficit(card, facts, summary) + (mechanism.Support == DeckMechanisms.Support.Supported ? MechanismRelief : 0),
-            0, 1);
-        var bloat = RunDepth.BloatFactor(player);
-        var factor = bloat - relief * (bloat - OnPlanRelief);
-        var pressure = Oversize(deck.Count) * factor;
-        var total = own.Total - dilution - pressure;
-        var reason = own.Reason
-            + (dilution > 0.5 ? $",dilutes:{dilution:F1}" : "")
-            + (pressure > 0.5 ? $",size:{pressure:F1}" : "")
-            + (relief > 0.01 ? $",relief:{relief:F2}" : "");
-        // The legacy affinity is scored separately so the Elo-first branch can
-        // remove it before adding the directional community affinity, which
-        // would otherwise count the same relation twice.
-        var legacyAffinity = Affinity(card, deck);
-        if (legacyAffinity > 0.01)
-        {
-            total += legacyAffinity;
-            reason += ",drafted-together";
-        }
-        return new LegacyAdd(total, legacyAffinity > 0.01 ? legacyAffinity : 0, reason);
-    }
-
-    // How much of a role the deck is genuinely short of, as a 0..1 share. This
-    // is the functional half of the size relief, and it deliberately excludes
-    // Powers: "fewer than three Powers" is not a deficit in every build.
-    private static double FunctionalDeficit(CardModel card, CardProfile.Facts facts, DeckStructure.Summary deck)
-    {
-        var deficit = 0.0;
-        if (facts.Roles.Contains("block"))
-        {
-            var desired = Math.Max(3, deck.Attacks / 2);
-            if (deck.Blocks < desired)
-                deficit = Math.Max(deficit, (desired - deck.Blocks) / (double)desired);
-        }
-        // OUR policy: the same quality gaps priced in MarginalCore must also reach
-        // the addition/skip decision. Counts alone call four weak Defends sufficient
-        // and let Prepared satisfy the draw gap. Keep relief bounded and candidate-specific.
-        deficit = Math.Max(deficit, DeckStructure.DefenceQualityGain(facts, deck) / 4.0);
-        if (CardProfile.NetDraw(card, facts) > 0 && deck.NetDraw < 2)
-            deficit = Math.Max(deficit, (2 - deck.NetDraw) / 2.0);
-        if (facts.Roles.Contains("damage") && deck.Attacks < 5)
-            deficit = Math.Max(deficit, (5 - deck.Attacks) / 5.0);
-        if (facts.Roles.Contains("aoe") && deck.Aoes == 0) deficit = Math.Max(deficit, 1.0);
-        if (facts.Roles.Contains("draw") && deck.Draws == 0) deficit = Math.Max(deficit, 1.0);
-        if (facts.Roles.Contains("energy") && deck.Energies == 0) deficit = Math.Max(deficit, 1.0);
-        return Math.Clamp(deficit, 0, 1);
-    }
-
-    // Deck size at which "one more card" stops being free. Calibrated against
-    // real reward screens: at 19 cards the best candidate was worth ~18-20 and
-    // should have been skipped, while a 20-card screen offering a 46-point card
-    // and a 21-card screen offering a 28-point route card are real upgrades that
-    // must still be taken.
-    private const int FormingSize = 15;
-    private const double SizePressure = 5.0;
-    // The pressure saturates. Unbounded, it reached 40-45 points in the 23-24
-    // card decks the reviewed run actually had, which is more than any card's own
-    // contribution: the log shows Blood Wall declined at -37.8 from a deck whose
-    // own reason line said `needs-block`. Past a point, "this deck is big" is the
-    // dilution term's job, and dilution is already charged separately.
-    private const double SizePressureCap = 30;
-    // A card the plan actually asked for justifies most of the extra size.
-    private const double OnPlanRelief = 0.4;
-    private static double Oversize(int size)
-        => Math.Min(SizePressureCap, Math.Max(0, size - FormingSize) * SizePressure);
-
-    /// <summary>
-    /// Removing a card is worth the value it was contributing, plus the draws it
-    /// gives back to the rest of the deck.
+    /// Signed difference between the deck without this instance and the current deck.
     /// </summary>
     internal static Valuation Remove(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
     {
         var deck = deckOverride ?? player.Deck.Cards.ToList();
-        var stableEnergy = StableEnergy(player);
-        var own = MarginalCore(card, player, deck, DeckStructure.Build(deck, stableEnergy)).Total;
-        var others = deck.Where(existing => !ReferenceEquals(existing, card)).ToList();
-        var otherSummary = DeckStructure.Build(others, stableEnergy);
-        var average = others.Count == 0
-            ? 0
-            : others.Average(existing => MarginalCore(existing, player, others, otherSummary).Total);
-        var relief = Math.Max(0, average - own) * (HandSize / Math.Max(1, deck.Count));
-        // A starter card sits below the curve by construction — the deck a run is
-        // measured against does not contain one — so thinning it is worth a
-        // baseline even when the rest of the deck is no better. Without this a
-        // uniformly poor deck looks like it has nothing worth removing.
-        //
-        // AN ENCHANTED BASIC IS NOT STARTER JUNK. The baseline is a FLOOR applied with
-        // `max`, so it used to erase the enchantment entirely: a Glam/Spiral Strike and a
-        // plain Strike both scored `StarterRemovalBaseline * StarterPressure` and the
-        // tie-break picked whichever came first in the deck — community report 2026-09-23,
-        // the bot deleted the Replay Strike while plain Strikes still sat in the deck.
-        // Any enchantment disqualifies the card (Sharp/Corrupted raise the numbers too);
-        // intrinsic replay (BaseReplayCount) gets the same treatment even without one.
-        var starter = IsPlainStarter(card) && deck.Count >= 12
-            ? StarterRemovalBaseline * StarterPressure(deck)
-            : double.NegativeInfinity;
-        // The last copy of a role the deck depends on is not a preference that a
-        // score can outweigh: removing it would leave the deck unable to block,
-        // clear groups, draw or pay. That is a refusal, not a penalty, because a
-        // deduction large enough to win the comparison can always be found.
-        if (RemovalProtection(card, deck) is { Protected: true } guard) return new Valuation(0, "protected:" + guard.Role);
-        var boss = BossPreparation.Change(player, deck, null, card, stableEnergy);
-        if ((player.RunState?.Players.Count ?? 1) >= 2 && card.Type is not (CardType.Curse or CardType.Status)
-            && (SustainedDeckValue.Compare(deck, null, card, stableEnergy, !BossPreparation.AgainstWither(player))
-                ?? CounterfactualDraft.Remove(deck, card, stableEnergy)) is { } experiment)
-            return new Valuation(CounterfactualDraft.DeckPoints(experiment, deck.Count) + boss,
-                $"hand-removal:{experiment.Delta:F2},mean:{experiment.MeanBefore:F1}->{experiment.MeanAfter:F1},"
-                + $"tail:{experiment.TailBefore:F1}->{experiment.TailAfter:F1},boss-cleanup:{boss:F2}");
-        // Removing the card takes away what it was contributing, so the sign
-        // flips: a card dragging the deck down (negative marginal) is worth the
-        // most to remove, and a strong card costs the deck by leaving.
-        var total = Math.Max(-own + relief, starter);
-        var reason = own < 0 ? "diluting card" : "low contribution";
-        if (starter > double.NegativeInfinity && starter >= -own + relief) reason += ",starter";
-        if (relief > 0.5) reason += $",frees:{relief:F1}";
-        return new Valuation(total + boss, reason + $",boss-cleanup:{boss:F2}");
+        var index = deck.ToList().FindIndex(c => ReferenceEquals(c, card));
+        if (index < 0) return new Valuation(0, "not in deck");
+        var after = deck.Where((_, i) => i != index).ToArray();
+        return DeckStrength.Change(deck, after, player);
     }
 
     /// <summary>
-    /// Upgrading a card: the real difference the upgrade makes, priced by what
-    /// it changes. A cost drop can turn a dead turn live, but how much it is
-    /// worth depends on whether the deck is actually short of energy: the same
-    /// reduction is worth more in a heavy, unaccelerated curve than in one that
-    /// already has energy to spare. The floor stays positive so a genuine
-    /// improvement is never downgraded just because the deck is well rounded.
+    /// The decision-layer value of an edit: the deck-strength difference plus the
+    /// bounded team value the card carries for the party (a shared debuff the
+    /// party is missing, or a payoff that reads the party's Vulnerable supply).
+    ///
+    /// Kept outside <see cref="Add"/>/<see cref="Remove"/>/<see cref="UpgradeDelta"/>
+    /// on purpose: those three must stay exact transforms of the deck model
+    /// (UnifiedDeckStrengthScenarios pins `add == deck difference` and
+    /// `add + remove == 0`). Every decision path that picks, prices, upgrades or
+    /// strips a card goes through these wrappers, so one card is worth the same
+    /// on a reward, in a shop, at a camp and on an event screen.
     /// </summary>
-    internal static Valuation UpgradeDelta(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
+    internal static Valuation AddForDecision(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
     {
-        if (CardProfile.DiffUpgrade(card) is not { } diff) return new Valuation(0, "not upgradable");
         var deck = deckOverride ?? player.Deck.Cards.ToList();
-        var pressure = DeckStructure.EnergyPressure(DeckStructure.Build(deck, StableEnergy(player)));
-        var debuff = diff.VulnerableDelta + diff.WeakDelta + diff.StrengthDownDelta;
-        var nextEnergy = diff.After.NextTurnEnergy - diff.Before.NextTurnEnergy;
-        var nextDraw = diff.After.NextTurnDraw - diff.Before.NextTurnDraw;
-        var lifecycleDelta = DraftCardEffects.Value(diff.After.Effects, deck, StableEnergy(player))
-            - DraftCardEffects.Value(diff.Before.Effects, deck, StableEnergy(player));
-        var value = diff.CostDelta * CostUpgradeValuePerPoint(pressure)
-            + Math.Min(DamageCap, Math.Max(0, diff.DamageDelta) * DamageWeight)
-            + Math.Max(0, diff.BlockDelta) * BlockWeight
-            + Math.Max(0, diff.DrawDelta) * DrawWeight
-            + Math.Max(0, diff.EnergyDelta) * EnergyWeight
-            + .7 * (nextEnergy * EnergyWeight + nextDraw * DrawWeight)
-            + Math.Max(0, debuff) * DebuffWeight
-            + Math.Max(0, diff.ScalingDelta) * ScalingWeight
-            + Math.Max(0, diff.PoisonDelta + diff.DoomDelta) * DoomWeight
-            // A lower HP cost is a real gain; a higher one is a real cost.
-            + HpLossUpgradeValue(diff.HpLossDelta) + lifecycleDelta;
-        // Roles and keywords are separate axes: a role the upgrade unlocks is a
-        // new capability, while a keyword change is a rules transition.
-        foreach (var role in diff.AddedRoles)
-            if (role != "exhaust") value += 6;
-        foreach (var role in diff.LostRoles)
-            if (role != "exhaust") value -= 6;
-        value += ExhaustTransitionValue(diff);
-        var innateValue = diff.AddedKeywords.Contains(CardKeyword.Innate)
-            ? OpeningUpgradeValue.Innate(card, player, deck, StableEnergy(player)) : null;
-        foreach (var keyword in diff.AddedKeywords)
-            value += keyword == CardKeyword.Innate && innateValue is { } timing
-                ? timing : KeywordTransitionValue(keyword, added: true);
-        foreach (var keyword in diff.RemovedKeywords) value += KeywordTransitionValue(keyword, added: false);
-
-        var reasons = new List<string>();
-        if (BossPreparation.Cleans(card) && CardProfile.Upgraded(card, StableEnergy(player)) is { } upgraded)
-        {
-            var cleanup = BossPreparation.Change(player, deck, upgraded.Card, card, StableEnergy(player));
-            value += cleanup;
-            if (Math.Abs(cleanup) > .01) reasons.Add($"boss-cleanup:{cleanup:+0.00;-0.00}");
-        }
-        if (innateValue is { } openingValue) reasons.Add($"opening-engine+{openingValue:F1}");
-        if (diff.CostDelta != 0) reasons.Add(diff.CostDelta > 0 ? $"cost-{diff.CostDelta}" : $"cost+{-diff.CostDelta}");
-        if (lifecycleDelta != 0) reasons.Add($"lifecycle{lifecycleDelta:+0.0;-0.0}");
-        if (diff.DamageDelta > 0) reasons.Add($"damage+{diff.DamageDelta:F0}");
-        if (diff.BlockDelta > 0) reasons.Add($"block+{diff.BlockDelta:F0}");
-        if (diff.DrawDelta > 0) reasons.Add($"draw+{diff.DrawDelta:F0}");
-        if (nextEnergy != 0) reasons.Add($"next-energy{nextEnergy:+0;-0}");
-        if (nextDraw != 0) reasons.Add($"next-draw{nextDraw:+0;-0}");
-        if (diff.ScalingDelta > 0) reasons.Add($"scaling+{diff.ScalingDelta:F0}");
-        if (diff.HpLossDelta < 0) reasons.Add($"hp-cost{-diff.HpLossDelta:F0}");
-        if (diff.HpLossDelta > 0) reasons.Add($"hp-cost+{diff.HpLossDelta:F0}");
-        if (debuff > 0) reasons.Add($"debuff+{debuff:F0}");
-        var unlocked = diff.AddedRoles.Where(role => role != "exhaust").ToList();
-        if (unlocked.Count > 0) reasons.Add("unlocks:" + string.Join('/', unlocked));
-        if (diff.LostRoles.Contains("exhaust") || diff.RemovedKeywords.Contains(CardKeyword.Exhaust)) reasons.Add("exhaust-");
-        if (diff.AddedRoles.Contains("exhaust") || diff.AddedKeywords.Contains(CardKeyword.Exhaust)) reasons.Add("exhaust+");
-        return new Valuation(value, reasons.Count == 0 ? "marginal" : string.Join(',', reasons));
+        var value = Add(card, player, deck);
+        var team = AppliedTeamBonus(card, player, deck, value.Total);
+        return team <= 0.01
+            ? value
+            : value with { Total = value.Total + team, Reason = value.Reason + $",team:+{team:F2}" };
     }
 
-    // Cost is the strongest lever an upgrade has, but it is contextual. A tight,
-    // slow curve turns a one-cost reduction into a whole extra play; an
-    // energy-rich deck cashes the same reduction for less. Bounded to 8..16 so
-    // it stays in the same band the flat 14 always was.
-    private static double CostUpgradeValuePerPoint(double pressure) => 8.0 + Math.Clamp(pressure, 0, 1) * 8.0;
+    internal static Valuation RemoveForDecision(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
+    {
+        var deck = deckOverride ?? player.Deck.Cards.ToList();
+        var value = Remove(card, player, deckOverride);
+        if (value.Reason == "not in deck") return value;
+        // Losing a card loses exactly what acquiring it would have gained: the
+        // same card, the same before-deck, the same bound. That keeps the two
+        // decision edits inverse as well, so a removal plan cannot strip the
+        // party's only applier for less than a reward would have paid for it.
+        var before = deck.Where(c => !ReferenceEquals(c, card)).ToArray();
+        var team = AppliedTeamBonus(card, player, before, Add(card, player, before).Total);
+        return team <= 0.01
+            ? value
+            : value with { Total = value.Total - team, Reason = value.Reason + $",team:-{team:F2}" };
+    }
+
+    internal static Valuation UpgradeForDecision(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
+    {
+        var value = UpgradeDelta(card, player, deckOverride);
+        if (CardProfile.Upgraded(card, StableEnergy(player)) is not { } upgraded) return value;
+        var deck = deckOverride ?? player.Deck.Cards.ToList();
+        var before = CoopBots.TeamCoordinator.TeamBonus(card, player, deck, null);
+        var after = CoopBots.TeamCoordinator.TeamBonus(upgraded.Card, player, deck, null);
+        var team = after - before;
+        var combined=Math.Abs(team) <= 0.01
+            ? value
+            : value with { Total = value.Total + team, Reason = value.Reason + $",team:{team:+0.00;-0.00;0.00}" };
+        return UpgradePreference.Apply(card,player,deck,combined);
+    }
+
+    // Decision-layer bound: a team term may add at most this share of the edit's
+    // own deck-strength gain, so it can break a near-tie but never carry an edit
+    // the deck itself does not want. Same share MarginalCore uses, measured
+    // against the number the reward and shop paths actually rank by.
+    private static double AppliedTeamBonus(CardModel card, Player player, IReadOnlyList<CardModel> deckBefore, double ownTotal)
+    {
+        var team = CoopBots.TeamCoordinator.TeamBonus(card, player, deckBefore, null);
+        if (team <= 0) return 0;
+        return Math.Min(team, Math.Max(0, ownTotal) * TeamBonusBuildShare);
+    }
+
+    /// <summary>Replace the native instance with an isolated native upgraded clone.</summary>
+    internal static Valuation UpgradeDelta(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
+    {
+        if (CardProfile.Upgraded(card, StableEnergy(player)) is not { } upgraded)
+            return new Valuation(0, "not upgradable");
+        var deck = deckOverride ?? player.Deck.Cards.ToList();
+        // Detached candidates occur on event previews; include that card in both
+        // alternatives, so upgrade can never accidentally be valued as an addition.
+        if (!deck.Any(c => ReferenceEquals(c, card))) deck = deck.Append(card).ToArray();
+        var after = deck.Select(c => ReferenceEquals(c, card) ? upgraded.Card : c).ToArray();
+        var change = DeckStrength.Change(deck, after, player);
+        var diff = CardProfile.DiffUpgrade(card);
+        var details = diff is null ? "" : $",cost-{diff.CostDelta},damage+{diff.DamageDelta:F0},block+{diff.BlockDelta:F0},"
+            + $"draw+{diff.DrawDelta:F0},energy+{diff.EnergyDelta:F0},"
+            + $"next-energy+{diff.After.NextTurnEnergy-diff.Before.NextTurnEnergy:F0},next-draw+{diff.After.NextTurnDraw-diff.Before.NextTurnDraw:F0},"
+            + $"team-next-draw+{diff.After.NextTurnDrawForTeam-diff.Before.NextTurnDrawForTeam:F0}";
+        return change with { Reason = change.Reason + details };
+    }
 
     /// <summary>
     /// Signed value of an HP-cost change. Negative delta (the upgrade lowers the
@@ -749,29 +527,6 @@ internal static class BuildValue
     /// with the sign flipped because the upgrade removes the cost.
     /// </summary>
     internal static double HpLossUpgradeValue(double hpLossDelta) => -hpLossDelta * 2.5;
-
-    /// <summary>
-    /// Whether the card is worth replaying at all. Only a card with an actual
-    /// effect pays for losing Exhaust; a junk card that loses it is unchanged.
-    /// </summary>
-    private static bool HasReplayValue(CardProfile.Facts facts)
-        => facts.Damage > 0 || facts.Block > 0 || facts.Draw > 0 || facts.Energy > 0
-           || facts.NextTurnEnergy > 0 || facts.NextTurnDraw > 0
-           || facts.Vulnerable > 0 || facts.Weak > 0 || facts.StrengthDown > 0
-           || facts.Scaling > 0 || facts.Poison > 0 || facts.Doom > 0;
-
-    // Exhaust is contextual: losing it makes a card with an effect reusable, but
-    // it says nothing about a card that had no effect to repeat. Gaining it is
-    // the mirror. The old blanket +7 reward for losing Exhaust on any card was
-    // right for Hologram and wrong for junk.
-    private static double ExhaustTransitionValue(CardProfile.UpgradeDiff diff)
-    {
-        var gained = diff.AddedRoles.Contains("exhaust") || diff.AddedKeywords.Contains(CardKeyword.Exhaust);
-        var lost = diff.LostRoles.Contains("exhaust") || diff.RemovedKeywords.Contains(CardKeyword.Exhaust);
-        if (!gained && !lost) return 0;
-        if (!HasReplayValue(diff.Before)) return 0;
-        return lost ? 7.0 : -7.0;
-    }
 
     /// <summary>
     /// Value of adding or removing one keyword. Beneficial and harmful keyword
@@ -798,21 +553,109 @@ internal static class BuildValue
     /// returned even when all of them are worse than skipping, which is how the
     /// lower difficulties still pick something.
     /// </summary>
-    internal static int BestReward(Player player, IReadOnlyList<CardModel> candidates, bool allowSkip = true)
+    /// <param name="takeBar">
+    /// What "doing nothing" scores. Zero everywhere except the early floors, where
+    /// <see cref="RewardTakeBar"/> lowers it. A card must BEAT this bar, so moving
+    /// it can only change WHETHER the screen is taken — never which candidate wins,
+    /// because every candidate still beats the others by the same margin.
+    /// </param>
+    internal static int BestReward(Player player, IReadOnlyList<CardModel> candidates,
+        bool allowSkip = true, double takeBar = 0.0)
     {
+        using var evaluation = DeckStrength.BeginEvaluation();
         var best = -1;
-        var bestValue = 0.0;
+        var bestValue = takeBar;
         var bestAny = candidates.Count > 0 ? 0 : -1;
         var bestAnyValue = double.NegativeInfinity;
         for (var index = 0; index < candidates.Count; index++)
         {
             double value;
-            try { value = Add(candidates[index], player).Total; }
+            try { value = AddForDecision(candidates[index], player).Total; }
             catch { continue; }
             if (value > bestValue) { bestValue = value; best = index; }
             if (value > bestAnyValue) { bestAnyValue = value; bestAny = index; }
         }
         return allowSkip ? best : bestAny;
+    }
+
+    /// <summary>
+    /// The widest the reward screen's bar gets, at the first floor of act 1. The
+    /// bar then decays to zero over <see cref="EarlyTakeRampFloors"/>.
+    /// </summary>
+    internal const double EarlyTakeBonus = 4.5;
+
+    /// <summary>Act-1 floors over which <see cref="EarlyTakeBonus"/> decays to zero.</summary>
+    internal const int EarlyTakeRampFloors = 16;
+
+    /// <summary>
+    /// What "skip this reward" scores, while the deck is still being formed.
+    ///
+    /// WHY THIS EXISTS. The community prior is a whole-run statistic: a BakedCardElo
+    /// value is measured over the decks that carried the card to the end, so it prices
+    /// end-game worth and says nothing about what a deck wants on floor 3. Measured
+    /// live 2026-10-02 (A10, four seats): the screen's bar was a flat 0, so the draft
+    /// skipped 9 of its act-1 rewards and every final deck was still 36% basic
+    /// Strike/Defend, producing 5.4-13.0 damage per card at act 2 — the two lowest
+    /// seats were the two whose drafts had been starved. The clearest case is a menu
+    /// whose best candidate scored -2.8 (Dagger Throw, whose measured `combat` was the
+    /// highest in that menu at +7.2) and was rejected outright.
+    ///
+    /// WHY THE BAR AND NOT THE PRIOR'S WEIGHT. De-weighting the community prior early
+    /// was the first proposal and it fails the same live menu: with the prior scaled
+    /// down, Sucker Punch (-12.0 prior, +13.5 measured combat) overtakes Backflip
+    /// (+2.0 prior) on the run's FIRST reward. That re-orders a menu. Moving this bar
+    /// cannot: it is the same constant in every candidate's comparison, so it decides
+    /// only whether the screen is taken at all.
+    /// </summary>
+    internal static double RewardTakeBar(int act, int floor)
+    {
+        if (act > 0) return 0;
+        var remaining = EarlyTakeRampFloors - Math.Clamp(floor, 0, EarlyTakeRampFloors);
+        return -EarlyTakeBonus * remaining / EarlyTakeRampFloors;
+    }
+
+    // The reward screen also gets a size bar once the deck is already large. Without
+    // it, every marginal positive card kept winning the size-0 comparison: live
+    // 2026-10-04 Bot 2 drafted 22 -> 31 cards and its top damage card was still a
+    // starting Strike.
+    //
+    // The count is now EffectiveDeckSize, shared with DeckStrength's total-side penalty
+    // so the two cannot disagree. That was the 2026-10-06 FAN_OF_KNIVES refusal: raw
+    // count 25 against an onset of 24, while 11 of the deck's 28 cards were
+    // self-removing -- an EFFECTIVE 22.5, below the new onset, so the card is no longer
+    // blocked for reasons that were really about cards that leave the deck after one play.
+
+    /// <summary>
+    /// Extra "skip" value while the seat holds Pael's Wing. The Wing turns a
+    /// skipped card reward into a sacrifice toward a free relic, so a marginal
+    /// card is worth less than the sacrifice; owner request 2026-10-04. Like
+    /// the act-1 bar it only moves WHETHER a reward is taken, never which card
+    /// wins the menu.
+    /// </summary>
+    internal const double PaelsWingTakeBarBonus = 4.5;
+
+    /// <summary>
+    /// <see cref="RewardTakeBar(int, int)"/> from live run state, plus the bounded
+    /// large-deck bar. "No opinion" when the state cannot be read, so a fixture
+    /// without a map keeps the historical bar of 0 rather than silently taking
+    /// every slightly-negative card.
+    /// </summary>
+    internal static double RewardTakeBar(Player player)
+    {
+        try
+        {
+            var act = player.RunState.CurrentActIndex;
+            var floor = player.RunState.ActFloor;
+            var sizeBar = act >= 1
+                ? EffectiveDeckSize.TakeBarPressure(player.Deck.Cards, player)
+                : 0;
+            // Pael's Wing: a skipped reward becomes a sacrifice instead of nothing.
+            var wingBar = player.Relics.Any(relic => relic is MegaCrit.Sts2.Core.Models.Relics.PaelsWing)
+                ? PaelsWingTakeBarBonus
+                : 0;
+            return RewardTakeBar(act, floor) + sizeBar + wingBar;
+        }
+        catch { return 0; }
     }
 
     // How much of the deck already fills the roles this card would fill, from
@@ -957,9 +800,11 @@ internal static class BuildValue
     // static low score.
     /// <summary>
     /// Structured form of the removal refusal: the role this card is the last
-    /// copy of, or an unprotected guard when it can be removed. This is the
-    /// query callers outside the shop must use; the shop keeps calling
-    /// <see cref="Remove"/>, whose protected zero semantics are unchanged.
+    /// copy of, or an unprotected guard when it can be removed. Every removal
+    /// path (shop purchase, event, rest-site Cook, Neow) narrows candidates
+    /// through <see cref="RemovalPlan.PriorityPool"/>, which uses this guard;
+    /// the shop's final valuation keeps its protected-zero semantics in
+    /// <see cref="CoopBots.BotShopPlanner.RemovalValue"/>.
     /// </summary>
     internal static RemovalGuard RemovalProtection(CardModel card, IReadOnlyList<CardModel> deck)
     {

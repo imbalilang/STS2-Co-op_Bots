@@ -17,6 +17,28 @@ internal static class RoutePlanner
     private const double Discount = 0.92;
 
     /// <summary>
+    /// Owner policy 2026-10-04: a chosen route may not be more than 60% plain
+    /// monster rooms. If every reachable route is above that cap, choose the
+    /// route with the fewest monster rooms (route value breaks ties).
+    /// </summary>
+    internal const double MaxMonsterShare = 0.60;
+    private const double MonsterNodePenalty = 1_000_000;
+
+    /// <summary>
+    /// Share of the chosen route that is a plain fight. The start node is the
+    /// room already visited and the final node is the boss, so only the rooms
+    /// actually being chosen between them count.
+    /// </summary>
+    internal static double MonsterShare(IReadOnlyList<MapPoint> path)
+    {
+        if (path.Count <= 2) return 0;
+        var upcoming = path.Skip(1).Take(path.Count - 2).ToArray();
+        return upcoming.Length == 0
+            ? 0
+            : upcoming.Count(point => point.PointType == MapPointType.Monster) / (double)upcoming.Length;
+    }
+
+    /// <summary>
     /// Can the GAME actually build this room in this act? Route selection may only
     /// choose rooms the game can construct.
     /// </summary>
@@ -136,7 +158,18 @@ internal static class RoutePlanner
         // rides on machinery that already exists instead of a second filter in the search.
         Func<MapPointType, int, int, double> Value = (type, hpTier, goldTier) =>
             ValueForNode(type, hpTier, goldTier, act, deckSize, maturity, shoppers, teamRoute, relics);
-        return Plan(start, boss, Value, Tier(health, .4, .75), GoldTier(human.Gold), ranking: ranking);
+        // THE HEALTHY BOUNDARY IS 70%, NOT 75%. The DP only carries a tier, and
+        // RepresentativeHealth(2) = .9 is what the elite's 70% survival gate is
+        // actually evaluated against. With the boundary at .75 a party anywhere in
+        // 70-75% was represented as 60% and refused the elite outright — the live
+        // 2026-09-30 run read `chose UnknownMapCoord (1,13) (minHp=73 %)`, where the
+        // elite had already been priced -45 by the bucket before anything else ran.
+        // Moving the boundary to the gate makes "70% is healthy enough" true for the
+        // tier ladder and for the elite rule at the same time.
+        var eliteDone = state.MapPointHistory.FirstOrDefault()?.Any(point => point.MapPointType == MapPointType.Elite
+            || point.HasRoomOfType(MegaCrit.Sts2.Core.Rooms.RoomType.Elite)) == true;
+        return Plan(start, boss, Value, HealthTier(health), GoldTier(human.Gold), ranking: ranking,
+            requireElite: act == 0 && !eliteDone, enforceMonsterShare: true);
     }
 
     /// <summary>
@@ -169,10 +202,68 @@ internal static class RoutePlanner
     private const double RichShopValue = 450;
 
     internal static int Tier(double ratio, double low, double high) => ratio < low ? 0 : ratio < high ? 1 : 2;
+
+    /// <summary>
+    /// The health ladder the route DP carries: hurt below <see cref="HurtHealthRatio"/>,
+    /// healthy at or above <see cref="HealthyHealthRatio"/>. Named (rather than literals in
+    /// <see cref="Plan(RunState, Player, bool, List{ValueTuple{MapPoint, double}}?)"/>) so the
+    /// elite rule and the tier ladder cannot disagree about where "healthy" starts — they did,
+    /// and it cost every elite in the 70-75% band.
+    /// </summary>
+    internal const double HurtHealthRatio = .40;
+
+    /// <inheritdoc cref="HurtHealthRatio"/>
+    internal const double HealthyHealthRatio = .70;
+
+    internal static int HealthTier(double ratio) => Tier(ratio, HurtHealthRatio, HealthyHealthRatio);
+
+    /// <summary>
+    /// The health ladder's per-room cost. Extracted from the DP's local <c>Advance</c> so the rule
+    /// is directly testable: it was a one-line `health - 2` buried in a local function, and because
+    /// the ladder only has three tiers that silently meant "a party entering an elite at ≥70% is
+    /// modelled at &lt;40% for the REST of the act" — the tier-0 band taxes every following room
+    /// (monster -25, unknown -12). No healthy route ever took an elite (live 2026-09-30).
+    /// </summary>
+    internal static int HealthAfterRoom(MapPointType type, int healthTier) => type switch
+    {
+        MapPointType.Monster => Math.Max(0, healthTier - 1),
+        // MORE than a fight, but not a whole extra tier from the top.
+        MapPointType.Elite => healthTier >= 2 ? healthTier - 1 : Math.Max(0, healthTier - 2),
+        MapPointType.RestSite => Math.Min(2, healthTier + 2),
+        _ => healthTier,
+    };
+
     internal static int GoldTier(int gold) =>
         gold < 100 ? 0 : gold < 250 ? 1 : gold < RichGoldThreshold ? 2 : 3;
     internal static double RepresentativeHealth(int tier) => tier switch { 0 => .3, 1 => .6, _ => .9 };
     internal static double RepresentativeGold(int tier) => tier switch { 0 => 50, 1 => 180, 2 => 350, _ => 600 };
+
+    // Shared with the DP and the monster-share re-score. Gold is separate from
+    // health: a rich purse must survive the rooms between it and the shop, and a
+    // normal room reward does not always create the >=500 rich tier.
+    private static (int Health, int Gold) Advance(MapPointType type, int health, int gold) =>
+        (HealthAfterRoom(type, health), type switch
+        {
+            MapPointType.Shop => Math.Max(0, gold - 1),
+            MapPointType.RestSite => gold,
+            _ => gold >= 3 ? 3 : Math.Min(2, gold + 1),
+        });
+
+    private static double ScorePath(IReadOnlyList<MapPoint> path, Func<MapPointType, int, int, double> value,
+        int healthTier, int goldTier)
+    {
+        var total = 0.0;
+        var weight = 1.0;
+        var hp = healthTier;
+        var gold = goldTier;
+        foreach (var point in path)
+        {
+            total += weight * value(point.PointType, hp, gold);
+            (hp, gold) = Advance(point.PointType, hp, gold);
+            weight *= Discount;
+        }
+        return total;
+    }
 
     /// <summary>
     /// State-propagating DP: the value of a room depends on the resources the
@@ -180,30 +271,31 @@ internal static class RoutePlanner
     /// </summary>
     internal static Route? Plan(MapPoint start, MapPoint boss, Func<MapPointType, int, int, double> value,
         int healthTier, int goldTier, int maxNodes = 512,
-        List<(MapPoint Child, double Total)>? ranking = null)
+        List<(MapPoint Child, double Total)>? ranking = null, bool requireElite = false,
+        bool enforceMonsterShare = false)
     {
-        var memo = new Dictionary<(MapPoint, int, int), (double Score, MapPoint? Next)>();
-        var visiting = new HashSet<(MapPoint, int, int)>();
+        // Native route voting imposes no elite quota. Owner 2026-10-04 asks
+        // that our first-act route must include an elite. Carry the
+        // obligation through merges in the DAG; a finite bonus can be outscored.
+        // If a save is already beyond every elite, still allow reaching the boss.
+        var reachable = new HashSet<(MapPoint, bool)>();
+        bool CanFinishWithElite(MapPoint point, bool seen)
+        {
+            seen |= point.PointType == MapPointType.Elite;
+            if (!reachable.Add((point, seen))) return false;
+            if (ReferenceEquals(point, boss)) return seen;
+            return point.Children.Any(child => CanFinishWithElite(child, seen));
+        }
+        requireElite &= CanFinishWithElite(start, false);
+        var memo = new Dictionary<(MapPoint, int, int, bool), (double Score, MapPoint? Next)>();
+        var visiting = new HashSet<(MapPoint, int, int, bool)>();
         var expanded = 0;
 
-        static (int Health, int Gold) Advance(MapPointType type, int health, int gold) => type switch
+        (double Score, MapPoint? Next) Best(MapPoint point, int health, int gold, bool needsElite)
         {
-            // The >=500 "rich" tier has to SURVIVE the rooms between it and the shop, or
-            // the shop cannot be found in time. It must not be CREATED by a fight either:
-            // tier 2 is 250-499, and a normal room reward does not always cross 500.
-            MapPointType.Monster => (Math.Max(0, health - 1), gold >= 3 ? 3 : Math.Min(2, gold + 1)),
-            MapPointType.Elite => (Math.Max(0, health - 2), gold >= 3 ? 3 : Math.Min(2, gold + 1)),
-            MapPointType.RestSite => (Math.Min(2, health + 2), gold),
-            MapPointType.Shop => (health, Math.Max(0, gold - 1)),
-            MapPointType.Treasure => (health, gold >= 3 ? 3 : Math.Min(2, gold + 1)),
-            MapPointType.Unknown => (health, gold >= 3 ? 3 : Math.Min(2, gold + 1)),
-            _ => (health, gold),
-        };
-
-        (double Score, MapPoint? Next) Best(MapPoint point, int health, int gold)
-        {
-            if (ReferenceEquals(point, boss)) return (value(point.PointType, health, gold), null);
-            var key = (point, health, gold);
+            var key = (point, health, gold, needsElite);
+            needsElite &= point.PointType != MapPointType.Elite;
+            if (ReferenceEquals(point, boss)) return (needsElite ? UnreachableValue : value(point.PointType, health, gold), null);
             if (memo.TryGetValue(key, out var cached)) return cached;
             if (!visiting.Add(key)) return (double.NegativeInfinity, null); // cycle guard
             var (nextHealth, nextGold) = Advance(point.PointType, health, gold);
@@ -212,7 +304,7 @@ internal static class RoutePlanner
             foreach (var child in point.Children.OrderBy(c => c.coord.ToString(), StringComparer.Ordinal))
             {
                 if (expanded++ >= maxNodes) break;
-                var (childScore, _) = Best(child, nextHealth, nextGold);
+                var (childScore, _) = Best(child, nextHealth, nextGold, needsElite);
                 if (!double.IsFinite(childScore)) continue;
                 var score = Discount * childScore;
                 if (score > bestChild) { bestChild = score; bestNext = child; }
@@ -225,7 +317,7 @@ internal static class RoutePlanner
             return result;
         }
 
-        var (total, _) = Best(start, healthTier, goldTier);
+        var (total, _) = Best(start, healthTier, goldTier, requireElite);
         if (!double.IsFinite(total)) return null;
         // DIAGNOSTIC ONLY, and deliberately AFTER the decision is already made: every child's
         // reached total, in the same units the DP compared them in. Without it a vote is
@@ -238,7 +330,7 @@ internal static class RoutePlanner
             var (childHealth, childGold) = Advance(start.PointType, healthTier, goldTier);
             foreach (var child in start.Children)
             {
-                var (childScore, _) = Best(child, childHealth, childGold);
+                var (childScore, _) = Best(child, childHealth, childGold, requireElite && start.PointType != MapPointType.Elite);
                 ranking.Add((child, double.IsFinite(childScore) ? Discount * childScore : double.NegativeInfinity));
             }
         }
@@ -246,11 +338,27 @@ internal static class RoutePlanner
         var cursor = start;
         var hp = healthTier;
         var gold = goldTier;
-        while (path.Count <= maxNodes && memo.TryGetValue((cursor, hp, gold), out var step) && step.Next is not null)
+        var needsElite = requireElite;
+        while (path.Count <= maxNodes && memo.TryGetValue((cursor, hp, gold, needsElite), out var step) && step.Next is not null)
         {
+            needsElite &= cursor.PointType != MapPointType.Elite;
             (hp, gold) = Advance(cursor.PointType, hp, gold);
             cursor = step.Next;
             path.Add(cursor);
+        }
+        if (enforceMonsterShare && MonsterShare(path) > MaxMonsterShare)
+        {
+            // A per-node penalty larger than any real route value makes the
+            // alternate DP minimize monster count first; normal value breaks
+            // ties among routes with the same count. If every reachable route
+            // is still over the cap, this is exactly the "fewest monsters"
+            // fallback the owner asked for.
+            var fewestMonsters = Plan(start, boss,
+                (type, health, gold) => value(type, health, gold)
+                    - (type == MapPointType.Monster ? MonsterNodePenalty : 0),
+                healthTier, goldTier, maxNodes, ranking: null, requireElite: requireElite);
+            if (fewestMonsters is not null)
+                return new Route(fewestMonsters.Path, ScorePath(fewestMonsters.Path, value, healthTier, goldTier));
         }
         return new Route(path, total);
     }
@@ -473,9 +581,14 @@ internal static class RoutePlanner
         // Still -45 and not unreachable: a map whose only way forward is the elite must
         // stay routable, which is the same contract the shop's -60 keeps.
         if (act <= 1 && maturity < EliteReadyMaturity) return -45;
-        var byAct = act <= 0 ? 28 : act == 1 ? 14 : -8;
+        // Raised +4 (act 1/2) and +2 (healthy bonus) on 2026-09-30: the node was
+        // already the right side of the comparison (45 vs an unknown's 22), but the
+        // DP's own health propagation was eating ~50 and no healthy route ever took
+        // one. The relic/gold/card an elite pays is what the boss check needs, and a
+        // party at 70%+ can afford it — see the Advance() and Tier() notes above.
+        var byAct = act <= 0 ? 32 : act == 1 ? 18 : -8;
         var deckAdjust = (Math.Clamp(maturity, 0, 1) - 0.55) * 60;
-        var healthyBonus = health >= .85 ? 8 : 0;
+        var healthyBonus = health >= .85 ? 10 : 0;
         var teamBonus = teamRoute ? 6 : 0;
         return byAct + deckAdjust + healthyBonus + teamBonus;
     }

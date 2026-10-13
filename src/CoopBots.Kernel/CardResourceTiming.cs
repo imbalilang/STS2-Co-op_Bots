@@ -24,7 +24,7 @@ public static class CardResourceTiming
             : type is "Glow" or "GuidingStar" or "Plot" or "Relax" ? Amount("Cards") : 0;
         var immediateEnergy = type == "DoubleEnergy" ? Math.Max(0, energy)
             : type is "Adrenaline" or "Bloodletting" or "Offering" or "Turbo" or "Wisp"
-                or "BelieveInYou" or "EnergySurge" or "Constellation" ? Amount("Energy") : 0;
+                or "BelieveInYou" or "EnergySurge" or "Constellation" or "Tactician" ? Amount("Energy") : 0;
         return new(immediateEnergy, futureEnergy, futureDraw, type == "Plot");
     }
 }

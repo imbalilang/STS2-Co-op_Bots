@@ -18,11 +18,32 @@ using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Unlocks;
 
+// R2 2026-10-09: legacy pure-Bot cached potion fixtures now establish real
+// scoped AutoPilot authority; original assertions/budgets and production unchanged.
+// Two production mutations re-prove the established cached-potion preemption
+// mechanism in full-belt and sparse WIPE contexts (two witnesses, no new policy).
+// work/architecture-refactor-20261009/r2/legacy-potion-contract-proof-v1/proof.json
+// --poison-potion-only: each baseline build/run 0/0, mutant 0/1, exact restore 0/0.
+// System.Exception: Cached card script must yield to an explicit full-value potion opportunity.
+// System.Exception: Production planner must drink the last sparse-slot bottle before its losing cached cards.
 internal static class PoisonPotionScenarios
 {
     private static readonly BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic;
     private static void Check(bool ok, string message) { if (!ok) throw new Exception(message); }
     private static bool Format(ref string __result) { __result = ""; return false; }
+    // This manually supplied cached line represents Bot-owned planning. A real
+    // human seat must use the mixed continuation contract instead. Restore the
+    // caller's authority so this fixture cannot change following scenarios.
+    private static object? DecideAsBot(KernelCombatPlanner planner, Player owner, object?[] args)
+    {
+        var wasAutopiloted = AutoPilot.IsAutopiloted(owner.NetId);
+        AutoPilot.Set(owner.NetId, true);
+        try
+        {
+            return typeof(KernelCombatPlanner).GetMethod("TryTournamentDecision", Flags)!.Invoke(planner, args);
+        }
+        finally { AutoPilot.Set(owner.NetId, wasAutopiloted); }
+    }
     private static (Player P, CombatState C, Creature E) Board(int attack = 0, int enemies = 1, int energy = 3)
     {
         var p = Player.CreateForNewRun<Deprived>(UnlockState.all, 1);
@@ -157,7 +178,11 @@ internal static class PoisonPotionScenarios
             Check(KernelPotionOpportunity.Choose(root, [p], [p])?.Action.Potion == q,
                 $"{q.Id.Entry} must spend for three affordable useful amplifications.");
             p.PlayerCombatState!.LoseEnergy(1);
-            Check(KernelPotionOpportunity.Choose(KernelSession.Capture(c), [p], [p]) is null,
+            // V23 also allows the permanent Strength filler to spend on two
+            // attacks. The temporary bottle must still require all three.
+            var reduced = KernelSession.Capture(c);
+            Check(!KernelPotionOpportunity.Measure(reduced, q, p.Creature, [p]).FullValue
+                && KernelPotionOpportunity.Choose(reduced, [p], [p])?.Action.Potion != q,
                 $"{q.Id.Entry} must share the energy budget across its three amplifications.");
         }
         Console.WriteLine("PASS: temporary potion value requires three payable useful plays.");
@@ -203,7 +228,7 @@ internal static class PoisonPotionScenarios
         typeof(KernelCombatPlanner).GetField("tournamentScript", Flags)!.SetValue(planner, new[] { action, action });
         typeof(KernelCombatPlanner).GetField("tournamentScriptCombat", Flags)!.SetValue(planner, blockCombat);
         var args = new object?[] { blockCombat, new[] { blockOwner }, true, "full-belt-cached-line", null };
-        var result = typeof(KernelCombatPlanner).GetMethod("TryTournamentDecision", Flags)!.Invoke(planner, args);
+        var result = DecideAsBot(planner, blockOwner, args);
         Check(result!.ToString() == "Decided" && planner.ConfirmedPotion?.Potion is BlockPotion && args[4] is null,
             "Cached card script must yield to an explicit full-value potion opportunity.");
         Console.WriteLine("PASS: production planner spends a full-value potion before its cached card script.");
@@ -233,7 +258,7 @@ internal static class PoisonPotionScenarios
             typeof(KernelCombatPlanner).GetField("tournamentScriptCombat", Flags)!.SetValue(sparsePlanner, sparseCombat);
             typeof(KernelCombatPlanner).GetField("tournamentScriptRecord", Flags)!.SetValue(sparsePlanner, wipe);
             var sparseArgs = new object?[] { sparseCombat, new[] { sparse }, true, "sparse-last-chance", null };
-            typeof(KernelCombatPlanner).GetMethod("TryTournamentDecision", Flags)!.Invoke(sparsePlanner, sparseArgs);
+            DecideAsBot(sparsePlanner, sparse, sparseArgs);
             Check(sparsePlanner.ConfirmedPotion?.Potion == last && sparseArgs[4] is null,
                 "Production planner must drink the last sparse-slot bottle before its losing cached cards.");
         }

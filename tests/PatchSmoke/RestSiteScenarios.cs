@@ -62,25 +62,26 @@ internal static class RestSiteScenarios
         junkBot.ResetCombatState();
         junkBot.Creature.SetMaxHpInternal(80); junkBot.Creature.SetCurrentHpInternal(80);
         for (var i = 0; i < 12; i++) junkBot.Deck.AddInternal(run.CreateCard<StrikeIronclad>(junkBot));
+        // Real dilution requires better cards to draw after the basics leave.
+        for (var i = 0; i < 4; i++) junkBot.Deck.AddInternal(run.CreateCard<PommelStrike>(junkBot));
         var junkSmith = new SmithRestSiteOption(junkBot);
         var junkCook = new CookRestSiteOption(junkBot);
         if (Pick(junkBot, junkSmith, junkCook) != 1)
             throw new Exception("Cook must be chosen to strip two basic cards (and gain max HP).");
         Console.WriteLine("PASS: rest-site Cook removes junk and gains max HP instead of costing it.");
 
-        // "The worst cards are good" needs a deck of distinct quality cards.
-        // Twelve copies of one card is a duplicate-heavy deck, where the surplus
-        // copies genuinely are the worst cards and thinning them is right.
+        // A lean functional deck must keep its sole block/draw, energy and AoE.
+        // The old "all good" list contained basic Bash and redundant Anger /
+        // Iron Wave; a universal refusal to thin that list is not an invariant
+        // under the owner's new outcome/removal policy (2026-09-30).
         var goodBot = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 3, 1));
         goodBot.ResetCombatState();
+        goodBot.MaxEnergy = 3; // Deprived's mock default is 100, not a playable starting budget.
         goodBot.Creature.SetMaxHpInternal(80); goodBot.Creature.SetCurrentHpInternal(80);
         foreach (var make in new Func<MegaCrit.Sts2.Core.Models.CardModel>[]
                  {
-                     () => run.CreateCard<Bash>(goodBot), () => run.CreateCard<Anger>(goodBot),
-                     () => run.CreateCard<TwinStrike>(goodBot), () => run.CreateCard<PommelStrike>(goodBot),
-                     () => run.CreateCard<IronWave>(goodBot), () => run.CreateCard<ShrugItOff>(goodBot),
-                     () => run.CreateCard<Inflame>(goodBot), () => run.CreateCard<Uppercut>(goodBot),
-                     () => run.CreateCard<BodySlam>(goodBot), () => run.CreateCard<Breakthrough>(goodBot),
+                     () => run.CreateCard<ShrugItOff>(goodBot),
+                     () => run.CreateCard<Adrenaline>(goodBot), () => run.CreateCard<Whirlwind>(goodBot),
                  })
             goodBot.Deck.AddInternal(make());
         var goodSmith = new SmithRestSiteOption(goodBot);
@@ -116,8 +117,13 @@ internal static class RestSiteScenarios
         foreach (var medic in new[] { healer, helper })
         {
             medic.ResetCombatState();
+            medic.MaxEnergy = 3; // Deprived defaults to 100, unlike an ordinary run.
             medic.Creature.SetMaxHpInternal(80); medic.Creature.SetCurrentHpInternal(80);
+            for (var i = 0; i < 5; i++) medic.Deck.AddInternal(healRun.CreateCard<StrikeIronclad>(medic));
+            for (var i = 0; i < 4; i++) medic.Deck.AddInternal(healRun.CreateCard<DefendIronclad>(medic));
             medic.Deck.AddInternal(healRun.CreateCard<Inflame>(medic));
+            // Only the modest attack upgrades remain, isolating the aid tradeoff.
+            foreach (var c in medic.Deck.Cards.Where(c => c is not StrikeIronclad)) { c.UpgradeInternal(); c.FinalizeUpgradeInternal(); }
         }
         patient.ResetCombatState();
         patient.Creature.SetMaxHpInternal(73);
@@ -131,6 +137,7 @@ internal static class RestSiteScenarios
             throw new Exception("Without a tent a healthy bot must smith, not top up a teammate (45/73).");
         reset.Invoke(null, null);
         patient.Creature.SetCurrentHpInternal(15);
+        Console.WriteLine("PROBE aid upgrades " + string.Join(";", healer.Deck.Cards.Select(c => c.Id.Entry + "=" + BuildValue.UpgradeDelta(c, healer).Total.ToString("F2"))) + " horizon=" + BotRestSitePatch.InvestmentHorizon(healer));
         if (Pick(healer, new SmithRestSiteOption(healer), new MendRestSiteOption(healer)) != 1)
             throw new Exception("A teammate near death must still be mended without a tent (15/73).");
         Console.WriteLine("PASS: rest-site MEND competes with upgrades by the patient's useful recovery.");
@@ -163,6 +170,13 @@ internal static class RestSiteScenarios
 
         // A useful upgrade remains a competitor on both sides of the removed
         // 55% cliff. A larger wound or a boss next can still make healing win.
+        // R8: interference changes a basic Strike upgrade's value. Use a real
+        // cost-reduction upgrade for this cliff fixture, then restore the aid deck.
+        // R2 restored 55% forced HEAL -> exit 1; restore -> exit 0:
+        // System.Exception: A useful upgrade must remain competitive below the old 55% camp threshold.
+        // work/robustness-optimization/r2-camp-result.json
+        var campAttack = healRun.CreateCard<Corruption>(healer);
+        healer.Deck.AddInternal(campAttack);
         healRun.CurrentActIndex = 2;
         reset.Invoke(null, null);
         healer.Creature.SetCurrentHpInternal(49);
@@ -172,6 +186,7 @@ internal static class RestSiteScenarios
         if (Pick(healer, new SmithRestSiteOption(healer), new HealRestSiteOption(healer)) != 0)
             throw new Exception("A useful upgrade must remain competitive below the old 55% camp threshold.");
         healer.Creature.SetCurrentHpInternal(80);
+        healer.Deck.RemoveInternal(campAttack);
         Console.WriteLine("PASS: act 3 compares actual upgrades and effective healing without a 55% cliff.");
 
         // R2 2026-09-27: restore the 25% boss-camp floor -> exit 1:
@@ -214,15 +229,25 @@ internal static class RestSiteScenarios
             pillowOwner.Creature.SetMaxHpInternal(80); pillowOwner.Creature.SetCurrentHpInternal(55);
             woundedAlly.Creature.SetMaxHpInternal(77); woundedAlly.Creature.SetCurrentHpInternal(38);
             pillowOwner.AddRelicInternal(ModelDb.Relic<RegalPillow>().ToMutable());
+            for (var i = 0; i < 5; i++) pillowOwner.Deck.AddInternal(aidRun.CreateCard<StrikeSilent>(pillowOwner));
+            for (var i = 0; i < 4; i++) pillowOwner.Deck.AddInternal(aidRun.CreateCard<DefendSilent>(pillowOwner));
             pillowOwner.Deck.AddInternal(aidRun.CreateCard<Predator>(pillowOwner));
+            // FLIPPED 2026-10-02 by the owner's self-preference bias (AllyHealDiscount
+            // = 0.75 on MEND): aid 39.3 -> 29.5, self-heal 34.5, so the seat heals
+            // ITSELF. OWNER RULING on this exact example: "39 > 23 is fine" — the
+            // RegalPillow heal is a real, paid-for benefit of the HEAL option and is
+            // NOT to be written off as overflow. Do not add a no-overflow exception
+            // to the discount: the ruling is the flat 0.75.
             if (Pick(pillowOwner, new SmithRestSiteOption(pillowOwner), new HealRestSiteOption(pillowOwner),
-                    new MendRestSiteOption(pillowOwner)) != 2)
-                throw new Exception("A useful MEND to a 38/77 ally must beat self-healing 55/80 with 14 overflow.");
+                    new MendRestSiteOption(pillowOwner)) != 1)
+                throw new Exception("With the 0.75 self-preference bias, a 55/80 seat heals itself rather "
+                    + "than aiding a 38/77 ally: the aid is discounted below the seat's own heal.");
             pillowOwner.Creature.SetCurrentHpInternal(78); woundedAlly.Creature.SetCurrentHpInternal(70);
             if (Pick(pillowOwner, new SmithRestSiteOption(pillowOwner), new HealRestSiteOption(pillowOwner),
                     new MendRestSiteOption(pillowOwner)) != 0)
                 throw new Exception("When both seats are nearly full, the real upgrade must beat either heal.");
-            Console.WriteLine("PASS: useful aid above 25% HP beats overhealing; small wounds still lose to an upgrade.");
+            Console.WriteLine("PASS: the self-preference bias keeps a hurt seat's own heal ahead of an ally's "
+                + "aid; nearly-full seats still lose to an upgrade.");
         }
         finally
         {
@@ -312,15 +337,15 @@ internal static class RestSiteScenarios
         if (!enteredSecond) throw new Exception("Camp sequencing must continue to the next seat.");
         Console.WriteLine("PASS: camp choices await actual healing and do not reserve it twice.");
 
-        // MEND IS NOT OFFERED WHERE IT CANNOT RUN (strength-review §4.3). MendRestSiteOption
-        // .OnSelect for LocalContext.IsMe(owner) drives the TARGETING UI and awaits a click a
-        // handed-over seat can never make; that is the live NullReferenceException
-        // `rest-site option MEND refused for 1: Object reference not set`, three times over five
-        // A5 rounds. A driven LOCAL seat must fall back to a self-heal instead of offering it.
+        // A driven LOCAL MEND is now answered by BotMendLocalSeatPatch: the target comes from
+        // BestMendTarget and is synced with SyncLocalChoice, not from the targeting UI. The seat
+        // must therefore be offered MEND and prefer it for a dying teammate. The heal/hook body
+        // is shared with the native remote branch, so pin that side too.
         //
-        // CHECKED (R2): making MendRunnable always true turns this red, verbatim:
-        //   System.Exception: a driven LOCAL seat must not be offered MEND: its OnSelect drives
-        //   the targeting UI, which no click can answer; got index 1.
+        // CHECKED (R2): making MendRunnable false (or deleting BotMendLocalSeatPatch) turns this
+        // red, verbatim:
+        //   System.Exception: a driven LOCAL seat must now be offered MEND: its local handover
+        //   answers BestMendTarget without the targeting UI; got index 1.
         var localSeat = Player.CreateForNewRun<Deprived>(UnlockState.all,
             BotRegistry.CreateId(BotDifficulty.Pro, 4, 4));
         var localMate = Player.CreateForNewRun<Deprived>(UnlockState.all, 78UL);
@@ -334,11 +359,20 @@ internal static class RestSiteScenarios
         {
             reset.Invoke(null, null);
             if (!AutoPilot.Drives(localSeat.NetId)) AutoPilot.Set(localSeat.NetId, true);
+            if (!BotRestSitePatch.MendRunnable(localSeat))
+                throw new Exception("MEND must be runnable for a driven local seat once the local patch supplies its target.");
+            var ownerGetter = HarmonyLib.AccessTools.PropertyGetter(typeof(RestSiteOption), "Owner");
+            if ((Player?)ownerGetter.Invoke(new MendRestSiteOption(localSeat), null) != localSeat)
+                throw new Exception("BotMendLocalSeatPatch must resolve RestSiteOption.Owner.");
             var picked = Pick(localSeat, new MendRestSiteOption(localSeat), new HealRestSiteOption(localSeat));
-            if (picked != 1)
-                throw new Exception("a driven LOCAL seat must not be offered MEND: its OnSelect drives "
-                    + $"the targeting UI, which no click can answer; got index {picked}.");
-            Console.WriteLine("PASS: a driven local seat is offered HEAL, never the unanswerable MEND.");
+            if (picked != 0)
+                throw new Exception("a driven LOCAL seat must now be offered MEND: its local handover "
+                    + $"answers BestMendTarget without the targeting UI; got index {picked}.");
+            var before = localMate.Creature.CurrentHp;
+            if (!BotRestSitePatch.ApplyMend(localSeat, localMate).GetAwaiter().GetResult()
+                || localMate.Creature.CurrentHp <= before)
+                throw new Exception("the shared MEND body must heal the chosen target.");
+            Console.WriteLine("PASS: a driven local seat is offered MEND; the shared heal body restores the target.");
         }
         finally
         {

@@ -1,0 +1,256 @@
+{
+  "patches": {
+    "Engine/InCombat/Mirrors/Hooks/Death/AfterDeathMirrors.cs": {
+      "base_sha256": "63c83c60040abbedfb55775c6f2e513f60ddb9b33e1dd5fb09f112c9de25f928",
+      "target_sha256": "a961b97c22c5cd868b8717be5cc10a773f9978d4252fe6fc0ef6182d3c87b1b4",
+      "changes": [
+        {
+          "start": 1755,
+          "end": 1755,
+          "old": "",
+          "new": "\n        // Native Adaptable.AfterDeath enters TestSubject's reviving/dead move.\n        // DeathPowerSupport.Trigger owns that transition on a predicted branch;\n        // invoking the native listener would mutate the live monster instance.\n        registry.RegisterIgnored<AdaptablePower>();\n"
+        }
+      ]
+    },
+    "Engine/InCombat/Simulation/CombatPredictionSimulator.AutoPlay.cs": {
+      "base_sha256": "b4c86b8444f3e346a4fe0cff9b77627b6077bc1dd3d98791dbef5372ddb63eaf",
+      "target_sha256": "f12a49fa1c1796e246b3f7d2a871145f10655c132644469fd855f8b3ff435c67",
+      "changes": [
+        {
+          "start": 1345,
+          "end": 1345,
+          "old": "",
+          "new": "\n        // Direct hook-driven autoplay (Hellraiser while drawing, Sly while\n        // discarding) may be the FIRST card transaction. Its nested selector\n        // needs the same death-set/scope identity as an ordinary manual play;\n        // otherwise a captured CardSelection frame has nothing to restore.\n        using IDisposable? cardScope = (State.CombatState as ICombatPredictionCardExecutionSink)\n            ?.BeginCardExecutionScope();\n"
+        }
+      ]
+    },
+    "Prediction/MonsterMoveEffects.cs": {
+      "base_sha256": "705bda4fa1006a334c728362e703aca398bbee32d8cb94f11fd4b51b1fdafb6d",
+      "target_sha256": "338e0384fb68f1df27816bbbb1e868b3771bfdfd33c1332c4cc729495efaffa2",
+      "changes": [
+        {
+          "start": 41946,
+          "end": 41946,
+          "old": "",
+          "new": "                {\n"
+        },
+        {
+          "start": 42036,
+          "end": 42089,
+          "old": "                foreach (var partyTarget in targets)\n",
+          "new": ""
+        },
+        {
+          "start": 42201,
+          "end": 42201,
+          "old": "",
+          "new": "                }\n"
+        },
+        {
+          "start": 42329,
+          "end": 42329,
+          "old": "",
+          "new": "                {\n"
+        },
+        {
+          "start": 42442,
+          "end": 42495,
+          "old": "                foreach (var partyTarget in targets)\n",
+          "new": ""
+        },
+        {
+          "start": 42586,
+          "end": 42586,
+          "old": "",
+          "new": "                }\n"
+        },
+        {
+          "start": 52615,
+          "end": 52615,
+          "old": "",
+          "new": "                // Native Liquify creates/inserts each card immediately, and completes\n                // draw3/discard3 for one seat before visiting the next. Shuffle RNG is\n                // shared by the party: grouping all draw piles first silently changes it.\n"
+        },
+        {
+          "start": 52668,
+          "end": 52964,
+          "old": "                    simulator.AddToCombat<FranticEscape>(partyTarget, PileType.Draw, 3, null, CardPilePosition.Random);\n                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<FranticEscape>(partyTarget, PileType.Discard, 3, null, CardPilePosition.Random);\n",
+          "new": "                    for (var index = 0; index < 6; index++)\n                        simulator.AddToCombat<FranticEscape>(partyTarget,\n                            index < 3 ? PileType.Draw : PileType.Discard, 1, null, CardPilePosition.Random);\n"
+        }
+      ]
+    },
+    "Search/SimulatedCombatState.ActionChoices.cs": {
+      "base_sha256": "cf0367bd81373bba4d2a7759f145ce78f74d66123b02bcf466b5ad46ff13e735",
+      "target_sha256": "10859e1ede875f75e4f9497ac62d1218e8955ac67a052b1a7c8e32fe0468c937",
+      "changes": [
+        {
+          "start": 678,
+          "end": 678,
+          "old": "",
+          "new": "    internal bool HasActiveActionChoices => _activeActionChoices is not null;\n"
+        }
+      ]
+    },
+    "Search/SimulatedCombatState.cs": {
+      "base_sha256": "86fc2a2ebf587b54bd7296727933ff2e24723216ff9b68388084ba73c17e3f70",
+      "target_sha256": "c39479b5e739b591fda43eac95062559d1a1a3f45e223b49ec4125274cfd59ac",
+      "changes": [
+        {
+          "start": 124086,
+          "end": 124086,
+          "old": "",
+          "new": "{\n"
+        },
+        {
+          "start": 124090,
+          "end": 124090,
+          "old": "",
+          "new": "    // Native CombatState.CloneCard keeps CardModel.AfterCloned resets.\n        // The shared helper restores these two fields for snapshot/COW cloning;\n        // gameplay ICardScope cloning must not inherit run-level deck identity.\n        // Live AR10B7M2X001 native differential, 2026-10-09; capture is unchanged.\n        CardModel clone "
+        },
+        {
+          "start": 124091,
+          "end": 124092,
+          "old": ">",
+          "new": ""
+        },
+        {
+          "start": 124150,
+          "end": 124150,
+          "old": "",
+          "new": "\n        clone.DeckVersion = null;\n        clone.HasBeenRemovedFromState = false;\n        return clone;\n    }"
+        }
+      ]
+    },
+    "Engine/InCombat/Mirrors/HookMirrors.cs": {
+      "base_sha256": "d1a87550d0d01cb13f240f07c5343bd9f0b8923f388628c6db3d65af45de1556",
+      "target_sha256": "b5ea8335e8df5b46c2b20e182966f37efd96f50d6b9723b0936cc74530ad0f22",
+      "changes": [
+        {
+          "start": 10978,
+          "end": 10978,
+          "old": "",
+          "new": "// Native listeners see each player's current AllPiles (including Play),\n        // not the immutable registration order. Anger appends its generated\n        // copy before its original settles to Discard: PerfectFit ordering then\n        // differs from root registration. Keep other hook dispatch unchanged.\n        foreach (var listener in OwnedCardShuffleListeners(simulator))\n        {\n            // Preserve the original iterator's per-listener choice boundary.\n            // No later subscriber runs while a previous native mirror is paused.\n            if (simulator.HasPendingChoice) break;\n            ModifyShuffleOrderMirrors.Invoke(listener, context);\n        }\n    }\n\n    private static IReadOnlyList<AbstractModel> OwnedCardShuffleListeners(CombatPredictionSimulator simulator)\n    {\n        // Snapshot the same eligible subscribers before any hook executes.\n        // Preserve every non-card slot and attachment order within one card;\n        // only current branch-owned card order changes. No live pile reads,\n        // cached value getters, new refusal or cross-branch listener cache.\n        List<AbstractModel> listeners = [];\n        "
+        },
+        {
+          "start": 11087,
+          "end": 11087,
+          "old": "",
+          "new": "    listeners.Add(listener);\n        Dictionary<CardModel, int> order = new(ReferenceEqualityComparer.Instance);\n        int ordinal = 0;\n        foreach (Player owner in simulator.State.Players)\n        "
+        },
+        {
+          "start": 11101,
+          "end": 11102,
+          "old": "M",
+          "new": "f"
+        },
+        {
+          "start": 11103,
+          "end": 11103,
+          "old": "",
+          "new": "reach (Pre"
+        },
+        {
+          "start": 11105,
+          "end": 11106,
+          "old": "f",
+          "new": "ctedCard card in simulator.State.GetPla"
+        },
+        {
+          "start": 11107,
+          "end": 11107,
+          "old": "",
+          "new": "erCombat"
+        },
+        {
+          "start": 11108,
+          "end": 11112,
+          "old": "huff",
+          "new": "tate(owner).A"
+        },
+        {
+          "start": 11113,
+          "end": 11113,
+          "old": "",
+          "new": "lCards)\n            {\n                ord"
+        },
+        {
+          "start": 11114,
+          "end": 11114,
+          "old": "",
+          "new": "r[card.Original] = ordinal;\n                order[card.Preview] = ordinal++;\n            }\n        }\n        List<(int Slot, int "
+        },
+        {
+          "start": 11119,
+          "end": 11119,
+          "old": "",
+          "new": ", Abstract"
+        },
+        {
+          "start": 11120,
+          "end": 11121,
+          "old": "i",
+          "new": "odel Model)> ca"
+        },
+        {
+          "start": 11122,
+          "end": 11123,
+          "old": "r",
+          "new": "ds = [];\n        f"
+        },
+        {
+          "start": 11125,
+          "end": 11128,
+          "old": "s.I",
+          "new": " (i"
+        },
+        {
+          "start": 11129,
+          "end": 11132,
+          "old": "vok",
+          "new": "t ind"
+        },
+        {
+          "start": 11133,
+          "end": 11134,
+          "old": "(",
+          "new": "x = 0; index < "
+        },
+        {
+          "start": 11142,
+          "end": 11142,
+          "old": "",
+          "new": "s.Count; index++)\n        {\n            CardModel? card = listeners[index] switch\n            {\n                CardModel model => model,\n                EnchantmentModel enchantment => enchantment.Card,\n                AfflictionModel affliction => affliction.Card,\n                _ => null,\n            };\n            if (card is not null && order.TryGetValue(card, out int cardOrder))\n                cards.Add((index"
+        },
+        {
+          "start": 11145,
+          "end": 11147,
+          "old": "on",
+          "new": "ardOrder, lis"
+        },
+        {
+          "start": 11149,
+          "end": 11149,
+          "old": "",
+          "new": "ners[inde"
+        },
+        {
+          "start": 11150,
+          "end": 11151,
+          "old": "t",
+          "new": "])"
+        },
+        {
+          "start": 11163,
+          "end": 11163,
+          "old": "",
+          "new": "\n        var sorted = cards.OrderBy(card => card.Order).ThenBy(card => card.Slot).ToArray();\n        for (int index = 0; index < cards.Count; index++)\n            listeners[cards[index].Slot] = sorted[index].Model;\n        return listeners;"
+        }
+      ]
+    }
+  },
+  "support": {
+    "Engine/InCombat/Simulation/CombatPredictionSimulator.PartySetup.cs": {
+      "text": "namespace CoopBots.Kernel.Vendor.Engine.InCombat.Simulation;\n\ninternal sealed partial class CombatPredictionSimulator\n{\n    internal sealed record PartySetupPause(TurnStartChoiceRequest Request,\n        PredictionExecutionContinuation Continuation);\n    // CombatManager allows every participant's setup to reach its first pause,\n    // then fires the shared side hook before resuming those setup tasks. These\n    // continuations remain on this SAME synchronous branch; they are never sent\n    // to another branch and cannot escape the party turn-start driver.\n    internal int PreparePartySetupCapture() => History.PrepareManualCardChoice();\n\n    internal void BeginPartySetupCapture(int historyStart)\n    {\n        GuardOrdinaryExecutionContinuationFork();\n        if (CurrentFrame != null || _damageSource != null || _activeDrawDepth != 0 || ActionRelicTriggers != null)\n            throw new InvalidOperationException(\"Party setup still owns active CLR scopes.\");\n        // Another seat can own a qualified draw/card continuation in the common\n        // history suffix. Do not seal that suffix or treat it as ordinary work.\n        StateStore.AssertForkable();\n        _executionContinuationHistoryStart = historyStart;\n        _executionContinuationRejected = false;\n        _pendingExecutionSteps = null;\n        _captureExecutionContinuation = true;\n    }\n\n    internal PartySetupPause? DetachPartySetupPause(IReadOnlyList<PartySetupPause> earlier)\n    {\n        var combat = (SimulatedCombatState)State.CombatState;\n        var request = combat.PendingTurnStartChoice;\n        if (_captureExecutionContinuation || _executionContinuationRejected || request is null\n            || _pendingExecutionSteps is not { Count: > 0 } steps\n            || combat is not ICombatPredictionExecutionContinuationState { CanCaptureExecutionContinuation: true }) return null;\n        var all = earlier.SelectMany(p => p.Continuation.Steps).Concat(steps).ToArray();\n        if (!History.SupportsExecutionContinuation(_executionContinuationHistoryStart,\n                all.SelectMany(s => s.Frame.DeferredEntries), all.SelectMany(s => s.Frame.ActiveCardPlays))) return null;\n        var continuation = new PredictionExecutionContinuation(_executionContinuationHistoryStart, steps);\n        _pendingExecutionSteps = null;\n        combat.ClearPendingTurnStartChoice();\n        return new(request, continuation);\n    }\n\n    internal bool ResumePartySetupPause(PartySetupPause pause)\n    {\n        GuardOrdinaryExecutionContinuationFork();\n        _preparedExecutionContinuation = pause.Continuation;\n        return ResumeExecutionContinuation(pause.Continuation);\n    }\n\n    internal void DetachPreparedPartySetupProbe(PredictionExecutionContinuation continuation)\n    {\n        if (!ReferenceEquals(_preparedExecutionContinuation, continuation))\n            throw new InvalidOperationException(\"Party setup probe does not own its prepared continuation.\");\n        _preparedExecutionContinuation = null;\n    }\n\n    internal CombatPredictionSimulator ForkPartySetupPause(PartySetupPause pause,\n        out PredictionExecutionContinuation continuation)\n    {\n        GuardOrdinaryExecutionContinuationFork();\n        var combat = (SimulatedCombatState)State.CombatState;\n        if (combat.HasPendingChoice || combat.HasActiveActionChoices)\n            throw new InvalidOperationException(\"Party setup probe requires a settled shared side prefix.\");\n        combat.SetPendingTurnStartChoice(pause.Request);\n        _ownedExecutionContinuation = pause.Continuation;\n        try { return ForkExecutionContinuation(pause.Continuation, out continuation); }\n        finally { combat.ClearPendingTurnStartChoice(); _ownedExecutionContinuation = null; }\n    }\n\n    internal PartySetupPause CombinePartySetupPauses(IReadOnlyList<PartySetupPause> pauses,\n        IReadOnlyList<ICombatPredictionExecutionFrame> tails)\n    {\n        if (pauses.Count == 0) throw new InvalidOperationException(\"No paused party setup.\");\n        var steps = new List<PredictionExecutionStep>();\n        for (var i = 0; i < pauses.Count; i++)\n        {\n            steps.AddRange(pauses[i].Continuation.Steps);\n            if (i < tails.Count) steps.Add(new(null, 0, null, tails[i]));\n        }\n        var first = pauses[0];\n        if (!History.SupportsExecutionContinuation(first.Continuation.HistoryStart,\n                steps.SelectMany(s => s.Frame.DeferredEntries), steps.SelectMany(s => s.Frame.ActiveCardPlays)))\n            throw new InvalidOperationException(\"Combined party setup history is not qualified.\");\n        return first with { Continuation = new(first.Continuation.HistoryStart, steps) };\n    }\n}\n",
+      "target_sha256": "9d01c5ad9cb10c309b55c2d2e5ba7a56b6cc0c97fb87890eea04365e1e3444c0"
+    }
+  }
+}

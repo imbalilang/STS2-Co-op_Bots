@@ -5,6 +5,7 @@ using MegaCrit.Sts2.Core.Models.Monsters;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Models.Relics;
 using CoopBots.Kernel.Vendor.Engine.InCombat.Simulation;
+using CoopBots.Kernel;
 
 namespace CoopBots.Kernel.Vendor;
 
@@ -12,6 +13,7 @@ internal static partial class PredictionCoverage
 {
     public static IReadOnlyList<PredictionGap> Collect(CombatPredictionSimulator simulator)
     {
+        using var allocation = AllocationProbe.Measure(AllocationProbe.Phase.Coverage);
         return CollectUniqueGaps(simulator)
             .OrderBy(gap => gap.SourceId, StringComparer.Ordinal)
             .ThenBy(gap => gap.Method, StringComparer.Ordinal)
@@ -21,10 +23,8 @@ internal static partial class PredictionCoverage
     private static IEnumerable<PredictionGap> CollectUniqueGaps(CombatPredictionSimulator simulator)
     {
         HashSet<(string SourceId, string Method, string Reason, bool Compensated)>? seen = null;
-        foreach (CombatPredictionHistoryEntry entry in simulator.History)
+        foreach (CombatPredictionRiskEntry risk in simulator.History.RiskEntries())
         {
-            if (entry is not CombatPredictionRiskEntry risk)
-                continue;
             // Classify every original occurrence, preserving callback/lookup order.
             // Only the result object is delayed until after the same four-field dedup.
             var gap = DescribeGap(risk);

@@ -1,6 +1,7 @@
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Factories;
+using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
 using CoopBots.Kernel.Vendor.Engine.Common;
 using CoopBots.Kernel.Vendor.Engine.InCombat.Extensions;
@@ -15,7 +16,8 @@ internal sealed record TurnStartChoiceRequest(
     int Count,
     CardChoiceSpec? Spec = null,
     string ContextId = "",
-    PlanChoiceTiming Timing = PlanChoiceTiming.Action);
+    PlanChoiceTiming Timing = PlanChoiceTiming.Action,
+    string? MenuSource = null);
 
 internal sealed class InvalidPlannedChoiceBranchException(string message)
     : InvalidOperationException(message);
@@ -62,7 +64,9 @@ internal sealed class TurnStartChoiceCursor(IReadOnlyList<PlanCardChoice>? choic
             throw new InvalidPlannedChoiceBranchException(
                 $"回合开始选牌顺序不一致：计划 {choice.SourceId}/{choice.Effect}/{choice.SourcePile}，" +
                 $"当前需要 {request.SourceId}/{request.Effect}/{request.SourcePile}；" +
-                $"计划上下文={choice.ContextId}，当前上下文={request.ContextId}。");
+                $"计划上下文={choice.ContextId}，当前上下文={request.ContextId}；" +
+                $"计划张数={choice.Cards.Count}，当前边界={request.Spec?.MinCount}..{request.Spec?.MaxCount}，" +
+                $"当前候选={request.Spec?.Options.Count}，菜单来源={request.MenuSource}。");
         }
         _index++;
         return true;
@@ -109,7 +113,9 @@ internal sealed class TurnStartChoiceCursor(IReadOnlyList<PlanCardChoice>? choic
             && choice.Effect == request.Effect
             && choice.SourcePile == request.SourcePile
             && string.Equals(choice.ContextId, request.ContextId, StringComparison.Ordinal)
-            && choice.Timing == request.Timing;
+            && choice.Timing == request.Timing
+            && (request.Spec is null || choice.Cards.Count >= Math.Min(request.Spec.MinCount, request.Spec.Options.Count)
+                && choice.Cards.Count <= Math.Min(request.Spec.MaxCount, request.Spec.Options.Count));
 
     private bool InvokeBeforeNextTake()
     {
@@ -307,6 +313,17 @@ internal static partial class TurnStartChoiceSupport
         {
             if (!combat.HasPendingChoice)
             {
+                // NAME WHY, ONCE PER NEW REQUEST. The boundary the round fails with carries only
+                // the SourceId (`round-pending-choice:TOASTY_MITTENS@start-next-player-turn`), so
+                // the live 2026-10-05 act-3 boss left no way to tell an unanswerable request from
+                // a missing cursor from an exhausted before-take callback — the three repairs are
+                // completely different. Logged only when this call is what raised the pending
+                // choice, so a per-tick retry of the same board cannot spam it.
+                Log.Warn("CoopBots kernel: turn-start choice could not be auto-answered: "
+                    + $"source={request.SourceId} effect={request.Effect} pile={request.SourcePile} "
+                    + $"count={request.Count} spec={(request.Spec is null ? "null" : "set")} "
+                    + $"cursor={(cursor is null ? "null" : "present")} "
+                    + $"owner={player.NetId} hand={simulator.State.GetPlayerCombatState(player).Hand.Cards.Count}");
                 combat.SetPendingTurnStartChoice(request);
                 simulator.CaptureExecutionChoice(new SimulatedCombatState.TurnSelectionExecutionFrame(player, request));
             }
@@ -407,7 +424,9 @@ internal static partial class TurnStartChoiceSupport
             : cards.ToArray();
     }
 
-    private static IReadOnlyList<PredictedCard> ResolveTokens(
+    // Adapter visibility: the shared live/rollout relic policy resolves the
+    // same tokens with these native cardinality and occurrence checks.
+    internal static IReadOnlyList<PredictedCard> ResolveTokens(
         PlanCardChoice choice,
         IReadOnlyList<PredictedCard> options,
         int minCount,

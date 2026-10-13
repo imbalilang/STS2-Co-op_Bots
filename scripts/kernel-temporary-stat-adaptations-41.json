@@ -1,0 +1,64 @@
+{
+  "Search/SimulatedCombatState.cs": {
+    "base_sha256": "82e6646dd2885bd8a23e3198ca5bb196ea7f8ccbd907b22ae652fafa0479941d",
+    "changes": [
+      {
+        "old": "        // A newly applied player duration skips its first tick; stacking never renews it.\n        if (previousAmount == 0 && simulated._amount != 0 && target.Side == CombatSide.Player\n            && PowerLifecycleSupport.UsesNativeDurationSkip(typeof(T)))\n            simulated.SkipNextDurationTick = true;\n",
+        "new": "        // Native PowerCmd.Apply marks a newly applied player debuff, even\n        // when that Power does not consume duration ticks (temporary stat wrappers).\n        // Stacking never renews the marker; TickDuration's consumer set is unchanged.\n        if (previousAmount == 0 && simulated._amount != 0 && target.Side == CombatSide.Player\n            && simulated.Type == PowerType.Debuff)\n            simulated.SkipNextDurationTick = true;\n"
+      },
+      {
+        "old": "    private void ApplyTemporaryStat<T, TStat>(Creature creature, int amount, Creature? applier, int sign)\n        where T : PowerModel\n        where TStat : PowerModel\n    {\n        bool alreadyApplied = GetAmount<T>(creature) != 0;\n        int applied = ApplyWithBeforeApplied<T>(creature, amount, applier,\n            value => Apply<TStat>(creature, sign * value, applier));\n        if (alreadyApplied && applied != 0)\n            Apply<TStat>(creature, sign * applied, applier);\n    }\n\n    public void ApplyAnticipate(Creature creature, int amount, Creature? applier)\n    {\n        int before = GetAmount<AnticipatePower>(creature);\n        Apply<AnticipatePower>(creature, amount, applier);\n        int applied = GetAmount<AnticipatePower>(creature) - before;\n        if (applied <= 0)\n            return;\n        Apply<DexterityPower>(creature, applied, applier);\n    }\n\n    public void RestoreTemporaryDexterity()\n    {\n        foreach (IGrouping<Creature, TemporaryDexterityPower> group in EffectivePowers()\n                     .OfType<TemporaryDexterityPower>()\n                     .Where(static power => power.Amount > 0)\n                     .GroupBy(static power => power.Owner)\n                     .ToArray())\n        {\n            Creature creature = group.Key;\n            int amount = group.Sum(static power => power.Amount);\n            Apply<DexterityPower>(creature, -amount);\n            foreach (TemporaryDexterityPower power in group)\n                SetPowerAmount(power, 0);\n        }\n    }\n\n    public void RestoreTemporaryStrength(IEnumerable<Creature> participants)\n    {\n        HashSet<Creature> participantSet = participants.ToHashSet();\n        foreach (TemporaryStrengthPower power in EffectivePowers()\n                     .OfType<TemporaryStrengthPower>()\n                     .Where(power => participantSet.Contains(power.Owner) && power.Amount > 0)\n                     .ToArray())\n        {\n            int strengthDelta = power.TypeForCurrentAmount == PowerType.Buff\n                ? -power.Amount\n                : power.Amount;\n            SetPowerAmount(power, 0);\n            Apply<StrengthPower>(power.Owner, strengthDelta, power.Owner);\n        }\n    }\n\n    public void RestoreTemporaryFocus()\n    {\n        foreach (Creature creature in Creatures)\n        {\n            int amount = GetAmount<HotfixPower>(creature)\n                + GetAmount<SynchronizePower>(creature)\n                + GetAmount<FocusedStrikePower>(creature);\n            if (amount > 0)\n            {\n                Apply<FocusPower>(creature, -amount);\n                SetAmount<HotfixPower>(creature, 0);\n                SetAmount<SynchronizePower>(creature, 0);\n                SetAmount<FocusedStrikePower>(creature, 0);\n            }\n            int focusLoss = GetAmount<HyperbeamFocusDownPower>(creature);\n            if (focusLoss > 0)\n            {\n                Apply<FocusPower>(creature, focusLoss);\n                SetAmount<HyperbeamFocusDownPower>(creature, 0);\n            }\n        }\n    }\n\n",
+        "new": "    private void ApplyTemporaryStat<T, TStat>(Creature creature, int amount, Creature? applier, int sign)\n        where T : PowerModel\n        where TStat : PowerModel\n    {\n        ApplyWithBeforeApplied<T>(creature, amount, applier,\n            value => Apply<TStat>(creature, sign * value, applier),\n            (offset, power) =>\n            {\n                // Match TemporaryDexterity/Focus.AfterPowerAmountChanged,\n                // including a modified request when the wrapper is at its cap.\n                if (offset != power.Amount)\n                    Apply<TStat>(creature, sign * offset, applier);\n            });\n    }\n\n    public void ApplyAnticipate(Creature creature, int amount, Creature? applier)\n        => ApplyTemporaryDexterity<AnticipatePower>(creature, amount, applier);\n\n    public void RestoreTemporaryDexterity()\n        => RestoreTemporaryDexterity(Players.Select(player => player.Creature));\n\n    public void RestoreTemporaryDexterity(IEnumerable<Creature> participants)\n        => RestoreTemporaryStats(participants, static power => power is TemporaryDexterityPower);\n\n    public void RestoreTemporaryStrength(IEnumerable<Creature> participants)\n        => RestoreTemporaryStats(participants, static power => power is TemporaryStrengthPower);\n\n    public void RestoreTemporaryFocus()\n        => RestoreTemporaryStats(Players.Select(player => player.Creature), static power => power is TemporaryFocusPower);\n\n    // Native AfterSideTurnEnd visits the acquired Powers in hook-listener order.\n    // All three families compete for the same Artifact charges; grouping by\n    // stat (or aggregating wrappers) can preserve the wrong permanent residual.\n    public void RestoreTemporaryStats(IEnumerable<Creature> participants)\n        => RestoreTemporaryStats(participants, static power =>\n            power is TemporaryStrengthPower or TemporaryDexterityPower or TemporaryFocusPower);\n\n    private void RestoreTemporaryStats(IEnumerable<Creature> participants, Func<PowerModel, bool> include)\n    {\n        var owners = participants.ToHashSet();\n        foreach (var power in EffectivePowers().Where(power => power.Amount > 0\n                     && owners.Contains(power.Owner) && include(power)).ToArray())\n        {\n            int delta = power.TypeForCurrentAmount == PowerType.Buff ? -power.Amount : power.Amount;\n            SetPowerAmount(power, 0);\n            switch (power)\n            {\n                case TemporaryStrengthPower: Apply<StrengthPower>(power.Owner, delta, power.Owner); break;\n                case TemporaryDexterityPower: Apply<DexterityPower>(power.Owner, delta, power.Owner); break;\n                case TemporaryFocusPower: Apply<FocusPower>(power.Owner, delta, power.Owner); break;\n            }\n        }\n    }\n\n"
+      }
+    ],
+    "repaired_region_source": "B:\\slay-the-spire-2-mod-mod\\src\\CoopBots.Kernel\\Vendor\\Search\\SimulatedCombatState.cs"
+  },
+  "Prediction/CorePowerSupport.cs": {
+    "base_sha256": "f3e468b1a6b68d9e6334c4c17e4d0a9af753917c60e8a3e3c33921193d0d432c",
+    "changes": [
+      {
+        "old": "        combat.RestoreTemporaryStrength(players);\n        combat.RestoreTemporaryDexterity();\n        combat.RestoreTemporaryFocus();",
+        "new": "        combat.RestoreTemporaryStats(players);"
+      },
+      {
+        "old": "        combat.RestoreTemporaryStrength(enemies);",
+        "new": "        combat.RestoreTemporaryStats(enemies);"
+      }
+    ],
+    "repaired_region_source": "B:\\slay-the-spire-2-mod-mod\\src\\CoopBots.Kernel\\Vendor\\Prediction\\CorePowerSupport.cs"
+  },
+  "Engine/InCombat/Extensions/CombatTargetExtensions.cs": {
+    "base_sha256": "05fb8f08674e1c035330cba2b0e5d8d6244f401d52d1a5102d45c4905ffb88e4",
+    "changes": [
+      {
+        "old": "            TargetType.AnyAlly =>\n                [.. combatState.PlayerCreatures.Where(creature => creature != self && creature.IsAlive)],\n",
+        "new": "            TargetType.AnyAlly => combatState.PlayerCreatures.Count(creature => creature.IsAlive) > 1\n                ? [.. combatState.PlayerCreatures.Where(creature => creature.IsAlive)] : [],\n"
+      }
+    ],
+    "repaired_region_source": "B:\\slay-the-spire-2-mod-mod\\src\\CoopBots.Kernel\\Vendor\\Engine\\InCombat\\Extensions\\CombatTargetExtensions.cs"
+  },
+  "Engine/InCombat/Simulation/CombatPredictionSimulator.Card.cs": {
+    "base_sha256": "e96ddf34c380479613a8666e01cdb7adc570ad871847b6475bd4124483a3911c",
+    "changes": [
+      {
+        "old": "    /// Unlike <see cref=\"CardModel.CanPlay()\"/>, this mirror does not check whether there are living allies\n    /// for <see cref=\"TargetType.AnyAlly\"/> cards, since <see cref=\"CardModel.IsValidTarget(Creature?)\"/>\n    /// already rejects null or dead ally targets.\n",
+        "new": "    /// Native AnyAlly allows a self target while another player is alive, but\n    /// CardModel.CanPlay rejects the card when only one living player remains.\n"
+      },
+      {
+        "old": "        energyCost = 0;\n        starCost = 0;\n        if (card.HasKeyword",
+        "new": "        energyCost = 0;\n        starCost = 0;\n        if (GetTargetType(card) == TargetType.AnyAlly && State.Players.Count(player =>\n                State.GetCreature(player.Creature).IsAlive) <= 1)\n            return false;\n        if (card.HasKeyword"
+      }
+    ],
+    "repaired_region_source": "B:\\slay-the-spire-2-mod-mod\\src\\CoopBots.Kernel\\Vendor\\Engine\\InCombat\\Simulation\\CombatPredictionSimulator.Card.cs"
+  },
+  "Prediction/CardEffectSpecRegistry.cs": {
+    "base_sha256": "2b60a4b7838c5d1e1ba37b089ab724696a83bac1a686dff7f582283604901ef4",
+    "changes": [
+      {
+        "old": "            case Plot:\n                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players)\n",
+        "new": "            case Plot:\n                foreach (MegaCrit.Sts2.Core.Entities.Players.Player recipient in combat.Players.Where(player =>\n                             simulator.State.GetCreature(player.Creature).IsAlive))\n"
+      }
+    ],
+    "repaired_region_source": "B:\\slay-the-spire-2-mod-mod\\src\\CoopBots.Kernel\\Vendor\\Prediction\\CardEffectSpecRegistry.cs"
+  }
+}

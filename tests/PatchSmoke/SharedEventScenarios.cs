@@ -20,6 +20,7 @@ internal static class SharedEventScenarios
     internal static void Run()
     {
         TestEnvironment.Ensure();
+        using var pump = new ConstructionParallelScenarios.Pump();
         var party = Enumerable.Range(0, 4).Select(i => Player.CreateForNewRun<Deprived>(
             UnlockState.all, i == 0 ? 1UL : BotRegistry.CreateId(BotDifficulty.Pro, 9, i))).ToArray();
         var run = RunState.CreateForTest(party, seed: "SHARED-EVENT-ANIMATION");
@@ -51,12 +52,12 @@ internal static class SharedEventScenarios
             BotEventDriver.TickEvents(sync, run);
             for (var tick = 0; tick < 12; tick++) BotEventDriver.TickEvents(sync, run);
             var page = (uint)typeof(EventSynchronizer).GetField("_pageIndex", flags)!.GetValue(sync)!;
-            Check(page == 1 && Enumerable.Range(0, 4).All(s => bodies[s, 1] == 0 && bodies[s, 2] == 0),
-                "Shared dummy must choose only one encounter while the host animation is pending.");
+            Check(page == 1 && Enumerable.Range(0, 4).All(s => bodies[s, 0] == 0 && bodies[s, 2] == 0),
+                "Shared dummy must choose only one encounter (the fixed second tier) while the host animation is pending.");
             animation.SetResult();
-            sync.AwaitPendingOptionTasks().GetAwaiter().GetResult();
-            Check(Enumerable.Range(0, 4).All(s => bodies[s, 0] == 1),
-                "Every seat must execute the same chosen dummy setting exactly once.");
+            pump.Run(async () => { await sync.AwaitPendingOptionTasks(); return true; });
+            Check(Enumerable.Range(0, 4).All(s => bodies[s, 1] == 1),
+                "Every seat must execute the same chosen dummy setting (tier two) exactly once.");
 
             var nextPageAnswers = 0;
             foreach (var model in events)

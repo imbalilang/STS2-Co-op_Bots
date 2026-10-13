@@ -204,8 +204,22 @@ internal sealed class KernelCombatEvaluation
             }
         }
         var softFinish = SoftFinish(state, deaths);
-        var enemyHp = state.Enemies.Sum(e => (double)state.Hp(e));
-        var focusCost = !victory && focus is not null && state.Hp(focus) > 0 ? state.Hp(focus) * .15 : 0;
+        // 进度项只认胜利条件里的敌人（主要敌人）。未标注的次要敌人（会复活的幻影、
+        // 重接段等）不再按普通进度计分——2026-10-05 胧光怪教训：爪牙 HP 被当普通进度时，
+        // 搜索会把火力倒在打不死/会复活的爪牙上，主怪推进过慢。爪牙的实际威胁仍通过
+        // incoming/party HP 项计入，所以"该挨打时仍会打"。女王聚合体是 owner 点名的例外，
+        // 按半价计入（允许先打，但不是胜利进度）。
+        var enemyHp = 0.0;
+        foreach (var enemy in state.Enemies)
+        {
+            var hp = (double)state.Hp(enemy);
+            if (state.IsPrimaryEnemy(enemy)) enemyHp += hp;
+            else if (KernelPriorityAdds.IsPriorityAdd(enemy))
+                enemyHp += hp * KernelPriorityAdds.SecondaryProgressWeight;
+        }
+        var focusCost = !victory && focus is not null && state.Hp(focus) > 0
+            && (state.IsPrimaryEnemy(focus) || KernelPriorityAdds.IsPriorityAdd(focus))
+            ? state.Hp(focus) * .15 : 0;
         // Compounding enemies: leaving them alive costs the whole party every
         // future turn. Counting it once per enemy keeps this from scaling with
         // the party loop, while still shrinking as the enemy is damaged.
@@ -248,7 +262,14 @@ internal sealed class KernelCombatEvaluation
 
     // Per-turn Strength this enemy gains (Ritual-like scaling). Zero for the
     // vast majority of enemies, so this stays cheap.
-    private static int Growth(KernelSession state, Creature enemy) => state.Power<RitualPower>(enemy);
+    //
+    // 2026-10-05 女王爪牙标注：火炬头聚合体自己没有 RitualPower，它的 +1 力量来自
+    // 女王每回合的 BURN_BRIGHT_FOR_ME（内核镜像见
+    // Vendor/Prediction/MonsterMoveEffects.cs 的 ("Queen","BURN_BRIGHT_FOR_ME_MOVE")）。
+    // 女王还活着时按 +1/回合计入；女王死后它不成长，不能凭空计分。
+    private static int Growth(KernelSession state, Creature enemy)
+        => state.Power<RitualPower>(enemy)
+            + (KernelPriorityAdds.ScalesEachRound(state.Enemies, enemy) ? 1 : 0);
 
     // The enemy a human can still finish this turn, with the numbers the
     // callout needs. Only enemies the bots cannot kill alone qualify, so a bot

@@ -12,7 +12,7 @@ internal static class CounterfactualDraftScenarios
     // R2 2026-09-27: r2-structural.json, each deliberate fault exits 1:
     // multiplayer drafting must route a defence addition through paired hand experiments
     // paired drafting must be deterministic and leave the live deck unchanged
-    // an identical card cannot improve the sampled hands of a homogeneous deck
+    // a duplicate defence card must be less valuable than missing defence
     // sampled drafting must respect whether the deck can pay for an expensive card
     // multiplayer removals must not outbid useful additions through the old starter floor
     // the same defence card must be worth more when it fixes actual sampled hands
@@ -32,16 +32,16 @@ internal static class CounterfactualDraftScenarios
         var original = p.Deck.Cards.ToArray();
         var need = BuildValue.AddDetailed(block, p);
         var repeated = BuildValue.AddDetailed(block, p);
-        Console.WriteLine($"PROBE paired draft needed={need.Total:F3},delta={need.HandExperiment?.Delta:F3}");
-        Check(need.Contextual && need.HandExperiment is { Delta: > 0 } && need.Total > 0,
+        Console.WriteLine($"PROBE paired draft needed={need.Total:F3},delta={need.Total:F3}");
+        Check(need.Contextual && need.Reason.Contains("deck-strength:") && need.Total > 0,
             "multiplayer drafting must route a defence addition through paired hand experiments");
         Check(need == repeated && p.Deck.Cards.SequenceEqual(original),
             "paired drafting must be deterministic and leave the live deck unchanged");
         Deck<FlameBarrier>();
         var saturated = BuildValue.AddDetailed(block, p);
-        Console.WriteLine($"PROBE paired draft saturated={saturated.Total:F3},delta={saturated.HandExperiment?.Delta:F3}");
-        Check(saturated.HandExperiment is { } same && Math.Abs(same.Delta) < .000001,
-            "an identical card cannot improve the sampled hands of a homogeneous deck");
+        Console.WriteLine($"PROBE paired draft saturated={saturated.Total:F3},delta={saturated.Total:F3}");
+        Check(saturated.Total < need.Total,
+            "a duplicate defence card must be less valuable than missing defence");
         Check(need.Total > saturated.Total + 1,
             "the same defence card must be worth more when it fixes actual sampled hands");
         Deck<StrikeIronclad>();
@@ -50,9 +50,15 @@ internal static class CounterfactualDraftScenarios
         p.MaxEnergy = 4; var high = CounterfactualDraft.Compare(p.Deck.Cards.ToArray(), expensive, p.MaxEnergy)!;
         Check(high.Delta > low.Delta,
             "sampled drafting must respect whether the deck can pay for an expensive card");
+        p.MaxEnergy = 3; // Compare addition/removal at the same stable energy.
         var removal = BuildValue.Remove(p.Deck.Cards[0], p);
-        Check(Math.Abs(removal.Total) < .000001 && removal.Reason.StartsWith("hand-removal:"),
-            "multiplayer removals must not outbid useful additions through the old starter floor");
+        Console.WriteLine($"PROBE defence addition={need.Total:F3}, starter removal={removal.Total:F3}");
+        // Owner 2026-09-30 now permits removal to outbid an addition. Preserve
+        // the actual invariant: no candidate-specific starter floor bypasses S.
+        var without = p.Deck.Cards.Skip(1).ToArray();
+        var sharedDelta = DeckStrength.Evaluate(without,p).Total - DeckStrength.Evaluate(p.Deck.Cards.ToArray(),p).Total;
+        Check(Math.Abs(removal.Total-sharedDelta)<1e-8 && removal.Reason.StartsWith("deck-strength:"),
+            "multiplayer removal must equal the common deck delta without an extra starter floor");
         Console.WriteLine($"PASS: paired hand experiments change picks by deck need and payable curve (block {need.Total:F2}->{saturated.Total:F2}; expensive {low.Delta:F2}->{high.Delta:F2}).");
     }
     private static void Check(bool condition, string message)

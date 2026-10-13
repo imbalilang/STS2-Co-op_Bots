@@ -109,11 +109,15 @@ internal static partial class CardChoiceSupport
             SecretTechnique => Spec(owner, PlanChoiceEffect.MoveToHand, PileType.Draw, 1,
                 owner.DrawPile.Cards.Where(item => item.Preview.Type == CardType.Skill)),
             Wish => Spec(owner, PlanChoiceEffect.MoveToHand, PileType.Draw, 1, owner.DrawPile.Cards),
-            Dredge => Spec(owner, PlanChoiceEffect.MoveToHand, PileType.Discard,
+            Dredge when Math.Min(card.DynamicVars.Cards.IntValue,
+                    simulator.GetMaxHandSize(card.Owner) - owner.Hand.Cards.Count) > 0
+                => Spec(owner, PlanChoiceEffect.MoveToHand, PileType.Discard,
                 Math.Min(card.DynamicVars.Cards.IntValue,
                     simulator.GetMaxHandSize(card.Owner) - owner.Hand.Cards.Count),
                 discardBeforeResolution),
-            NeowsFury => RangeSpec(owner, PlanChoiceEffect.MoveToHand, PileType.Discard,
+            NeowsFury when Math.Min(card.DynamicVars.Cards.IntValue,
+                    simulator.GetMaxHandSize(card.Owner) - owner.Hand.Cards.Count) > 0
+                => RangeSpec(owner, PlanChoiceEffect.MoveToHand, PileType.Discard,
                 0,
                 Math.Min(card.DynamicVars.Cards.IntValue,
                     simulator.GetMaxHandSize(card.Owner) - owner.Hand.Cards.Count),
@@ -811,10 +815,11 @@ internal static partial class CardChoiceSupport
     {
         List<PredictedCard> list = options.ToList();
         IReadOnlyList<PredictedCard> sourceCards = owner.GetCardPile(source)?.Cards ?? [];
-        return list.Count == 0
-            ? null
-            : new CardChoiceSpec(effect, source, count, count, list, sourceCards, replacementValue,
-                IsImplicitAllSelection: list.Count <= count);
+        // These native callers still invoke CardSelectCmd with zero options.
+        // Keep that implicit menu slot; only their explicit capacity gates may
+        // skip a menu (Dredge/NeowsFury above).
+        return new CardChoiceSpec(effect, source, count, count, list, sourceCards, replacementValue,
+            IsImplicitAllSelection: list.Count <= count);
     }
 
     private static CardChoiceSpec RangeSpec(
@@ -841,10 +846,11 @@ internal static partial class CardChoiceSupport
             .StableShuffle(simulator.Rng.CombatCardSelection)
             .Take(playedCard.Preview.DynamicVars.Cards.IntValue)
             .ToList();
-        if (options.Count == 0)
-            return null;
-        simulator.History.CardsSelected(options);
-        simulator.History.RecordRisk(PredictionRiskReason.UnresolvedPlayerChoice);
+        if (options.Count > 0)
+        {
+            simulator.History.CardsSelected(options);
+            simulator.History.RecordRisk(PredictionRiskReason.UnresolvedPlayerChoice);
+        }
         string contextId = $"seeker:{simulator.Rng.CombatCardSelection.Counter()}:" +
             string.Join(',', options.Select(card =>
                 $"{card.Preview.Id.Entry}+{card.Preview.CurrentUpgradeLevel}"));
@@ -856,7 +862,8 @@ internal static partial class CardChoiceSupport
             options,
             owner.DrawPile.Cards,
             ReplacementValue: 0d,
-            contextId);
+            contextId,
+            IsImplicitAllSelection: options.Count == 0);
     }
 
     // A completed selection is immutable and belongs to exactly one BuildChoices call.

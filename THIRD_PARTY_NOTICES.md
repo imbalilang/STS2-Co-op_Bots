@@ -1,5 +1,29 @@
 # CoopBots third-party attribution
 
+## Current source snapshot (2026-10-13)
+
+The current imported combat core is CombatSolver **0.41.0**, as recorded in
+`src/CoopBots.Kernel/UPSTREAM.json`; the 0.33.9 references below describe
+earlier imports. Local adaptations are recorded in
+`src/CoopBots.Kernel/INTEGRATION.md` and `VENDOR_DEVIATIONS.md`.
+Publishing CoopBots' source and contributor/Agent tooling does not relicense
+third-party work under CoopBots' MIT License. The recorded permissions and
+attributions below remain applicable.
+
+CombatSolver v0.41.0 publishes an MIT license, copyright 2026 Torch1230 and
+contributors, including work derived from Random Foreseer by hotwords123.
+Its full text is included in `licenses/CombatSolver-0.41.0-MIT.txt`, copied
+from https://github.com/Torch1230/CombatSolver/blob/v0.41.0/LICENSE.
+Random Foreseer 0.13.14's MIT license, copyright 2026 hotwords123, is included
+in `licenses/RandomForeseer-0.13.14-MIT.txt` from the local upstream reference.
+Statements about the older 0.33.9 licensing status below are historical;
+they do not describe the license now published for v0.41.0.
+
+The full Spire Codex license and Required Notice are distributed at
+`licenses/PolyForm-Noncommercial-1.0.0.md`, copied from
+https://github.com/ptrlrd/spire-codex/blob/main/LICENSE.md.
+
+
 ## Spire Codex — mined archetype clusters, card affinity and event option ids
 
 As of preview.62, CoopBots ships three tables generated from Spire Codex:

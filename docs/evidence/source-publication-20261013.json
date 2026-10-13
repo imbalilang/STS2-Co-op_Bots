@@ -1,0 +1,98 @@
+{
+  "schema": "coopbots-source-publication-verification-v1",
+  "date_utc": "2026-10-13",
+  "mod_version": "0.39.1",
+  "game_version": "0.111.0",
+  "combat_solver_version": "0.41.0",
+  "scope": "Clean publication clone; source/test/pipeline release. No new Steam benchmark or binary release.",
+  "gate": {
+    "status": "pass",
+    "actual_tool_chunk": "010f5c",
+    "exit_code": 0,
+    "started_utc": "2026-10-13T13:49:25.4697288Z",
+    "finished_utc": "2026-10-13T14:04:13.8302785Z",
+    "physical_phases": [
+      {
+        "name": "build",
+        "status": "passed",
+        "exit_code": 0,
+        "pass_lines": 0
+      },
+      {
+        "name": "typeloadcheck",
+        "status": "passed",
+        "exit_code": 0,
+        "pass_lines": 0
+      },
+      {
+        "name": "patchsmoke-kernel",
+        "status": "passed",
+        "exit_code": 0,
+        "pass_lines": 887
+      }
+    ],
+    "ordinary_coverage": "covered-by-full",
+    "ordinary_independent_pass_count": null,
+    "full_unfiltered": true,
+    "summary_sha256": "C2313926A9B92A6E94D878BD212C2694B34D82A1DB326D42DABA00F77BAD1FDB",
+    "binding_sha256": "FC1D45E60E8CDDDC9B846D4B13716DF9432384D6ECF09F2EAF8354933756D476",
+    "frozen_inputs_sha256": "496DB18D8D8AC6283F6616E52649BBBF812B4607B5CA05915D1A1B5C0C198EF6",
+    "dll_sha256": {
+      "CoopBots.dll": "5C9CFE56A76F59F31CECB6679D90C8FBF6A5526E22ECCC9AED7CFFB7BEF10B26",
+      "CoopBots.Kernel.dll": "F493CBDC9F0A4E54309923518712454FE6CDF908B53D2F2F9E257F29723A165B"
+    }
+  },
+  "pipeline_contracts": {
+    "actual_tool_chunk": "b85ba8",
+    "exit_code": 0,
+    "a10_tests": 27,
+    "a5_tests": 4,
+    "community_tests": 11,
+    "public_powershell_parse": "passed"
+  },
+  "packaging": {
+    "actual_tool_chunk": "26f7a9",
+    "exit_code": 0,
+    "source": "verified-full-gate",
+    "reran_native_gate": false,
+    "package_sha256": "CACF137F83FD2CDFE39B978FCACE834847AB6E1B9ABD3F6DD8F8337A8BE0F930",
+    "member_sha256": {
+      "CoopBots/CoopBots.dll": "5C9CFE56A76F59F31CECB6679D90C8FBF6A5526E22ECCC9AED7CFFB7BEF10B26",
+      "CoopBots/CoopBots.Kernel.dll": "F493CBDC9F0A4E54309923518712454FE6CDF908B53D2F2F9E257F29723A165B",
+      "CoopBots/mod_manifest.json": "BA06F32982175D08BA5EC5D5D851AEC20C225CAB42CAD7597A034ED369591511",
+      "CoopBots/THIRD_PARTY_NOTICES.md": "3435B578D872090278B9CCDFEB0701EF75AEEA7262B7010538882892B0DB403F",
+      "README.md": "73AD9795FCB8D23D5117C2E0F325482A444959A0DE51ACF223CCC23EF4865FDA",
+      "CHANGELOG.md": "6DACFFF411923988758B7671B1332052661701CF8A224FA0CD21D64929BA37E4",
+      "LICENSE": "D1480372ED8D4E140E3252747F041787EABB27B8A97DE1D530FA7B5652277E35",
+      "CoopBots/LICENSE": "D1480372ED8D4E140E3252747F041787EABB27B8A97DE1D530FA7B5652277E35",
+      "CoopBots/licenses/CombatSolver-0.41.0-MIT.txt": "E6E86EDC9DAC3448C67240D4B3B588B7354299C5C4488FFA1E920715E53FCA96",
+      "CoopBots/licenses/PolyForm-Noncommercial-1.0.0.md": "2F9AEC3426BE07B95DE11700C1F2E5FDA07F25EBA974FB29741CBAD8A1B6A6A0",
+      "CoopBots/licenses/RandomForeseer-0.13.14-MIT.txt": "9E759D1D77B8F283476BBC2001D9B4095B9FD9F034C140C97FA88A2EF9F88561"
+    }
+  },
+  "community_freeze": {
+    "actual_tool_chunk": "eb43f0",
+    "exit_code": 0,
+    "receipt_sha256": "097D241BFB6FBB89C05A217633231E58D291EB29F34B5E34D0174FA540572731",
+    "boundary": "Local package and route freeze only; no installation or native run."
+  },
+  "previous_attempts": [
+    {
+      "status": "interrupted",
+      "exit_code": 1,
+      "reason": "Stopped to add missing distribution license texts; no full pass claimed."
+    },
+    {
+      "status": "failed",
+      "exit_code": 1,
+      "pass_lines_before_failure": 349,
+      "reason": "SharedStatusScenarios diagnostic parent directory missing in a fresh clone; test output directory creation fixed, focused scenario and complete gate passed."
+    }
+  ],
+  "limits": [
+    "Native verification was executed on Windows only.",
+    "Community Steam runner changes have synthetic pipeline checks; no new full ascent was run for source publication.",
+    "Historical v21 A10 evidence remains a different double-DLL identity: five development losses, zero wins; 50% target not established.",
+    "Raw logs and verification receipts remain local; the published hashes are a summary, not a substitute for the raw evidence."
+  ]
+}

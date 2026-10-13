@@ -12,6 +12,20 @@ namespace CoopBots.Kernel.Vendor;
 
 internal sealed partial class SimulatedCombatState
 {
+    // Native PaelsEye.AfterSideTurnStart sees the complete participant roster,
+    // including the negative case for an owner excluded from an extra turn.
+    // The upstream owner-scoped hook cannot observe that negative case.
+    public void SetPlayerTurnParticipation(IReadOnlyList<Player> participants)
+    {
+        foreach (Player seat in Players.Where(seat =>
+                     _predictionState?.GetCreature(seat.Creature).IsAlive ?? seat.Creature.IsAlive))
+        foreach (PaelsEye relic in RelicsOf(seat).OfType<PaelsEye>().Where(static r => !r.IsMelted))
+        {
+            StatefulRelicState state = GetStatefulRelicState(relic);
+            SetStatefulRelicState(relic, state with { Previous = participants.Contains(seat) ? 1 : 0 });
+        }
+    }
+
     public bool TryPrepareExtraPlayerTurn(
         CombatPredictionSimulator simulator,
         Player player,

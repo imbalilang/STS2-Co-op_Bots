@@ -1,0 +1,41 @@
+name: Community pipeline checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tooling:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Python pipeline contracts
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -p test_a10_benchmark.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests -p test_a5_batch.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests -p test_community_pipeline.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: PowerShell syntax
+        shell: pwsh
+        run: |
+          $failures = @()
+          foreach ($file in Get-ChildItem scripts -Filter *.ps1 -File) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors) { $failures += $errors }
+          }
+          if ($failures) { $failures | Format-List; exit 1 }
+      - name: Native verification boundary
+        shell: pwsh
+        run: Write-Output 'This job checks tooling only. Full Release/type-load/kernel verification and Steam benchmarks require a local legal game installation; see docs/TESTING_AND_BENCHMARKS.md.'

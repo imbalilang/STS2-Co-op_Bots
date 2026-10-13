@@ -40,3 +40,37 @@ StS2.RandomForeseer-0.13.14/
 __pycache__/
 *.pyc
 /DEEPSEEK_API_KEY
+# Local credentials and machine configuration; project Agent instructions/skills ship.
+.env
+.env.*
+!.env.example
+/DEEPSEEK_API_KEY
+*.pfx
+*.p12
+*.pem
+id_rsa
+id_ed25519
+/.claude/settings.local.json
+
+# Live testing produces private state, histories and ownership markers.
+/logs/
+/profiles/
+/user_data/
+/mod-recordings/
+**/live-test.flag
+**/alloc-probe.flag
+/.coopbots-a10-benchmark.lock
+
+# Root-level diagnostic dumps, not reviewed public fixtures.
+/diagnostic-*.semantics.txt
+/ordinary-second-slot-native.json
+/EnchantmentsTable.csv
+/sixth-actual.txt
+/sixth-expected.txt
+/slow-*-actual.txt
+/slow-*-expected.txt
+/withering-actual.txt
+/withering-expected.txt
+
+# Raw native run snapshots stay private; public functional fixtures use an explicit reviewed allowlist.
+*.run.json

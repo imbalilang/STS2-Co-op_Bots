@@ -1,4 +1,5 @@
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Relics;
 using CoopBots.Kernel.Vendor.Engine.Common;
 
 namespace CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks.TurnEnd;
@@ -24,15 +25,20 @@ internal static class OrichalcumMirrors
         }
     }
 
-    private static State GetState(RelicModel relic, BeforeSideTurnEndMirrorContext context)
-    {
-        return context.StateStore.Get<State>(relic);
-    }
+    private static OrichalcumPredictionState GetState(RelicModel relic, BeforeSideTurnEndMirrorContext context)
+        => context.StateStore.Get(relic, static model => new OrichalcumPredictionState(model));
+}
 
-    private sealed class State : IPredictionStateForkable
+// One owned payload at capture and during every mirror hook. False is real
+// state too; allocating it on first use must not change planning evidence.
+internal sealed class OrichalcumPredictionState(RelicModel relic) : IPredictionStateForkable
+{
+    public bool ShouldTrigger { get; set; } = relic switch
     {
-        public bool ShouldTrigger { get; set; }
+        Orichalcum value => value._shouldTrigger,
+        FakeOrichalcum value => value._shouldTrigger,
+        _ => throw new InvalidOperationException("Orichalcum state requires its native relic type.")
+    };
 
-        public object Fork(PredictionForkContext context) => MemberwiseClone();
-    }
+    public object Fork(PredictionForkContext context) => MemberwiseClone();
 }

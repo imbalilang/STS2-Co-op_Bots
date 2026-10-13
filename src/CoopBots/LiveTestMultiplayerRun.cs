@@ -47,10 +47,32 @@ internal static class LiveTestMultiplayerRun
     internal const int Seats = 4;
     /// <summary>1 个房主席位 + 3 个 bot 席位；房主席位同样交给 AutoPilot，所以是"4 BOT"。</summary>
     internal const int BotSeats = Seats - 1;
-    internal const int WantedAscension = 10;
+    /// <summary>
+    /// Ascension used when the sentinel does not name one. The harness shipped hardwired to
+    /// A10; the A5 clear-rate target needs its own value, because the two difficulties do not
+    /// share a balance and a batch has to be able to say which one it measured.
+    /// </summary>
+    internal const int DefaultAscension = 10;
 
     /// <summary>本机这次是否已经成功开进局 —— 供看护/诊断用。</summary>
     internal static bool Started { get; private set; }
+
+    /// <summary>
+    /// The run built by the most recent <see cref="Start"/>, so the live-test ticker can put the
+    /// run scene back if the main-menu flow takes it.
+    ///
+    /// <para>
+    /// WHY: the live test arms from the main menu, and the menu is still mid-load when a run is
+    /// created from it, so the menu's own scene change can land AFTER ours. With the all-Ironclad
+    /// default the preload is short enough that ours wins; a MIXED party makes it long enough that
+    /// the menu wins — measured 2026-09-27: `party=SILENT,SILENT,IRONCLAD,IRONCLAD` left
+    /// `scene=NMainMenu state=set room=null` and the run never reached the map, while the same
+    /// package with the default party played a whole round and died on floor 28.
+    /// </para>
+    /// </summary>
+    internal static RunState? PendingRunScene { get; private set; }
+
+    internal static void ClearPendingRunScene() => PendingRunScene = null;
 
     /// <summary>
     /// <paramref name="room"/> and <paramref name="encounter"/> come from the sentinel and, when
@@ -61,7 +83,14 @@ internal static class LiveTestMultiplayerRun
     /// it, and the defect itself makes that hard. Ten live batches hit the path four times. The
     /// encounter is resolved BY ID against the model database, never by a guessed type name.
     /// </summary>
-    internal static bool Start(string seed, string room = "", string encounter = "")
+    internal static void MarkResumed(RunState state)
+    {
+        Started = true;
+        PendingRunScene = state;
+    }
+
+    internal static bool Start(string seed, string room = "", string encounter = "",
+        int wantedAscension = DefaultAscension, IReadOnlyList<CharacterModel>? party = null)
     {
         var netService = new NetHostGameService(PeerVersionInfo.LocalDefault());
         if (netService.StartENetHost(Port, Seats) is { } hostError)
@@ -74,7 +103,27 @@ internal static class LiveTestMultiplayerRun
         var lobby = new StartRunLobby(GameMode.Standard, netService, listener, Seats);
         listener.Lobby = lobby;
 
-        var character = ModelDb.Character<Ironclad>();
+        // THE SENTINEL'S FIRST LINE IS THE SEED — and in multiplayer it was silently dropped:
+        // Start() took a seed and never used it, so the lobby fell through to
+        // SeedHelper.GetRandomSeed() and every live round drew a fresh map. Two batches could
+        // never be compared as "the same maps, one change", which is exactly what an A/B
+        // optimisation loop needs. Pin it here (we are the host, the only side SetSeed accepts)
+        // and LOG the value that took, so a round that is not the map it claims to be cannot be
+        // read as one — the seed in `live-test.flag` and the seed in `multiplayer run started`
+        // were two different strings for the whole A5 campaign until now.
+        if (!string.IsNullOrWhiteSpace(seed))
+        {
+            lobby.SetSeed(seed);
+            Log.Info($"CoopBots live test: lobby seed pinned to '{lobby.Seed}'.");
+        }
+
+        // THE PARTY IS A PARAMETER, because "4 bots" and "4 Ironclads" are not the same
+        // measurement. Default stays what this harness has always run (all Ironclad); a
+        // sentinel `party=` makes a mixed party expressible so the two can be compared by
+        // clear rate instead of by argument. IRONCLAD'S STARTING DECK HAS NO AOE AT ALL,
+        // which matters here more than in a solo game: most act-1 encounters are multi-enemy
+        // and every enemy's hp is scaled by player count (hp x players x 1.1).
+        var seats = party is { Count: > 0 } ? party : [ModelDb.Character<Ironclad>()];
         // The host seat inherits the profile's unlock state; the bots copy it (LobbyBotService.Add
         // reads these same two fields off the host entry).
         if (lobby.AddLocalHostPlayer(new UnlockState(SaveManager.Instance.Progress),
@@ -83,22 +132,38 @@ internal static class LiveTestMultiplayerRun
             Log.Error("CoopBots live test: the host seat could not be added to the lobby.");
             return false;
         }
+        // AddLocalHostPlayer takes no character, so the host's seat is whatever the lobby
+        // defaults to. Setting it the same way the bots are set is what makes "the party is
+        // exactly these four characters" true instead of "the host is the default one".
+        //
+        // LOUD WHEN IT FAILS. This call used to drop its bool on the floor, and because every
+        // live batch until 2026-09-27 ran the all-Ironclad default, a silent failure was
+        // indistinguishable from success — the party came out IRONCLAD,SILENT,IRONCLAD,IRONCLAD
+        // for `party=SILENT,SILENT,IRONCLAD,IRONCLAD` (measured: hp=[80/80,70/70,80/80,80/80],
+        // preload 'characters=IRONCLAD,SILENT,IRONCLAD,IRONCLAD'), i.e. one Silent instead of
+        // two. A party that is not the one the batch asked for makes every number from that
+        // run a measurement of something else (R5).
+        if (!LobbyBotService.SetCharacter(lobby, lobby.NetService.NetId, seats[0]))
+            Log.Error("CoopBots live test: could not set the HOST seat's character to "
+                + $"{seats[0].Id.Entry}; the seat keeps the lobby default. The party will NOT "
+                + "be the one named in the sentinel.");
 
         for (var i = 0; i < BotSeats; i++)
         {
+            var character = seats[(i + 1) % seats.Count];
             if (LobbyBotService.Add(lobby, character, BotDifficulty.Pro, out var botError)) continue;
             Log.Error($"CoopBots live test: bot seat {i + 1}/{BotSeats} was refused: {botError}");
             return false;
         }
 
-        var ascension = Math.Min(WantedAscension, lobby.MaxAscension);
+        var ascension = Math.Min(wantedAscension, lobby.MaxAscension);
         lobby.SyncAscensionChange(ascension);
         // Every seat, the host's included: "4 BOT" means nobody is at the keyboard, and the mod's
         // per-seat gates (`AutoPilot.Drives`) are what make the kernel authoritative for a seat.
         foreach (var player in lobby.Players) AutoPilot.Set(player.id, true);
 
         Log.Info($"CoopBots live test: multiplayer lobby ready — seats={lobby.Players.Count} "
-            + $"ascension={ascension} (wanted {WantedAscension}, profile max={SaveManager.Instance.Progress.MaxMultiplayerAscension}, "
+            + $"ascension={ascension} (wanted {wantedAscension}, profile max={SaveManager.Instance.Progress.MaxMultiplayerAscension}, "
             + $"lobby cap={lobby.MaxAscension}, difficulty={BotDifficulty.Pro}); every seat is auto-piloted.");
 
         // Hand the target to the listener BEFORE the lobby can fire BeginRun — SetReady below is
@@ -147,6 +212,7 @@ internal static class LiveTestMultiplayerRun
                 var runState = await game.StartNewMultiplayerRun(
                     lobby, shouldSave: false, acts, modifiers, seed, lobby.Ascension);
                 Started = true;
+                PendingRunScene = runState;
                 Log.Info($"CoopBots live test: multiplayer run started — seed={seed} "
                     + $"ascension={lobby.Ascension} seats={runState.Players.Count} "
                     + $"decks=[{string.Join(",", runState.Players.Select(p => p.Deck.Cards.Count))}]");

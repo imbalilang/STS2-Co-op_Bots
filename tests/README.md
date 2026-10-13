@@ -8,9 +8,11 @@
 
 以下命令均在仓库根目录执行，使用工作区自带的 `work/dotnet-win/dotnet.exe`（Git 忽略）和**显式指定的游戏程序集目录**。
 
-日常完整验证优先运行 `scripts/verify-project.ps1`：每次新建 `work/verification/<运行标识>/`，保存构建、类型加载、普通回归与内核回归日志及 `summary.json`，不打包或覆盖发行物。以下单项命令用于定位问题。
+日常完整验证运行 `scripts/verify-project.ps1`：每次新建 `work/verification/<运行标识>/`，顺序执行生产构建、独立类型加载和**一次无参数 `EnableKernelTests=true` 完整入口**，保存实际命令、日志、退出码及 `summary.json`，不打包或覆盖发行物。独立普通进程改为 `-IncludeOrdinary` 显式诊断；原四门历史证据保持原样。以下单项命令用于定位问题。开发中运行本次改动对应的具名用例与必要 RED/GREEN；同一批候选改动完成、准备部署时才运行一次默认完整验证，聚焦结果不能替代交付完整验证。
 
 ## 0. 前提
+
+多人回合开始卡死回归：`--party-setup-pending-only`，可加 `--party-setup-pending-case=risk|pending|automatic|warm` 分别检查实际 `LiveEndTurnRisk` 未回答菜单及时返回、保留可 fork/续演的原生帧及完整 Facts/history/RNG、自动选牌与严格合同重放、调用方已编译时观察器仍有效。观察点是实际 `ResumeExecutionContinuation`，避免较小包装方法被 JIT 内联后漏计。安全观察器触顶必须失败，不得当作成功。默认完整入口也执行这些场景。实际替换抽牌使后续预选菜单失效的正控制复用 `--szg-combat-only --szg-combat-case=chained-choice`，包含 1/2/4 席的原生 GamblingChip → ToastyMittens 对照。
 
 - 游戏目录必须包含 `sts2.dll`，默认示例为
   `B:\SteamLibrary\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64`（`scripts/build.ps1:2,17`）。
@@ -26,26 +28,41 @@ $game   = 'B:\SteamLibrary\steamapps\common\Slay the Spire 2\data_sts2_windows_x
 if (!(Test-Path -LiteralPath (Join-Path $game 'sts2.dll'))) { throw 'STS2DataDir 必须包含 sts2.dll' }
 ```
 
-## 1. 普通 PatchSmoke（默认回归）
-
-不启用内核套件，编译并运行 Harmony 补丁挂载、Bot ID 编解码、Genius 战术探针以及各普通场景。
+## 1. 默认完整验证（含普通和内核场景）
 
 ```powershell
-& $dotnet run --project "$repo\tests\PatchSmoke\PatchSmoke.csproj" -c Release `
-  "-p:STS2DataDir=$game" -p:NuGetAudit=false
+& '<bundled pwsh.exe>' -NoProfile -NonInteractive -File "$repo\scripts\verify-project.ps1" -GameData $game
 ```
 
-- 退出码 `0` 为通过；`Program.cs:164-168` 在异常时设置 `Environment.ExitCode = 1`。
-- 该程序会将 `CoopBots.dll` 的构建输出放到项目输出目录，并 ProjectReference `src/CoopBots` 与 `src/CoopBots.Kernel`（`tests/PatchSmoke/PatchSmoke.csproj:13-22`）。
+它只运行一次无过滤参数的完整 PatchSmoke。完整默认主线保留普通入口，`CooperativeScenarios.Run` 在 `KERNEL_TESTS` 分支追加六组，`KernelEngineScenarios` 再调用对应场景；`Program.cs` 的条件分支还包含 focused flags。`EnableKernelTests=true` 定义 `KERNEL_TESTS`，并编入 `KernelEngineScenarios.cs`、`KernelRoundScenarios.cs`、`KernelPowerRouteScenarios.cs`。保留调用并不证明普通/完整隔离进程中的 presentation/Harmony 环境完全等价。
 
-## 2. EnableKernelTests（含内核场景）
-
-在普通回归之上定义 `KERNEL_TESTS`、编入 `KernelEngineScenarios.cs` 与 `KernelRoundScenarios.cs`（`tests/PatchSmoke/PatchSmoke.csproj:9-10,30-31`）。
+需要单独定位完整入口时：
 
 ```powershell
 & $dotnet run --project "$repo\tests\PatchSmoke\PatchSmoke.csproj" -c Release `
   "-p:STS2DataDir=$game" -p:EnableKernelTests=true -p:NuGetAudit=false
 ```
+
+程序不得带 `--*-only`、case 或 `--packaging-smoke` 等过滤参数。退出码 0 才是实际通过；PASS 计数来自原始日志，不从场景数量推导。ProjectReference/绑定路径见 `PatchSmoke.csproj`：壳可通过 `CoopBotsDll` 指定门禁产物，内核仍有必需的 ProjectReference，实际运行双 DLL 必须和门禁归档物理工件核对。
+
+默认 `summary.json` 的普通阶段状态为 **`covered-by-full`**，其数值通过数 **`null`**；这表示入口覆盖，不是一份另跑过的普通结果。**`full_total` 只取完整内核运行的 PASS 行数**，不与独立普通读数相加。若完整入口失败，不能用覆盖标记宣布普通已通过。
+
+## 2. 独立普通诊断（opt-in）
+
+需要比较普通进程环境时才追加诊断：
+
+```powershell
+& '<bundled pwsh.exe>' -NoProfile -NonInteractive -File "$repo\scripts\verify-project.ps1" -GameData $game -IncludeOrdinary
+```
+
+单独编译运行普通配置仍可用：
+
+```powershell
+& $dotnet run --project "$repo\tests\PatchSmoke\PatchSmoke.csproj" -c Release `
+  "-p:STS2DataDir=$game" -p:EnableKernelTests=false -p:NuGetAudit=false
+```
+
+两种入口都保留；独立普通运行记录其实际命令、退出码、日志和 PASS 数，不能算第二份完整总数。聚焦诊断与打包 smoke 子集均不能替代第 1 节的默认完整验证。
 
 **通过数不在本文档里。** 判据（门槛）见 [`../AGENT.md`](../AGENT.md) §3 的表；
 读数（证据）只认 [`../work/verification/`](../work/verification) 里最近一次运行的
@@ -83,7 +100,19 @@ $build = Join-Path $repo ('work\type-load-check-' + [Guid]::NewGuid().ToString('
 
 - 参数：`TypeLoadCheck <含 CoopBots.dll 的目录> [额外探测目录...]`（`Program.cs:20`）。
 - 退出码 `0` 表示 `CoopBots.dll` 在无内核时仍能枚举全部类型；`1` 表示类型加载会失败；`2` 表示用法错误或隔离不可靠。
-- `scripts/build.ps1:27-30` 在打包前会自动跑这一步，失败即中止。
+- 默认完整验证在独立进程运行这一步。带 `-VerifiedGateBinding` 的打包路径验证既有类型加载证据并复用工件，不重新执行；legacy 无绑定路径仍自行运行类型加载和 smoke 子集。
+
+### 复用完整验证工件打包
+
+```powershell
+& '<bundled pwsh.exe>' -NoProfile -NonInteractive -File "$repo\scripts\build.ps1" `
+  -GameData $game -VerifiedGateBinding '<immutable-epoch-directory>/gate-run-binding.json' `
+  -Label '<fresh-label>'
+```
+
+绑定由该不可变 epoch 的 `run-bound-final-gates.ps1` 生成。打包核对门禁真实退出码 0、当前源码/构建引用/包内文档与冻结输入，以及 `gate/build/` 和运行时归档双 DLL；通过后直接复制门禁工件，**不重新构建或运行 smoke**。保存 ZIP 和包内两份 DLL 的哈希及包验证收据。Label 必须全新，已有输出目录/ZIP 不覆盖；输入变了必须重新获得匹配绑定，不能修改旧绑定掩盖变化。
+
+未传 `-VerifiedGateBinding` 的 legacy 出包仍走构建、类型加载和 smoke 子集。它可以用于备用诊断，不能称完整验证通过，也不能用 smoke 数字替代完整日志读数。
 
 ## 4. 构筑调参（⚠ 所属线已废弃，非发布门禁）
 

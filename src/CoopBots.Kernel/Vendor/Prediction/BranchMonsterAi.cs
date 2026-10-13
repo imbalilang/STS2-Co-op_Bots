@@ -164,7 +164,11 @@ internal static class BranchMonsterAi
                 knowledgeCounter++;
             if (source.Current.Id == "PONDER_MOVE")
             {
-                string nextId = knowledgeCounter < 3 ? "CURSE_OF_KNOWLEDGE_MOVE" : "SLAP_MOVE";
+                string nextId = ResolveConditional(
+                    (ConditionalBranchState)machine.States["CurseOfKnowledgeBranch"],
+                    source,
+                    combat,
+                    simulator);
                 MoveState next = (MoveState)machine.States[nextId];
                 log.Add(next.Id);
                 return source with { Current = next, StateLog = log, KnowledgeDemonCurseCounter = knowledgeCounter };
@@ -264,6 +268,8 @@ internal static class BranchMonsterAi
     {
         Creature owner = source.Monster.Creature;
         string monster = owner.Monster?.GetType().Name ?? string.Empty;
+        if (monster == "KnowledgeDemon" && branch.Id == "CurseOfKnowledgeBranch")
+            return source.KnowledgeDemonCurseCounter < 3 ? "CURSE_OF_KNOWLEDGE_MOVE" : "SLAP_MOVE";
         if (monster == "FrogKnight" && branch.Id == "HALF_HEALTH")
         {
             bool charged = combat.GetMonsterBool(owner, "_hasBeetleCharged");

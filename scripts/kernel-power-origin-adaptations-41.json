@@ -1,0 +1,42 @@
+{
+  "Search/SimulatedCombatState.cs": {
+    "base_sha256": "6fab92450732afb1716fb1045be6d09540758f49d175810222b69467a1ae051f",
+    "target_sha256": "55e979fa95dd962485f12d9e93047687c94eb8993a3eb9f8e09bbbe0379cd419",
+    "changes": [
+      {
+        "old": "                    simulator,\n                    this);\n            }\n        }\n        else\n        {\n            RegisterPendingInitialMonsterAi(creature);",
+        "new": "                    simulator,\n                    this);\n                RefreshPredictedEnemyIntent(creature);\n            }\n        }\n        else\n        {\n            RegisterPendingInitialMonsterAi(creature);"
+      },
+      {
+        "old": "        if (!removed)\n            return;\n        _creatures = null;",
+        "new": "        if (!removed)\n            return;\n        _enemiesIntendingAttack?.Remove(creature);\n        _creatures = null;"
+      }
+    ]
+  },
+  "Search/SimulatedCombatState.MonsterAi.cs": {
+    "base_sha256": "49a33063b299cb322b33a35e666cc02b89bf0a0a1865bc73a3f89e162ed1f408",
+    "target_sha256": "2076a85bc5f5d875c0a744beec0710294c3aa04f098fe06d4cf92fa658596dd4",
+    "changes": [
+      {
+        "old": "            NeedsInitialRoll = false,\n        };\n    }\n\n    public void ForceStunnedMove",
+        "new": "            NeedsInitialRoll = false,\n        };\n        RefreshPredictedEnemyIntent(creature);\n    }\n\n    public void ForceStunnedMove"
+      },
+      {
+        "old": "        (_monsterAiStates ??= [])[creature] = BranchMonsterAi.Advance(current, simulator, this);\n    }",
+        "new": "        (_monsterAiStates ??= [])[creature] = BranchMonsterAi.Advance(current, simulator, this);\n        RefreshPredictedEnemyIntent(creature);\n    }"
+      },
+      {
+        "old": "            (_monsterAiStates ??= [])[enemy] = BranchMonsterAi.RollInitial(current, simulator, this);\n            return;",
+        "new": "            (_monsterAiStates ??= [])[enemy] = BranchMonsterAi.RollInitial(current, simulator, this);\n            RefreshPredictedEnemyIntent(enemy);\n            return;"
+      },
+      {
+        "old": "            BranchMonsterStaticSnapshot.Capture(monster));\n    }\n\n    public void RegisterPendingInitialMonsterAi",
+        "new": "            BranchMonsterStaticSnapshot.Capture(monster));\n        RefreshPredictedEnemyIntent(creature);\n    }\n\n    public void RegisterPendingInitialMonsterAi"
+      },
+      {
+        "old": "            NeedsInitialRoll: rolledInitial == null);\n    }\n\n    private BranchMonsterAiState GetMonsterAiState",
+        "new": "            NeedsInitialRoll: rolledInitial == null);\n        RefreshPredictedEnemyIntent(creature);\n    }\n\n    // Native MonsterModel.IntendsToAttack reads the selected move's intent\n    // types. Every branch-owned AI rewrite refreshes the same per-owner value;\n    // neither live MonsterModel.NextMove nor old root intent data is consulted.\n    private void RefreshPredictedEnemyIntent(Creature creature)\n    {\n        _hasPredictedEnemyIntents = true;\n        var current = GetMonsterAiState(creature);\n        // Pending initial registration carries an unpublished placeholder.\n        // Only the completed initial roll can publish its attack membership.\n        var attacking = !current.NeedsInitialRoll && current.Current.Intents.Any(intent =>\n            intent.IntentType is IntentType.Attack or IntentType.DeathBlow);\n        if (ContainsCreature(creature) && attacking)\n            (_enemiesIntendingAttack ??= []).Add(creature);\n        else\n            _enemiesIntendingAttack?.Remove(creature);\n    }\n\n    private BranchMonsterAiState GetMonsterAiState"
+      }
+    ]
+  }
+}

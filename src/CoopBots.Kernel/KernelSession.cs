@@ -136,6 +136,44 @@ public sealed partial class KernelSession
         return null;
     }
 
+    /// <summary>
+    /// Deployment resolution for one planned step: key+occurrence first, then — only for
+    /// actions that recorded no key — the plain instance. When a key WAS recorded, an
+    /// instance whose live state no longer matches it is refused
+    /// (<c>card-state-changed</c>) instead of being played.
+    /// </summary>
+    /// <remarks>
+    /// P0-SIM-2 (2026-10-05 false VICTORY). The instance fallback existed for generated
+    /// cards whose planned model is never in the live hand. But it also silently accepted
+    /// a card whose mutable state had moved since verification (upgrade, cost change,
+    /// enchantment, affliction): the object identity matched while the semantics the plan
+    /// was verified against no longer did. A step is only the verified step when both the
+    /// object and its state key match.
+    /// </remarks>
+    public static CardModel? ResolvePlannedCard(Player player, CardModel? planned,
+        string stateKey, int occurrence, out string refusal)
+    {
+        var card = FindLiveCardByKey(player, stateKey, occurrence);
+        if (card is null && planned is not null
+            && player.PlayerCombatState?.Hand.Cards.Contains(planned) == true)
+        {
+            if (string.IsNullOrEmpty(stateKey))
+            {
+                refusal = "";
+                return planned;
+            }
+            var liveKey = CardChoiceSupport.ChoiceCardKey(planned);
+            if (!string.Equals(liveKey, stateKey, StringComparison.Ordinal))
+            {
+                refusal = $"card-state-changed:{planned.Id.Entry} planned={stateKey} live={liveKey}";
+                return null;
+            }
+            card = planned;
+        }
+        refusal = card is null ? "card-left-hand" : "";
+        return card;
+    }
+
     // Hand exposes stable originals so Play can resolve identity across forks.
     // Action keys must instead describe the branch's mutable preview: upgrades,
     // cost changes and afflictions may have changed since that original was captured.
@@ -222,32 +260,20 @@ public sealed partial class KernelSession
             : string.Join(";", gaps.Where(gap => !blocking.Contains(gap))
                 .Select(gap => $"{gap.SourceId}.{gap.Method}:{gap.Reason}"));
 
-    /// <summary>Completed player/enemy rounds advanced inside this branch.</summary>
+    /// <summary>Completed player-turn segments, including extra turns, inside this branch.</summary>
     public int RoundsAdvanced { get; private set; }
 
     /// <summary>
-    /// This branch's player-turn number, in the same units the live board reports through
-    /// <c>PlayerCombatState.TurnNumber</c>: the turn the search started from plus every
-    /// round this branch has advanced.
-    ///
-    /// <para>
-    /// The state text carries this as its <c>turn</c> field, so it has to be the BRANCH's
-    /// value. Rendering it from the live <c>PlayerCombatState</c> instead is a guaranteed
-    /// mismatch at every turn boundary — the text is recorded while the search is still in
-    /// the old turn and compared while the live board is in the new one. Measured
-    /// 2026-09-20: two crossings of one fight, both refused with
-    /// <c>field=turn expected={1} actual={2}</c> and <c>expected={4} actual={5}</c> —
-    /// always exactly one behind, always on the first step after a full set of seat
-    /// end-turns. The vendored solver splits the same two sources and gets it right by
-    /// passing the snapshot's own turn (CombatBeamSolver.PathDiagnostics.cs:44).
-    /// </para>
+    /// Latest simulated seat turn, used for search progress. Extra turns can give
+    /// seats different native TurnNumbers; continuation text renders each seat's
+    /// own simulated value rather than this aggregate or mutable live state.
     /// </summary>
-    public int TurnNumber => rootTurnNumber + RoundsAdvanced;
+    public int TurnNumber => Combat.Players.Select(Combat.GetPlayerTurnNumber).DefaultIfEmpty(rootTurnNumber).Max();
 
     private string? failedBoundary;
     private readonly CombatPredictionSimulator simulator;
     private readonly HashSet<uint> processedDeaths;
-    // The turn the captured root was on. TurnNumber is this plus RoundsAdvanced.
+    // Fallback for an empty captured party; player turn numbers live in Combat.
     private readonly int rootTurnNumber;
     // The live state this branch descends from. Only the diagnostic state-text
     // fingerprint needs it: the intent forecast is built once from the root, the
@@ -265,6 +291,17 @@ public sealed partial class KernelSession
     /// their evaluator prices it. See CombatSolverRoute.
     /// </summary>
     internal CombatPredictionSimulator Simulator => simulator;
+    // Physical potion identity is captured once. Vendor FindPotion matches only
+    // owner+model ID, which aliases duplicate bottles. Forkable potion slots
+    // preserve their captured model references; a replacement at the same slot
+    // must not resurrect an already consumed original. Live removal is harmless
+    // to an older frozen root because neither lookup reads the live belt again.
+    private IReadOnlyDictionary<PotionModel, (int Slot, PotionModel Captured)> capturedPotions
+        = new Dictionary<PotionModel, (int, PotionModel)>();
+    private PotionModel? FindCapturedPotion(PotionModel original)
+        => capturedPotions.TryGetValue(original, out var entry)
+            && ReferenceEquals(Combat.GetPotionAtSlot(original.Owner, entry.Slot), entry.Captured)
+                ? entry.Captured : null;
     private KernelSession(CombatPredictionSimulator simulator, HashSet<uint> deaths,
         CombatState? liveRoot = null, int rootTurnNumber = 0)
     { this.simulator = simulator; processedDeaths = deaths; this.liveRoot = liveRoot; this.rootTurnNumber = rootTurnNumber; }
@@ -290,15 +327,16 @@ public sealed partial class KernelSession
         CardDynamicVarWarmup.EnsureMaterialized(live);
         var session = new KernelSession(
             new CombatPredictionSimulator(new SimulatedCombatState(live, live.IterateHookListeners().ToArray())), new(), live,
-            // Every seat shares one turn number in co-op; take the first one that has a
-            // combat state. This is the anchor TurnNumber counts rounds forward from, and
-            // it is read ONCE, at capture — reading it per render is the bug documented on
-            // TurnNumber.
-            live.Players.Select(player => player.PlayerCombatState?.TurnNumber).FirstOrDefault(turn => turn is not null) ?? 0)
+            live.Players.Select(player => player.PlayerCombatState?.TurnNumber ?? 0).DefaultIfEmpty(0).Max())
         {
             ready = live.Players.Where(CombatManager.Instance.IsPlayerReadyToEndTurn).Select(p => p.NetId).ToHashSet(),
-            capturedExtraTurn = CombatManager.Instance.PlayersTakingExtraTurn.Count > 0
+            extraTurnParticipants = CombatManager.Instance.PlayersTakingExtraTurn.Select(p => p.NetId).ToHashSet()
         };
+        session.capturedPotions = live.Players.SelectMany(player => Enumerable.Range(0, player.PotionSlots.Count)
+            .Where(slot => player.GetPotionAtSlotIndex(slot) is not null)
+            .Select(slot => (Original: player.GetPotionAtSlotIndex(slot)!, Slot: slot,
+                Captured: session.Combat.GetPotionAtSlot(player, slot)!)))
+            .ToDictionary(row => row.Original, row => (row.Slot, row.Captured));
         session.VerifyProjection(live);
         return session;
     }
@@ -352,21 +390,47 @@ public sealed partial class KernelSession
     {
         if (failedBoundary is not null) throw new InvalidOperationException("Cannot fork incomplete action: " + failedBoundary);
         using var isolation = SimulationNotificationIsolation.Enter();
-        return new(simulator.Fork(), new(processedDeaths), liveRoot, rootTurnNumber) { ready = new(ready), capturedExtraTurn = capturedExtraTurn,
+        return new(simulator.Fork(), new(processedDeaths), liveRoot, rootTurnNumber) { ready = new(ready), extraTurnParticipants = new(extraTurnParticipants),
+            capturedPotions = capturedPotions,
+            synchronousChoicePlayers = new(synchronousChoicePlayers),
             EnemyPhaseCompleted = EnemyPhaseCompleted, HorizonClosed = HorizonClosed,
             LastActionHadEnvironmentalRisk = LastActionHadEnvironmentalRisk,
+            ProjectionDifferences = ProjectionDifferences.ToArray(),
+            AutoResolveEnemyChoices = AutoResolveEnemyChoices,
+            AutoResolveTurnStartChoices = AutoResolveTurnStartChoices,
             RoundsAdvanced = RoundsAdvanced };
     }
     public IReadOnlyList<Creature> Enemies => Combat.HittableEnemies.Where(c => Hp(c) > 0).ToArray();
 
+    // Targetability is not progress: a reviving boss still owns its future
+    // forms. Use the native lifecycle's effective HP for terminal comparison.
+    //
+    // public since 2026-10-05：mod 侧的 KernelCombatEvaluation 也要用同一份语义
+    // （次要敌人/爪牙不计进度），不能各自读 native 属性导致两套判定。
+    public bool IsPrimaryEnemy(Creature enemy)
+        => ((CoopBots.Kernel.Vendor.Engine.Common.ICombatPredictionCreatureSemantics)Combat).IsPrimaryEnemy(enemy);
+
+    internal (int Count, int Hp) RemainingOpposition()
+    {
+        int count = 0, hp = 0;
+        foreach (var enemy in Combat.Enemies.Where(IsPrimaryEnemy))
+        {
+            var remaining = Combat.EffectiveEnemyHp(enemy, simulator.State.GetCreature(enemy));
+            if (remaining <= 0) continue;
+            count++; hp += remaining;
+        }
+        return (count, hp);
+    }
+
     /// <summary>
-    /// Compact, conservative state key for search dedup: HP, block, energy, hand
-    /// identities, enemy health, powers and readiness. Two nodes with the same
-    /// key are equivalent for planning; anything not covered here keeps them
-    /// distinct, so dedup can only drop true duplicates.
+    /// Cheap grouping key: HP, block, energy, hand, powers and readiness. It
+    /// omits piles, RNG and mutable card state and is not an equality contract.
+    /// Production joint search disables this deduplication. Exact continuation
+    /// reuse must use PlanningState, never extend the lifetime of this key.
     /// </summary>
     public string CompactStateKey()
     {
+        using var allocation = AllocationProbe.Measure(AllocationProbe.Phase.CompactKey);
         var text = new System.Text.StringBuilder(256);
         foreach (var player in Combat.Players)
         {
@@ -432,7 +496,8 @@ public sealed partial class KernelSession
         {
             TargetType.AnyEnemy => Enemies.Cast<Creature?>().ToArray(),
             TargetType.AnyPlayer => Combat.Players.Where(p => Hp(p.Creature) > 0).Select(p => (Creature?)p.Creature).ToArray(),
-            TargetType.AnyAlly => Combat.Players.Where(p => p != source.Owner && Hp(p.Creature) > 0).Select(p => (Creature?)p.Creature).ToArray(),
+            TargetType.AnyAlly => Combat.Players.Count(p => Hp(p.Creature) > 0) > 1
+                ? Combat.Players.Where(p => Hp(p.Creature) > 0).Select(p => (Creature?)p.Creature).ToArray() : [],
             // A Self card is played with NO target: the live log shows
             // `PlayCardAction ... DEFEND_SILENT ... targetid:` blank and
             // `playing card DEFEND_SILENT (no target)`. This used to hand back the
@@ -445,7 +510,7 @@ public sealed partial class KernelSession
             // "case TargetType.Self: recipients = [owner]"), so this changes the
             // deployed target only.
             TargetType.Self => [null],
-            TargetType.Osty => Combat.GetOsty(source.Owner) is { } osty && Hp(osty) > 0 ? [osty] : [],
+            TargetType.Osty => Combat.GetOsty(card.Preview.Owner) is { } osty && Hp(osty) > 0 ? [osty] : [],
             TargetType.TargetedNoCreature => [],
             _ => [null]
         };
@@ -455,6 +520,9 @@ public sealed partial class KernelSession
     public int Block(Creature creature) => simulator.State.GetCreature(creature).Block;
     public int Energy(Player player) => simulator.State.GetPlayerCombatState(player).Energy;
     public IReadOnlyList<CardModel> Hand(Player player) => simulator.State.GetPlayerCombatState(player).Hand.Cards.Select(c => c.Original).ToArray();
+
+    // Original is a stable physical identity; transfers update the branch preview.
+    public Player CardOwner(CardModel source) => simulator.State.FindCard(source)?.Preview.Owner ?? source.Owner;
 
     // Before deploying a cached EndTurn, the live hand can contain an affordable
     // attack absent from the prediction. Replan only for a resolved improvement;
@@ -483,8 +551,9 @@ public sealed partial class KernelSession
     public bool HasOsty(Player player) => Combat.GetOsty(player) is not null;
     public int HeldPotionCount(Player player) => Enumerable.Range(0, player.MaxPotionCount)
         .Count(slot => Combat.GetPotionAtSlot(player, slot) is not null);
+    public bool HoldsPotion(PotionModel potion) => FindCapturedPotion(potion) is not null;
     public IReadOnlyList<PotionModel> UsablePotions(Player player) => player.Potions
-        .Where(p => Combat.FindPotion(p) is not null && !p.IsQueued && !p.HasBeenRemovedFromState && p.PassesCustomUsabilityCheck
+        .Where(p => FindCapturedPotion(p) is not null && !p.IsQueued && !p.HasBeenRemovedFromState && p.PassesCustomUsabilityCheck
             && p.Usage is PotionUsage.CombatOnly or PotionUsage.AnyTime)
         .ToArray();
     /// <summary>
@@ -516,7 +585,8 @@ public sealed partial class KernelSession
     /// </para>
     /// </remarks>
     public static bool CanModelPotion(PotionModel potion)
-        => PotionOnUseMirrors.CanMirror(potion) && !PotionChoiceSupport.RequiresChoice(potion);
+        => RequiresPotionChoiceContract(potion)
+            || PotionOnUseMirrors.CanMirror(potion) && !PotionChoiceSupport.RequiresChoice(potion);
 
     /// <summary>
     /// The status card the player's next play would hand them, or null when no
@@ -565,15 +635,22 @@ public sealed partial class KernelSession
     {
         using var isolation = SimulationNotificationIsolation.Enter();
         var card = simulator.State.FindCard(source);
-        return failedBoundary is null && card is not null && CanAct(source.Owner) && Combat.CanPlayCard(simulator, card);
+        return failedBoundary is null && card is not null && CanAct(card.Preview.Owner)
+            && simulator.State.GetPlayerCombatState(card.Preview.Owner).Hand.Cards.Contains(card)
+            && Combat.CanPlayCard(simulator, card);
     }
     public bool Play(CardModel source, Creature? target, out string boundary)
     {
+        LastTurnStartChoices = null;
+        using var allocation = AllocationProbe.Measure(AllocationProbe.Phase.Play);
         using var isolation = SimulationNotificationIsolation.Enter();
         if (failedBoundary is not null) { boundary = failedBoundary; return false; }
         var card = simulator.State.FindCard(source);
         if (card is null || !CanPlay(source)) { boundary = "unplayable"; return false; }
         if (!Targets(source).Contains(target)) { boundary = "invalid-target"; return false; }
+        // A transfer can change Preview.Owner during ManualPlay. This action's
+        // choices, turn and requested ending still belong to its original actor.
+        var actingOwner = card.Preview.Owner;
         // Any exception/choice/risk after this point leaves an unusable branch.
         // Never allow a partially resolved action to enter a subsequent fork.
         failedBoundary = "incomplete-action";
@@ -583,7 +660,7 @@ public sealed partial class KernelSession
         // mirrors themselves (ModifyDamageMirrors.HandleLethalityPower subtracts the
         // in-play card; HandleUnmovablePower subtracts GetPoweredBlockEvents(CardPlay)),
         // so the scope no longer exists upstream and ManualPlay needs no wrapper.
-        Combat.BeginActionChoices(ChoiceCursor(source.Owner));
+        Combat.BeginActionChoices(ChoiceCursor(actingOwner));
         var structural = false;
         try
         {
@@ -631,7 +708,7 @@ public sealed partial class KernelSession
         }
         finally { Combat.EndActionChoices(); }
         var requestedEnd = Combat.ConsumePlayerTurnEndRequest();
-        simulator.CheckWinCondition(Combat.GetPlayerTurnNumber(source.Owner));
+        simulator.CheckWinCondition(Combat.GetPlayerTurnNumber(actingOwner));
         // Only the played card's own semantics must be fully modeled to trust the
         // action. An unknown enemy power/relic hook is an approximation, not a
         // reason to remove the card from the plan: rejecting those made the bots
@@ -658,7 +735,7 @@ public sealed partial class KernelSession
         LastActionRiskDetail = DescribeUncompensated(gaps, blocking);
         boundary = blocking.Length > 0 ? "prediction-risk:" + string.Join(";", blocking.Select(gap => gap.ToString())) : "";
         failedBoundary = boundary.Length > 0 ? boundary : null;
-        if (boundary.Length == 0 && requestedEnd && !HasWon) return EndTurn(source.Owner, 1, out boundary);
+        if (boundary.Length == 0 && requestedEnd && !HasWon) return EndTurn(actingOwner, 1, out boundary);
         return boundary.Length == 0;
     }
 
@@ -668,7 +745,12 @@ public sealed partial class KernelSession
     /// confirmed by the same engine that plans the cards.
     /// </summary>
     public bool UsePotion(PotionModel potion, Creature? target, out string boundary)
+        => UsePotion(potion, target, null, out boundary);
+
+    private bool UsePotion(PotionModel potion, Creature? target, IReadOnlyList<KernelChoice>? choices, out string boundary)
     {
+        LastTurnStartChoices = null;
+        if (RequiresPotionChoiceContract(potion)) return UseTouch(potion, target, choices, out boundary);
         using var isolation = SimulationNotificationIsolation.Enter();
         if (failedBoundary is not null) { boundary = failedBoundary; return false; }
         if (!CanAct(potion.Owner)) { boundary = "owner-ended"; return false; }
@@ -703,7 +785,7 @@ public sealed partial class KernelSession
         try
         {
             // The simulation owns cloned potions; map the live one to its clone.
-            var simulated = Combat.FindPotion(potion);
+            var simulated = FindCapturedPotion(potion);
             if (simulated is null)
             { boundary = failedBoundary = "potion-not-captured"; return false; }
             var slot = SimulatedPotionSlot(simulated);
@@ -736,6 +818,12 @@ public sealed partial class KernelSession
             boundary = failedBoundary = "potion-exception:" + error.GetType().Name;
             return false;
         }
+        return FinishPotionEvidence(potion, out boundary);
+    }
+
+    // Ordinary and selected Touch lifecycles share the exact original evidence gate.
+    private bool FinishPotionEvidence(PotionModel potion, out string boundary)
+    {
         // Same rule as Play: only the potion's own OnUse must be modeled; other
         // unknowns are estimates and are surfaced through the risk flag.
         var gaps = PredictionCoverage.Collect(simulator).Where(gap => !gap.Compensated).ToArray();

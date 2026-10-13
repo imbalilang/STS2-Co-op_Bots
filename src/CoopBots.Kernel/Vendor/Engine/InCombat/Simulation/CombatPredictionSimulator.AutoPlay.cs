@@ -33,6 +33,13 @@ internal sealed partial class CombatPredictionSimulator
             return false;
         }
 
+        // Direct hook-driven autoplay (Hellraiser while drawing, Sly while
+        // discarding) may be the FIRST card transaction. Its nested selector
+        // needs the same death-set/scope identity as an ordinary manual play;
+        // otherwise a captured CardSelection frame has nothing to restore.
+        using IDisposable? cardScope = (State.CombatState as ICombatPredictionCardExecutionSink)
+            ?.BeginCardExecutionScope();
+
         if (card.HasKeyword(State, CardKeyword.Unplayable) ||
             !HookMirrors.ShouldPlay(this, card, out _, type) ||
             !TryResolveAutoPlayTarget(card, ref target))

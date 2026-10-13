@@ -1,3 +1,4 @@
+using CoopBots.Building;
 ﻿using System.Reflection;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Commands;
@@ -23,6 +24,8 @@ public sealed class BotShopMessage : INetMessage, IRunLocationTargetedMessage
     public int Sequence, Entry, Removal, Price, Gold;
     public ulong Bot;
     public bool Ack, Success;
+    public bool Parasol;
+    public int PotionDiscard = -1;
     public string Key = "";
     public string State = "";
     public RunLocation Location { get; set; }
@@ -33,12 +36,12 @@ public sealed class BotShopMessage : INetMessage, IRunLocationTargetedMessage
     public void Serialize(PacketWriter w)
     {
         w.WriteInt(Sequence); w.WriteInt(Entry); w.WriteInt(Removal); w.WriteInt(Price); w.WriteInt(Gold);
-        w.WriteULong(Bot); w.WriteBool(Ack); w.WriteBool(Success); w.WriteString(Key); w.WriteString(State); w.Write(Location);
+        w.WriteULong(Bot); w.WriteBool(Ack); w.WriteBool(Success); w.WriteBool(Parasol); w.WriteInt(PotionDiscard); w.WriteString(Key); w.WriteString(State); w.Write(Location);
     }
     public void Deserialize(PacketReader r)
     {
         Sequence = r.ReadInt(); Entry = r.ReadInt(); Removal = r.ReadInt(); Price = r.ReadInt(); Gold = r.ReadInt();
-        Bot = r.ReadULong(); Ack = r.ReadBool(); Success = r.ReadBool(); Key = r.ReadString(); State = r.ReadString(); Location = r.Read<RunLocation>();
+        Bot = r.ReadULong(); Ack = r.ReadBool(); Success = r.ReadBool(); Parasol = r.ReadBool(); PotionDiscard = r.ReadInt(); Key = r.ReadString(); State = r.ReadString(); Location = r.Read<RunLocation>();
     }
 }
 
@@ -50,6 +53,7 @@ internal static class BotShopDriver
     private static MerchantRoom? room;
     private static int nextSequence;
     private static Task<bool>? running;
+    private static readonly ConstructionPoll<BotShopPlanner.Choice?> planning = new();
     private static BotShopMessage? pending;
     private static readonly Queue<BotShopMessage> incoming = new();
     private static readonly Dictionary<int, BotShopMessage> completed = new();
@@ -57,16 +61,32 @@ internal static class BotShopDriver
     private static readonly HashSet<ulong> expected = new();
     private static readonly HashSet<ulong> done = new();
     private static readonly Dictionary<ulong, int> purchases = new();
+    private static readonly Dictionary<ulong, HashSet<int>> parasolVisited = new();
+    private static readonly Dictionary<ulong,(MerchantInventory Inventory,Task Task)> nativeParasol = new();
     private static bool faulted;
+    // 为什么需要它：2026-09-29 实机在商店里永久卡住，日志只有一句"购买失败或状态不一致"，
+    // 既没说哪一席、也没说哪一件、更没说哪一道守卫——R5c"每个 return false 都要能被指名"。
+    // 每次 Execute 拒绝前把原因写在这里，Fail 会把它带进日志。
+    private static string refusal = "unknown";
     private static long started;
     private static long nextIdleLogAt;
 
     internal static void Initialize(RunManager instance)
     {
+        planning.Clear();
         manager = instance; room = null; pending = null; running = null; nextSequence = 0; faulted = false;
-        incoming.Clear(); completed.Clear(); acknowledgments.Clear(); expected.Clear(); done.Clear(); purchases.Clear();
+        incoming.Clear(); completed.Clear(); acknowledgments.Clear(); expected.Clear(); done.Clear(); purchases.Clear(); parasolVisited.Clear(); nativeParasol.Clear();
         instance.RunLocationTargetedBuffer.RegisterMessageHandler<BotShopMessage>(Receive);
     }
+
+    /// <summary>
+    /// True once this peer has given up on shopping (a purchase was refused). The room's
+    /// continue must NOT stay held on it: <see cref="Finished"/> can never become true after
+    /// a fault, so holding the continue there freezes the whole party in the shop forever
+    /// (live 2026-09-29, floor 25: one refused purchase and the run never left the shop).
+    /// </summary>
+    internal static bool Faulted => faulted;
+    internal static bool FaultedIn(RunState state) => faulted && ReferenceEquals(room, state.CurrentRoom);
 
     private static void Receive(BotShopMessage message, ulong sender)
     {
@@ -95,6 +115,8 @@ internal static class BotShopDriver
         try
         {
             if (state.CurrentRoom is not MerchantRoom shop || !ReferenceEquals(room, shop)) return false;
+            if(faulted)return false;
+            if(NativeParasolPending(shop))return false;
             var driven = shop.Inventories.Where(i => AutoPilot.Drives(i.Player.NetId)).ToList();
             return driven.Count > 0
                 && driven.All(i => done.Contains(i.Player.NetId) || !i.Player.Creature.IsAlive);
@@ -121,6 +143,7 @@ internal static class BotShopDriver
             // Drop the remembered shop once we are out of it. Without this, every room after
             // the first shop keeps `room` set, so this diagnostic fires once per five seconds
             // for the rest of the climb — and `Finished()` must not read a stale shop anyway.
+            planning.Clear();
             room = null;
             var suspicious = state.CurrentRoom?.RoomType == RoomType.Shop;
             if (suspicious && Environment.TickCount64 >= nextIdleLogAt)
@@ -134,7 +157,8 @@ internal static class BotShopDriver
         }
         if (!ReferenceEquals(room, current))
         {
-            room = current; done.Clear(); purchases.Clear();
+            planning.Clear();
+            room = current; done.Clear(); purchases.Clear(); parasolVisited.Clear();
             foreach (var inventory in current.Inventories)
                 Log.Info($"CoopBots shop: entered for seat {inventory.Player.NetId} "
                     + $"(driven={AutoPilot.Drives(inventory.Player.NetId)}, gold={inventory.Player.Gold}, "
@@ -143,6 +167,20 @@ internal static class BotShopDriver
                     + "]");
         }
         if (faulted) return true;
+        // Native purchases belong to real owners' own clients. Let that task
+        // finish before submitting virtual transactions or driven-human paid
+        // purchases; otherwise a handed-over local seat races its free callback.
+        if(NativeParasolPending(current))return true;
+        foreach(var native in nativeParasol.Values.Where(n=>current.Inventories.Contains(n.Inventory) && n.Task.IsCompleted))
+        {
+            if(!native.Task.IsCompletedSuccessfully)
+            {
+                refusal=$"native-parasol-task-failed:bot={native.Inventory.Player.NetId}:canceled={native.Task.IsCanceled}";
+                Fail("原生阳伞购买未成功完成；停止Bot购物，请检查原生购买错误。 "+native.Task.Exception?.GetBaseException().Message);
+                return true;
+            }
+            if(AutoPilot.Drives(native.Inventory.Player.NetId))done.Add(native.Inventory.Player.NetId);
+        }
         if (pending is not null)
         {
             if (running is null || !running.IsCompleted) return true;
@@ -162,8 +200,12 @@ internal static class BotShopDriver
                 var actual = Fingerprint(current.Inventories.First(i => i.Player == buyer));
                 if (acknowledgments.Values.Any(a => !a.Success || a.Bot != buyer.NetId || a.Gold != buyer.Gold || a.State != actual))
                 { Fail("各端Bot购买结果不一致；停止继续购物，请重新读档检查日志。"); return true; }
-                purchases[buyer.NetId] = purchases.GetValueOrDefault(buyer.NetId) + 1;
-                if (purchases[buyer.NetId] >= 8) done.Add(buyer.NetId);
+                if (pending.Parasol) Visited(buyer.NetId).Add(pending.Entry);
+                else
+                {
+                    purchases[buyer.NetId] = purchases.GetValueOrDefault(buyer.NetId) + 1;
+                    if (purchases[buyer.NetId] >= 8) done.Add(buyer.NetId);
+                }
             }
             else
             {
@@ -190,7 +232,15 @@ internal static class BotShopDriver
         foreach (var inventory in current.Inventories.Where(i => AutoPilot.Drives(i.Player.NetId)).OrderBy(i => i.Player.NetId))
         {
             if (done.Contains(inventory.Player.NetId) || !inventory.Player.Creature.IsAlive) continue;
-            var choice = BotShopPlanner.Choose(inventory);
+            string Context() {
+                if (!ReferenceEquals(state.CurrentRoom, current) || !AutoPilot.Drives(inventory.Player.NetId))
+                    throw new OperationCanceledException();
+                return Fingerprint(inventory);
+            }
+            var free = ParasolOwner(inventory.Player);
+            var key = ConstructionDecision.Fingerprint(inventory.Player) + inventory.Player.NetId + Context();
+            if (!planning.TryGet(key, token => ConstructionDecision.RunAsync(inventory.Player,
+                () => free ? NextParasol(inventory, Visited(inventory.Player.NetId)) : BotShopPlanner.Choose(inventory), Context, token), out var choice)) return true;
             if (choice is null)
             {
                 // Also used to be silent. "the bot decided not to buy" and "the bot never
@@ -203,8 +253,11 @@ internal static class BotShopDriver
                 continue;
             }
             var command = new BotShopMessage { Sequence = ++nextSequence, Bot = inventory.Player.NetId, Entry = choice.Index,
-                Removal = choice.RemovalIndex, Price = choice.Cost, Gold = inventory.Player.Gold,
+                Removal = choice.RemovalIndex, Price = choice.Cost, Gold = inventory.Player.Gold, Parasol = free,
                 Key = BotShopPlanner.Key(inventory.AllEntries.ElementAt(choice.Index)), State = Fingerprint(inventory), Location = instance.RunLocationTargetedBuffer.CurrentLocation };
+            if (free && inventory.AllEntries.ElementAt(choice.Index) is MerchantPotionEntry { Model: { } incomingPotion }
+                && !inventory.Player.HasOpenPotionSlots && BotPotionInventory.Replacement(inventory.Player, incomingPotion) is { } oldPotion)
+                command.PotionDiscard = inventory.Player.PotionSlots.ToList().IndexOf(oldPotion);
             expected.Clear(); acknowledgments.Clear();
             if (instance.NetService is NetHostGameService host)
                 foreach (var peer in host.ConnectedPeers.Where(p => p.readyForBroadcasting)) expected.Add(peer.peerId);
@@ -221,32 +274,104 @@ internal static class BotShopDriver
         running = Execute(message, state);
     }
 
+    private static HashSet<int> Visited(ulong id)
+    {
+        if (!parasolVisited.TryGetValue(id, out var value)) parasolVisited[id] = value = new();
+        return value;
+    }
+
+    // Native LordsParasol uses GetLocalInventory(), so it never purchases a
+    // virtual seat's inventory. Real seats have a client that already owns that
+    // callback; only virtual owners need the host's replicated compensation.
+    internal static bool ParasolOwner(Player player) => BotRegistry.IsBot(player.NetId)
+        && player.Relics.Any(r => r is LordsParasol && r.Owner == player);
+
+    internal static void ObserveNativeParasol(LordsParasol relic,MerchantInventory inventory,Task task)
+    {
+        if(inventory.Player!=relic.Owner || BotRegistry.IsBot(inventory.Player.NetId))return;
+        nativeParasol[inventory.Player.NetId]=(inventory,task);
+    }
+    internal static bool NativeParasolPending(MerchantRoom shop)
+        =>nativeParasol.Values.Any(n=>shop.Inventories.Contains(n.Inventory) && !n.Task.IsCompleted);
+
+    internal static BotShopPlanner.Choice? NextParasol(MerchantInventory inventory, IReadOnlySet<int> visited)
+    {
+        var entries = inventory.AllEntries.ToList();
+        for (var index = 0; index < entries.Count; index++)
+        {
+            var entry = entries[index];
+            if (visited.Contains(index) || !entry.IsStocked) continue;
+            if (entry is MerchantPotionEntry { Model: { } potion }
+                && (!Hook.ShouldProcurePotion(inventory.Player.RunState, inventory.Player.Creature.CombatState, potion, inventory.Player)
+                    || !inventory.Player.HasOpenPotionSlots && BotPotionInventory.Replacement(inventory.Player, potion) is null)) continue;
+            var removal = -1;
+            if (entry is MerchantCardRemovalEntry)
+            {
+                var deck = inventory.Player.Deck.Cards;
+                removal = deck.ToList().FindIndex(c => c.IsRemovable && c.Type == MegaCrit.Sts2.Core.Entities.Cards.CardType.Curse && !BotShopPlanner.IsNeverRemoved(c));
+                if (removal < 0) removal = BotShopPlanner.BestRemoval(deck, inventory.Player).index;
+                // Native's forced prompt can remove any legal card, including
+                // a negative-value target. Prefer the least harmful legal one;
+                // never fake a cancel when a removable card exists.
+                if (removal < 0) removal = deck.Select((c, i) => (c, i)).Where(x => x.c.IsRemovable && !BotShopPlanner.IsNeverRemoved(x.c))
+                    .OrderByDescending(x => BotShopPlanner.RemovalValue(x.c, inventory.Player)).Select(x => x.i).DefaultIfEmpty(-1).First();
+                if (removal < 0) continue;
+            }
+            return new(index, removal, 0, 0);
+        }
+        return null;
+    }
+
     private static async Task<bool> Execute(BotShopMessage message, RunState state)
     {
-        if (state.CurrentRoom is not MerchantRoom shop || !AutoPilot.Drives(message.Bot)) return false;
+        if (state.CurrentRoom is not MerchantRoom shop || !AutoPilot.Drives(message.Bot))
+        { refusal = $"not-a-shop-or-undriven-seat:room={state.CurrentRoom?.RoomType.ToString() ?? "null"}"; return false; }
         var inventory = shop.Inventories.FirstOrDefault(i => i.Player.NetId == message.Bot);
-        if (inventory is null) return false;
+        if (inventory is null) { refusal = "inventory-missing"; return false; }
         var player = inventory.Player;
         var entry = inventory.AllEntries.ElementAtOrDefault(message.Entry);
-        if (entry is null || !entry.IsStocked || !player.Creature.IsAlive || player.Gold != message.Gold || Fingerprint(inventory) != message.State
-            || entry.Cost != message.Price || message.Price < 0 || player.Gold < message.Price || BotShopPlanner.Key(entry) != message.Key) return false;
+        if (entry is null) { refusal = $"entry-missing:idx={message.Entry}"; return false; }
+        if (!entry.IsStocked) { refusal = $"sold-out:{BotShopPlanner.Key(entry)}"; return false; }
+        if (!player.Creature.IsAlive) { refusal = "seat-dead"; return false; }
+        if (player.Gold != message.Gold) { refusal = $"gold-moved:now={player.Gold},planned={message.Gold}"; return false; }
+        if (Fingerprint(inventory) != message.State) { refusal = $"state-moved:{BotShopPlanner.Key(entry)}"; return false; }
+        if (message.Parasol && (!ParasolOwner(player) || message.Price != 0))
+        { refusal = "parasol-owner-or-free-price-mismatch"; return false; }
+        if (!message.Parasol && entry.Cost != message.Price) { refusal = $"price-moved:now={entry.Cost},planned={message.Price}:{BotShopPlanner.Key(entry)}"; return false; }
+        if (message.Price < 0) { refusal = $"negative-price:{BotShopPlanner.Key(entry)}"; return false; }
+        if (player.Gold < message.Price) { refusal = $"cannot-afford:{player.Gold}<{message.Price}:{BotShopPlanner.Key(entry)}"; return false; }
+        if (BotShopPlanner.Key(entry) != message.Key) { refusal = $"key-moved:now={BotShopPlanner.Key(entry)},planned={message.Key}"; return false; }
         Scope.Value = new(entry, message.Price);
         try
         {
+            string? detail = null;
+            if (message.PotionDiscard >= 0)
+            {
+                if (!message.Parasol || entry is not MerchantPotionEntry { Model: { } incomingPotion }
+                    || player.PotionSlots.ElementAtOrDefault(message.PotionDiscard) is not { } oldPotion
+                    || BotPotionInventory.Replacement(player, incomingPotion) != oldPotion)
+                { refusal = "parasol-potion-replacement-mismatch"; return false; }
+                await PotionCmd.Discard(oldPotion);
+            }
             if (entry is MerchantCardRemovalEntry removal)
             {
                 var card = player.Deck.Cards.ElementAtOrDefault(message.Removal);
-                if (card is null || !card.IsRemovable) return false;
+                if (card is null) { refusal = $"removal-index-missing:{message.Removal}"; return false; }
+                if (!card.IsRemovable) { refusal = $"removal-not-removable:{card.Id.Entry}"; return false; }
                 await PlayerCmd.LoseGold(message.Price, player, GoldLossType.Spent);
                 await CardPileCmd.RemoveFromDeck(card);
                 player.ExtraFields.CardShopRemovalsUsed++;
                 removal.SetUsed();
                 await Hook.AfterItemPurchased(state, player, entry, message.Price);
                 entry.InvokePurchaseCompleted(entry);
+                // 实机 2026-09-29：日志只写 item=remove，被删的是哪张牌根本查不到——一次
+                // "先锻造+附魔、再在商店删掉"的投资浪费只能靠存档反推。把牌名写进来。
+                detail = $" removed={card.Id.Entry}+{card.CurrentUpgradeLevel}";
             }
-            else if (!await entry.OnTryPurchaseWrapper(inventory)) return false;
+            else if (!await entry.OnTryPurchaseWrapper(inventory, ignoreCost: message.Parasol))
+            { refusal = $"game-refused:{BotShopPlanner.Key(entry)}/cost={message.Price}/gold={player.Gold}"; return false; }
             BotCooperation.LastAction = $"商店：Bot购买 {message.Key}，花费 {message.Price}，余额 {player.Gold}";
-            Log.Info($"CoopBots shop #{message.Sequence}: bot={player.NetId} item={message.Key} cost={message.Price} gold={player.Gold}");
+            Log.Info($"CoopBots shop #{message.Sequence}: bot={player.NetId} item={message.Key} cost={message.Price} gold={player.Gold} parasol={message.Parasol}{detail}");
             return true;
         }
         finally { Scope.Value = null; }
@@ -265,13 +390,20 @@ internal static class BotShopDriver
     private static void Fail(string reason)
     {
         faulted = true; BotCooperation.LastAction = "商店：" + reason;
-        Log.Error("CoopBots shop: " + reason + " " + running?.Exception);
+        Log.Error($"CoopBots shop: {reason} bot={pending?.Bot} key={pending?.Key} refused={refusal} {running?.Exception}");
         // Only a CLIENT reports back to a host. Reading this as "!= Host" made a
         // singleplayer run the sender of its own failure ack.
         if (!RunAuthority.IsSubmittingPeer(manager) && pending is not null)
             manager?.NetService.SendMessage(new BotShopMessage { Sequence = pending.Sequence, Bot = pending.Bot, Ack = true,
                 Success = false, Location = pending.Location });
     }
+}
+
+[HarmonyPatch(typeof(LordsParasol), "PurchaseEverything")]
+internal static class BotNativeParasolPurchasePatch
+{
+    private static void Postfix(LordsParasol __instance,MerchantInventory inventory,Task __result)
+        =>BotShopDriver.ObserveNativeParasol(__instance,inventory,__result);
 }
 
 [HarmonyPatch(typeof(RunManager), "InitializeShared")]
@@ -283,6 +415,7 @@ internal static class BotShopInitializePatch
         BotChoicePlanSync.Initialize(__instance);
         BotCalloutSync.Initialize(__instance);
         CrystalSphereSync.Initialize(__instance);
+        ConstructionPerfSync.Initialize(__instance);
     }
 }
 

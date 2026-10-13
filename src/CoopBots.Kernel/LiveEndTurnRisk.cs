@@ -25,12 +25,15 @@ public static class LiveEndTurnRisk
 {
     public readonly record struct Result(double HpLost, int Deaths, bool Simulated);
 
-    public static Result Evaluate(CombatState combat, IReadOnlyList<Player> actors, int rounds)
+    public static Result Evaluate(CombatState combat, IReadOnlyList<Player> actors, int rounds,
+        IEnumerable<ulong>? synchronousChoicePlayers = null)
     {
         try
         {
             if (actors.Count == 0) return new(0, 0, false);
             var session = KernelSession.Capture(combat);
+            if (synchronousChoicePlayers is not null)
+                session.ConfigureSynchronousChoicePlayers(synchronousChoicePlayers);
             // Ending every driven seat's turn in sequence is what advances the enemy
             // phase in the simulator; one seat's end alone leaves it half-run, which is
             // why the search does the same thing node by node.

@@ -1,0 +1,552 @@
+{
+  "Engine/InCombat/Simulation/CombatPredictionSimulator.EndTurn.cs": {
+    "base_sha256": "96ed1d46547d8acbc8004d85fe844980889984922c74cc992ecd6047f0595c3f",
+    "changes": [
+      {
+        "start": 1492,
+        "end": 1564,
+        "old": "    internal bool SimulateEndPlayerTurnAfterOrbPassives(int playerTurn)\n",
+        "new": "    internal bool SimulateEndPlayerTurnAfterOrbPassives(int playerTurn, IReadOnlyList<Player>? participants = null, Func<Player, bool>? beforeHandEffects = null)\n"
+      },
+      {
+        "start": 1623,
+        "end": 1682,
+        "old": "        var playersEndingTurn = State.CombatState.Players;\n",
+        "new": "        var playersEndingTurn = participants ?? State.CombatState.Players;\n"
+      },
+      {
+        "start": 1743,
+        "end": 1779,
+        "old": "            if (!DoTurnEnd(player))\n",
+        "new": "            if ((beforeHandEffects is not null && !beforeHandEffects(player)) || !DoTurnEnd(player))\n"
+      }
+    ]
+  },
+  "Prediction/CorePowerSupport.cs": {
+    "base_sha256": "f3e468b1a6b68d9e6334c4c17e4d0a9af753917c60e8a3e3c33921193d0d432c",
+    "changes": []
+  },
+  "Prediction/EndTurnPowerSupport.cs": {
+    "base_sha256": "0b572fa5fdaeaf65c0ab9ba72b61b6230185f6771a2790cdab9be379e4ff4d17",
+    "changes": []
+  },
+  "Prediction/MonsterMoveEffects.cs": {
+    "base_sha256": "4b8aee2782f974604f5e03d135d79084b1d0fc776bb420d2e732bdd332366477",
+    "changes": [
+      {
+        "start": 11196,
+        "end": 11258,
+        "old": "        IReadOnlyList<PlanCardChoice>? plannedChoices = null)\n",
+        "new": "        IReadOnlyList<PlanCardChoice>? plannedChoices = null, IReadOnlyList<Creature>? partyTargets = null)\n"
+      },
+      {
+        "start": 11293,
+        "end": 11293,
+        "old": "",
+        "new": "        var targets = partyTargets ?? new[] { player };\n"
+      },
+      {
+        "start": 15992,
+        "end": 16059,
+        "old": "                combat.ApplyDampen(simulator, player, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    combat.ApplyDampen(simulator, partyTarget, move.Owner);\n"
+      },
+      {
+        "start": 16152,
+        "end": 16205,
+        "old": "                KnowledgeDemonChoiceSupport.Resolve(\n",
+        "new": "                foreach (var partyTarget in targets)\n                    KnowledgeDemonChoiceSupport.Resolve(\n"
+      },
+      {
+        "start": 16265,
+        "end": 16293,
+        "old": "                    player,\n",
+        "new": "                    partyTarget,\n"
+      },
+      {
+        "start": 16491,
+        "end": 16563,
+        "old": "                Debuff<VulnerablePower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<VulnerablePower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 17062,
+        "end": 17135,
+        "old": "                simulator.AddToCombat<Burn>(\n                    player,\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Burn>(\n                    partyTarget,\n"
+      },
+      {
+        "start": 17566,
+        "end": 17632,
+        "old": "                Debuff<WeakPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<WeakPower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 17868,
+        "end": 17940,
+        "old": "                Debuff<VulnerablePower>(combat, player, 2, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<VulnerablePower>(combat, partyTarget, 2, move.Owner);\n"
+      },
+      {
+        "start": 18021,
+        "end": 18088,
+        "old": "                Debuff<FrailPower>(combat, player, 2, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, 2, move.Owner);\n"
+      },
+      {
+        "start": 18316,
+        "end": 18383,
+        "old": "                Debuff<FrailPower>(combat, player, 2, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, 2, move.Owner);\n"
+      },
+      {
+        "start": 18912,
+        "end": 18979,
+        "old": "                Debuff<FrailPower>(combat, player, 2, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, 2, move.Owner);\n"
+      },
+      {
+        "start": 19212,
+        "end": 19278,
+        "old": "                Debuff<WeakPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<WeakPower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 19536,
+        "end": 19683,
+        "old": "                Debuff<WeakPower>(combat, player, 3, move.Owner);\n                simulator.AddToCombat<Dazed>(player, PileType.Discard, 5, null);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<WeakPower>(combat, partyTarget, 3, move.Owner);\n                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Dazed>(partyTarget, PileType.Discard, 5, null);\n"
+      },
+      {
+        "start": 19772,
+        "end": 19840,
+        "old": "                Debuff<TenderPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<TenderPower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 21077,
+        "end": 21144,
+        "old": "                Debuff<FrailPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 21229,
+        "end": 21295,
+        "old": "                Debuff<WeakPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<WeakPower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 22179,
+        "end": 22318,
+        "old": "                combat.Apply<StrengthPower>(player, -2, move.Owner);\n                combat.Apply<DexterityPower>(player, -2, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    combat.Apply<StrengthPower>(partyTarget, -2, move.Owner);\n                foreach (var partyTarget in targets)\n                    combat.Apply<DexterityPower>(partyTarget, -2, move.Owner);\n"
+      },
+      {
+        "start": 22467,
+        "end": 22549,
+        "old": "                simulator.AddToCombat<Slimed>(player, PileType.Discard, 2, null);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Slimed>(partyTarget, PileType.Discard, 2, null);\n"
+      },
+      {
+        "start": 22624,
+        "end": 22706,
+        "old": "                simulator.AddToCombat<Slimed>(player, PileType.Discard, 1, null);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Slimed>(partyTarget, PileType.Discard, 1, null);\n"
+      },
+      {
+        "start": 22927,
+        "end": 22999,
+        "old": "                Debuff<VulnerablePower>(combat, player, 3, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<VulnerablePower>(combat, partyTarget, 3, move.Owner);\n"
+      },
+      {
+        "start": 23069,
+        "end": 23147,
+        "old": "                simulator.AddToCombat<Toxic>(player, PileType.Hand, 2, null);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Toxic>(partyTarget, PileType.Hand, 2, null);\n"
+      },
+      {
+        "start": 23653,
+        "end": 23734,
+        "old": "                simulator.AddToCombat<Dazed>(player, PileType.Discard, 3, null);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Dazed>(partyTarget, PileType.Discard, 3, null);\n"
+      },
+      {
+        "start": 24057,
+        "end": 24134,
+        "old": "                simulator.AddToCombat<Burn>(player, PileType.Hand, 4, null);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Burn>(partyTarget, PileType.Hand, 4, null);\n"
+      },
+      {
+        "start": 24557,
+        "end": 24624,
+        "old": "                Debuff<FrailPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 25219,
+        "end": 25304,
+        "old": "                simulator.AddToCombat<Infection>(player, PileType.Discard, 1, null);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Infection>(partyTarget, PileType.Discard, 1, null);\n"
+      },
+      {
+        "start": 26156,
+        "end": 26276,
+        "old": "                Debuff<FrailPower>(combat, player, combat.GetMonsterStaticInt(move.Owner, \"GoopFrailAmt\"), move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, combat.GetMonsterStaticInt(move.Owner, \"GoopFrailAmt\"), move.Owner);\n"
+      },
+      {
+        "start": 26351,
+        "end": 26480,
+        "old": "                Debuff<VulnerablePower>(combat, player, combat.GetMonsterStaticInt(move.Owner, \"ScreamMoveAmount\"), move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<VulnerablePower>(combat, partyTarget, combat.GetMonsterStaticInt(move.Owner, \"ScreamMoveAmount\"), move.Owner);\n"
+      },
+      {
+        "start": 26670,
+        "end": 26746,
+        "old": "                combat.Apply<StrengthPower>(player, -strength, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    combat.Apply<StrengthPower>(partyTarget, -strength, move.Owner);\n"
+      },
+      {
+        "start": 27717,
+        "end": 27798,
+        "old": "                simulator.AddToCombat<Dazed>(player, PileType.Discard, 3, null);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Dazed>(partyTarget, PileType.Discard, 3, null);\n"
+      },
+      {
+        "start": 27878,
+        "end": 27950,
+        "old": "                Debuff<VulnerablePower>(combat, player, 2, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<VulnerablePower>(combat, partyTarget, 2, move.Owner);\n"
+      },
+      {
+        "start": 28626,
+        "end": 28693,
+        "old": "                Debuff<FrailPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 28928,
+        "end": 28995,
+        "old": "                combat.Apply<ShrinkPower>(player, -1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    combat.Apply<ShrinkPower>(partyTarget, -1, move.Owner);\n"
+      },
+      {
+        "start": 29082,
+        "end": 29151,
+        "old": "                Debuff<TangledPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<TangledPower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 29369,
+        "end": 29438,
+        "old": "                combat.Apply<ConstrictPower>(player, 3, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    combat.Apply<ConstrictPower>(partyTarget, 3, move.Owner);\n"
+      },
+      {
+        "start": 29511,
+        "end": 29574,
+        "old": "                combat.Apply<HexPower>(player, 2, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    combat.Apply<HexPower>(partyTarget, 2, move.Owner);\n"
+      },
+      {
+        "start": 29813,
+        "end": 29951,
+        "old": "                Debuff<VulnerablePower>(combat, player, 2, move.Owner);\n                Debuff<WeakPower>(combat, player, 2, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<VulnerablePower>(combat, partyTarget, 2, move.Owner);\n                foreach (var partyTarget in targets)\n                    Debuff<WeakPower>(combat, partyTarget, 2, move.Owner);\n"
+      },
+      {
+        "start": 30313,
+        "end": 30396,
+        "old": "                simulator.AddToCombat<Slimed>(player, PileType.Discard, 10, null);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Slimed>(partyTarget, PileType.Discard, 10, null);\n"
+      },
+      {
+        "start": 30484,
+        "end": 30550,
+        "old": "                Debuff<WeakPower>(combat, player, 3, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<WeakPower>(combat, partyTarget, 3, move.Owner);\n"
+      },
+      {
+        "start": 30698,
+        "end": 30771,
+        "old": "                Debuff<VulnerablePower>(combat, player, 99, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<VulnerablePower>(combat, partyTarget, 99, move.Owner);\n"
+      },
+      {
+        "start": 30853,
+        "end": 30935,
+        "old": "                simulator.AddToCombat<Slimed>(player, PileType.Discard, 1, null);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Slimed>(partyTarget, PileType.Discard, 1, null);\n"
+      },
+      {
+        "start": 32089,
+        "end": 32174,
+        "old": "                simulator.AddToCombat<Infection>(player, PileType.Discard, 3, null);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Infection>(partyTarget, PileType.Discard, 3, null);\n"
+      },
+      {
+        "start": 32250,
+        "end": 32331,
+        "old": "                simulator.AddToCombat<Wound>(player, PileType.Discard, 3, null);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Wound>(partyTarget, PileType.Discard, 3, null);\n"
+      },
+      {
+        "start": 33024,
+        "end": 33165,
+        "old": "                combat.Apply<DexterityPower>(player, -combat.GetMonsterStaticInt(move.Owner, \"DebilitatingSmogDexStealAmount\"), move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    combat.Apply<DexterityPower>(partyTarget, -combat.GetMonsterStaticInt(move.Owner, \"DebilitatingSmogDexStealAmount\"), move.Owner);\n"
+      },
+      {
+        "start": 33651,
+        "end": 33723,
+        "old": "                Debuff<VulnerablePower>(combat, player, 4, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<VulnerablePower>(combat, partyTarget, 4, move.Owner);\n"
+      },
+      {
+        "start": 34129,
+        "end": 34198,
+        "old": "                Debuff<RingingPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<RingingPower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 34278,
+        "end": 34355,
+        "old": "                Debuff<ChainsOfBindingPower>(combat, player, 3, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<ChainsOfBindingPower>(combat, partyTarget, 3, move.Owner);\n"
+      },
+      {
+        "start": 34433,
+        "end": 34641,
+        "old": "                Debuff<FrailPower>(combat, player, 99, move.Owner);\n                Debuff<WeakPower>(combat, player, 99, move.Owner);\n                Debuff<VulnerablePower>(combat, player, 99, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, 99, move.Owner);\n                foreach (var partyTarget in targets)\n                    Debuff<WeakPower>(combat, partyTarget, 99, move.Owner);\n                foreach (var partyTarget in targets)\n                    Debuff<VulnerablePower>(combat, partyTarget, 99, move.Owner);\n"
+      },
+      {
+        "start": 35240,
+        "end": 35307,
+        "old": "                Debuff<FrailPower>(combat, player, 2, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, 2, move.Owner);\n"
+      },
+      {
+        "start": 36447,
+        "end": 36580,
+        "old": "                Debuff<WeakPower>(combat, player, 2, move.Owner);\n                Debuff<FrailPower>(combat, player, 2, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<WeakPower>(combat, partyTarget, 2, move.Owner);\n                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, 2, move.Owner);\n"
+      },
+      {
+        "start": 37333,
+        "end": 37400,
+        "old": "                Debuff<FrailPower>(combat, player, 2, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, 2, move.Owner);\n"
+      },
+      {
+        "start": 37474,
+        "end": 37658,
+        "old": "                simulator.AddToCombat<Dazed>(player, PileType.Discard, 1, null);\n                simulator.AddToCombat<Dazed>(player, PileType.Draw, 1, null, CardPilePosition.Random);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Dazed>(partyTarget, PileType.Discard, 1, null);\n                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Dazed>(partyTarget, PileType.Draw, 1, null, CardPilePosition.Random);\n"
+      },
+      {
+        "start": 37733,
+        "end": 37919,
+        "old": "                simulator.AddToCombat<Beckon>(player, PileType.Draw, 1, null, CardPilePosition.Random);\n                simulator.AddToCombat<Beckon>(player, PileType.Discard, 1, null);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Beckon>(partyTarget, PileType.Draw, 1, null, CardPilePosition.Random);\n                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Beckon>(partyTarget, PileType.Discard, 1, null);\n"
+      },
+      {
+        "start": 37992,
+        "end": 38067,
+        "old": "                simulator.AddToCombat<Beckon>(\n                    player,\n",
+        "new": "                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<Beckon>(\n                    partyTarget,\n"
+      },
+      {
+        "start": 39699,
+        "end": 39832,
+        "old": "                Debuff<WeakPower>(combat, player, 2, move.Owner);\n                Debuff<FrailPower>(combat, player, 2, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<WeakPower>(combat, partyTarget, 2, move.Owner);\n                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, 2, move.Owner);\n"
+      },
+      {
+        "start": 40097,
+        "end": 40097,
+        "old": "",
+        "new": "                foreach (var partyTarget in targets)\n                {\n"
+      },
+      {
+        "start": 40186,
+        "end": 40277,
+        "old": "                    player.Player ?? throw new InvalidOperationException(\"永世沙漏的目标不是玩家。\"));\n",
+        "new": "                    partyTarget.Player ?? throw new InvalidOperationException(\"永世沙漏的目标不是玩家。\"));\n"
+      },
+      {
+        "start": 40499,
+        "end": 40499,
+        "old": "",
+        "new": "                }\n"
+      },
+      {
+        "start": 40565,
+        "end": 40565,
+        "old": "",
+        "new": "                foreach (var partyTarget in targets)\n                {\n"
+      },
+      {
+        "start": 40635,
+        "end": 40670,
+        "old": "                    player.Player,\n",
+        "new": "                    partyTarget.Player!,\n"
+      },
+      {
+        "start": 40811,
+        "end": 40811,
+        "old": "",
+        "new": "                }\n"
+      },
+      {
+        "start": 43013,
+        "end": 43080,
+        "old": "                Debuff<FrailPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 43354,
+        "end": 43421,
+        "old": "                Debuff<FrailPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 43720,
+        "end": 43786,
+        "old": "                Debuff<WeakPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<WeakPower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 45751,
+        "end": 45817,
+        "old": "                Debuff<WeakPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<WeakPower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 46399,
+        "end": 46465,
+        "old": "                Debuff<WeakPower>(combat, player, 2, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<WeakPower>(combat, partyTarget, 2, move.Owner);\n"
+      },
+      {
+        "start": 46896,
+        "end": 46964,
+        "old": "                Debuff<SmoggyPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<SmoggyPower>(combat, partyTarget, 1, move.Owner);\n"
+      },
+      {
+        "start": 47052,
+        "end": 47364,
+        "old": "                combat.ApplyTargeted<SandpitPower>(move.Owner, player, 4, move.Owner);\n                simulator.AddToCombat<FranticEscape>(player, PileType.Draw, 3, null, CardPilePosition.Random);\n                simulator.AddToCombat<FranticEscape>(player, PileType.Discard, 3, null, CardPilePosition.Random);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    combat.ApplyTargeted<SandpitPower>(move.Owner, partyTarget, 4, move.Owner);\n                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<FranticEscape>(partyTarget, PileType.Draw, 3, null, CardPilePosition.Random);\n                foreach (var partyTarget in targets)\n                    simulator.AddToCombat<FranticEscape>(partyTarget, PileType.Discard, 3, null, CardPilePosition.Random);\n"
+      },
+      {
+        "start": 47597,
+        "end": 47664,
+        "old": "                Debuff<FrailPower>(combat, player, 1, move.Owner);\n",
+        "new": "                foreach (var partyTarget in targets)\n                    Debuff<FrailPower>(combat, partyTarget, 1, move.Owner);\n"
+      }
+    ]
+  },
+  "Prediction/MonsterMoveSemantics.cs": {
+    "base_sha256": "04ba96d8087ad926231ee3846f2c457ada6d836eedfb9b2325d6e34d4bbb97dc",
+    "changes": [
+      {
+        "start": 301,
+        "end": 344,
+        "old": "internal static class MonsterMoveSemantics\n",
+        "new": "internal static partial class MonsterMoveSemantics\n"
+      }
+    ]
+  },
+  "Prediction/PlayerTurnEndLifecycle.cs": {
+    "base_sha256": "b8646c4ddfdcece4e23dc1c74804fe53ad09da0d7abf9e4f46484b5ff640a7e1",
+    "changes": [
+      {
+        "start": 479,
+        "end": 517,
+        "old": "        int etherealExhaustCount = 0)\n",
+        "new": "        int etherealExhaustCount = 0, IReadOnlyDictionary<Creature, int>? etherealByOwner = null)\n"
+      },
+      {
+        "start": 727,
+        "end": 798,
+        "old": "                simulator, combat, participants, etherealExhaustCount)\n",
+        "new": "                simulator, combat, participants, etherealExhaustCount, etherealByOwner)\n"
+      }
+    ]
+  },
+  "Prediction/TurnStartRelicSupport.cs": {
+    "base_sha256": "88dc64a33c16fafa57c306c61aa5165253a2e6c73a8d6c2dd73d72b0919953a1",
+    "changes": [
+      {
+        "start": 1519,
+        "end": 1650,
+        "old": "        int etherealExhaustCount)\n        => combat.CompleteRelicsAfterSideTurnEnd(simulator, participants, etherealExhaustCount);\n",
+        "new": "        int etherealExhaustCount, IReadOnlyDictionary<Creature, int>? etherealByOwner = null)\n        => combat.CompleteRelicsAfterSideTurnEnd(simulator, participants, etherealExhaustCount, etherealByOwner);\n"
+      }
+    ]
+  },
+  "Search/CardChoiceSupport.cs": {
+    "base_sha256": "90ae4e44fa204e1afa62006049fa77a6a1fce841502f236b57065649d4aff783",
+    "changes": [
+      {
+        "start": 11528,
+        "end": 11569,
+        "old": "        SolverDisplayNames displayNames,\n",
+        "new": "        SolverDisplayNames? displayNames,\n"
+      },
+      {
+        "start": 16498,
+        "end": 16586,
+        "old": "                ToTokens(selection, spec.Options, spec.SourceCards, displayNames.Card),\n",
+        "new": "                ToTokens(selection, spec.Options, spec.SourceCards, card => displayNames?.Card(card) ?? card.Id.Entry),\n"
+      }
+    ]
+  },
+  "Search/SimulatedCombatState.cs": {
+    "base_sha256": "25660808bd67e560e1b51f26779dfb19b3d6cef5145d028418cc70c8e0e87fee",
+    "changes": []
+  },
+  "Search/SimulatedCombatState.ReactiveRelics.cs": {
+    "base_sha256": "33a97265840f29cab44493e36657848849217c7f1c86a58a5de3304200d6df4b",
+    "changes": [
+      {
+        "start": 8296,
+        "end": 8330,
+        "old": "        int etherealExhaustCount)\n",
+        "new": "        int etherealExhaustCount, IReadOnlyDictionary<Creature, int>? etherealByOwner = null)\n"
+      },
+      {
+        "start": 8577,
+        "end": 8645,
+        "old": "                case JossPaper value when etherealExhaustCount > 0:\n",
+        "new": "                case JossPaper value when (etherealByOwner?.GetValueOrDefault(value.Owner.Creature) ?? etherealExhaustCount) > 0:\n"
+      },
+      {
+        "start": 8853,
+        "end": 8901,
+        "old": "                        + etherealExhaustCount;\n",
+        "new": "                        + (etherealByOwner?.GetValueOrDefault(value.Owner.Creature) ?? etherealExhaustCount);\n"
+      }
+    ]
+  },
+  "Search/SimulatedCombatState.RelicTurnStart.cs": {
+    "base_sha256": "ba76fd140ef69576470a5cd7bc57fac443bbe5f3a098b767d6f0fbf5f4c45546",
+    "changes": [
+      {
+        "start": 21106,
+        "end": 21140,
+        "old": "        int etherealExhaustCount)\n",
+        "new": "        int etherealExhaustCount, IReadOnlyDictionary<Creature, int>? etherealByOwner = null)\n"
+      },
+      {
+        "start": 21548,
+        "end": 21641,
+        "old": "        return TriggerRelicsAfterSideTurnEnd(simulator, participants, etherealExhaustCount);\n",
+        "new": "        return TriggerRelicsAfterSideTurnEnd(simulator, participants, etherealExhaustCount, etherealByOwner);\n"
+      }
+    ]
+  }
+}

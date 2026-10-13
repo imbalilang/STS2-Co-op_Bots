@@ -46,8 +46,12 @@ internal sealed partial class SimulatedCombatState
         T power = (T)CanonicalModels.Power<T>().ToMutable();
         power._owner = owner;
         power._applier = applier;
-        power._target = owner;
+        // Native PowerCmd.Apply assigns Owner/Applier, but ordinary instances
+        // have no distinct Target. Target is populated only by ApplyTargeted.
+        power._target = null;
         power._amount = amount;
+        if (power is GuardedPower && applier?.Player is { } guardedApplier)
+            ((MegaCrit.Sts2.Core.Localization.DynamicVars.StringVar)power.DynamicVars["Applier"]).StringValue = _playerNames[guardedApplier];
         if (power is OrbitPower orbit)
             InitializeOrbit(orbit, 0);
         (_addedPowerInstances ??= []).Add(power);

@@ -58,11 +58,12 @@ internal static class BuildTrace
     /// A card-reward decision: every candidate with its computed value and the
     /// reasons behind it, and whether the team took one or skipped the screen.
     /// </summary>
-    internal static void LogReward(Player player, IReadOnlyList<CardModel> candidates, int chosen, bool skip)
+    internal static void LogReward(Player player, IReadOnlyList<CardModel> candidates, int chosen,
+        bool skip, long started = 0, double takeBar = 0)
     {
+        if (ConstructionDecision.Current is not null) return;
         try
         {
-            double skipValue = 0;
             var parts = new List<string>(candidates.Count);
             for (var index = 0; index < candidates.Count; index++)
             {
@@ -70,16 +71,17 @@ internal static class BuildTrace
                 string reason;
                 try
                 {
-                    var valuation = BuildValue.Add(candidates[index], player);
+                    var valuation = BuildValue.AddForDecision(candidates[index], player);
                     value = valuation.Total;
                     reason = valuation.Reason;
                 }
                 catch (Exception error) { value = double.NaN; reason = "error:" + error.GetType().Name; }
-                if (value > skipValue) skipValue = value;
                 parts.Add($"{(index == chosen && !skip ? ">" : string.Empty)}{candidates[index].Id.Entry}={value:F1}({reason})");
             }
             var pick = skip || chosen < 0 ? "SKIP" : candidates[chosen].Id.Entry;
-            Log.Info($"{LogPrefix}: reward bot={player.NetId} pick={pick} size={player.Deck.Cards.Count} | {string.Join(" ", parts)}");
+            var timing = started == 0 ? "" : $" elapsedMs={System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds:F1}";
+            Log.Info($"{LogPrefix}: reward bot={player.NetId} pick={pick} size={player.Deck.Cards.Count}"
+                + $"{timing} bar={takeBar:F1} | {string.Join(" ", parts)}");
         }
         catch { /* instrumentation must never break a run */ }
     }
@@ -91,6 +93,7 @@ internal static class BuildTrace
     internal static void LogDeckEdit(Player player, string purpose,
         IReadOnlyList<CardModel> chosen, IReadOnlyList<(CardModel Card, double Value, string Reason)> ranked)
     {
+        if (ConstructionDecision.Current is not null) return;
         try
         {
             var picks = chosen.Count == 0 ? "-" : string.Join(",", chosen.Select(card => card.Id.Entry));

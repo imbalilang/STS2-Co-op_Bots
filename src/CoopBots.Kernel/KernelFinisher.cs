@@ -12,7 +12,7 @@ public sealed partial class KernelSession
         using var isolation = SimulationNotificationIsolation.Enter();
         var card = simulator.State.FindCard(source);
         return card is null || card.Preview.EnergyCost.CostsX || card.Preview.HasStarCostX
-            ? int.MaxValue : card.GetEnergyCostWithModifiers(simulator, simulator.State.GetPlayerCombatState(source.Owner));
+            ? int.MaxValue : card.GetEnergyCostWithModifiers(simulator, simulator.State.GetPlayerCombatState(card.Preview.Owner));
     }
 
     // A seeded lucky outcome is not a reliable recommendation to a human.

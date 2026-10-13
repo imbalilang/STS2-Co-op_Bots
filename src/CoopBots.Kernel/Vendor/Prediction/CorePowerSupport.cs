@@ -515,9 +515,7 @@ internal static class CorePowerSupport
         IReadOnlyList<Creature> players,
         int etherealExhaustCount = 0)
     {
-        combat.RestoreTemporaryStrength(players);
-        combat.RestoreTemporaryDexterity();
-        combat.RestoreTemporaryFocus();
+        combat.RestoreTemporaryStats(players);
         foreach (Creature player in players)
         {
             int constrict = combat.GetAmount<ConstrictPower>(player);
@@ -594,7 +592,7 @@ internal static class CorePowerSupport
         if (simulator.HasPendingChoice)
             return false;
         TriggerTransientSideTurnEndPowers(simulator, combat, CombatSide.Enemy, enemies);
-        combat.RestoreTemporaryStrength(enemies);
+        combat.RestoreTemporaryStats(enemies);
         TickDurations(combat);
         return HookMirrors.AfterSideTurnEndLate(simulator, CombatSide.Enemy, enemies);
     }
