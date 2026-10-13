@@ -16,15 +16,45 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.11'
       - name: Python pipeline contracts
         shell: pwsh
         run: |
-          python -m unittest discover -s tests -p test_a10_benchmark.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m unittest discover -s tests -p test_a5_batch.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m unittest discover -s tests -p test_community_pipeline.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $failedExitCode = 0
+          foreach ($pattern in @('test_a10_benchmark.py', 'test_a5_batch.py', 'test_community_pipeline.py')) {
+            $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = (Get-Command python -ErrorAction Stop).Source
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $startInfo.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+            $startInfo.StandardErrorEncoding = [System.Text.UTF8Encoding]::new($false)
+            $startInfo.Environment['PYTHONUTF8'] = '1'
+            foreach ($argument in @('-X', 'utf8', '-m', 'unittest', 'discover', '-s', 'tests', '-p', $pattern, '-v')) {
+              [void]$startInfo.ArgumentList.Add($argument)
+            }
+            $process = [System.Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            [void]$process.Start()
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            $process.WaitForExit()
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            Write-Output "python -X utf8 -m unittest discover -s tests -p $pattern -v"
+            Write-Output $stdout
+            Write-Output $stderr
+            if ($process.ExitCode -ne 0) {
+              $message = "Exit code: $($process.ExitCode)`nSTDOUT:`n$stdout`nSTDERR:`n$stderr"
+              $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              Write-Output "::error title=Python pipeline contracts ($pattern)::$message"
+              if ($failedExitCode -eq 0) { $failedExitCode = $process.ExitCode }
+            }
+            $process.Dispose()
+          }
+          if ($failedExitCode -ne 0) { exit $failedExitCode }
       - name: PowerShell syntax
         shell: pwsh
         run: |
