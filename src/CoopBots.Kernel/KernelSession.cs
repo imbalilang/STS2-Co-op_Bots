@@ -213,12 +213,17 @@ public sealed partial class KernelSession
     /// "the plan no longer applies".
     /// </summary>
     public static string? FirstLiveDifference(CombatState state, string expected)
+        => LiveDifferences(state, expected, 1);
+
+    public static string? LiveDifferences(CombatState state, string expected,
+        int maximumDifferences = int.MaxValue)
     {
         string actual;
         try { actual = CaptureLivePartyText(state); }
         catch (Exception error) { return $"live-capture-failed {error.GetType().Name}"; }
         if (string.Equals(expected, actual, StringComparison.Ordinal)) return null;
-        return new ContinuationStamp(expected).DescribeFirstDifference(new ContinuationStamp(actual));
+        return string.Join(" | ", new ContinuationStamp(expected)
+            .DescribeDifferences(new ContinuationStamp(actual), maximumDifferences));
     }
     public static string CaptureLiveStamp(CombatState state) => $"{state.RoundNumber}/{state.CurrentSide}\n" +
         string.Join("\n", state.Players.Select(p => $"{p.NetId}/{p.PlayerCombatState?.Phase}:" +

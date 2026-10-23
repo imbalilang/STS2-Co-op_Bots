@@ -2,6 +2,7 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Logging;
+using CoopBots.Kernel;
 
 namespace CoopBots.Building;
 
@@ -71,13 +72,7 @@ internal static class BuildValue
     {
         // 用户 2026-09-29：赌狗不得好死。
         "THE_GAMBIT",
-        // 用户 2026-10-02：梦魇。内核**能**模拟它——--nightmare-probe 显示选择走
-        // CardChoiceSupport，NightmarePower 落地，下回合真的多 3 张复制；缺 OnPlay
-        // 镜像只让 PredictionCoverage 记一个 compensated 风险，不是空操作。
-        // 问题在锦标赛的终局目标（剩余敌人/HP/回合）不评价"延迟复制"这个 setup turn，
-        // 实机 12 场 0 次出牌。修搜索目标的成本远高于收益，按用户"太难就压死"的授权，
-        // 获取阶段直接 -100；等终局目标能评价 setup 再撤。
-        "NIGHTMARE",
+        // 用户 2026-10-23 合入贡献包：Nightmare 的复制投资已进入搜索估值，恢复普通获取评分。
         // 用户 2026-10-02：应急按钮。本地卡面是"获得 X 格挡；接下来 N 回合无法从卡牌获得格挡"。
         // 内核确实应用了 NoBlockPower（CardEffectSpecRegistry.cs:85 Owner<NoBlockPower>("Turns")），
         // 所以不是模拟缺口；但锦标赛目标只看本回合剩余敌人/HP，不评价这条跨回合的格挡封锁。
@@ -373,12 +368,14 @@ internal static class BuildValue
         {
             var best = remaining
                 .Select(card => (Card: card, Value: AddForDecision(card, player, working)))
-                .OrderByDescending(entry => entry.Value.Total)
+                .OrderByDescending(entry => KeyCardAcquisition.Preferred(entry.Card, player, working))
+                .ThenByDescending(entry => entry.Value.Total)
                 .ThenBy(entry => entry.Card.Id.Entry, StringComparer.Ordinal)
                 .First();
-            ranked.Add((best.Card, best.Value.Total, best.Value.Reason));
+            var preferred = KeyCardAcquisition.Preferred(best.Card, player, working);
+            ranked.Add((best.Card, best.Value.Total, best.Value.Reason + (preferred ? ",acquisition:first-key-card" : "")));
             if (ConstructionDecision.AwaitingValues) break;
-            if (best.Value.Total <= 0 && picked.Count >= min) break;
+            if (!preferred && best.Value.Total <= 0 && picked.Count >= min) break;
             picked.Add(best.Card);
             remaining.Remove(best.Card);
             working.Add(best.Card);
@@ -455,10 +452,11 @@ internal static class BuildValue
     {
         var deck = deckOverride ?? player.Deck.Cards.ToList();
         var value = Add(card, player, deck);
-        var team = AppliedTeamBonus(card, player, deck, value.Total);
-        return team <= 0.01
+        if (AcquisitionBlacklist.Contains(card.Id.Entry) || CardProfile.Of(card).Unplayable) return value;
+        var team = AppliedTeamBonus(card, player, deck, value.Total, out var evidence);
+        return Math.Abs(team) <= 0.01
             ? value
-            : value with { Total = value.Total + team, Reason = value.Reason + $",team:+{team:F2}" };
+            : value with { Total = value.Total + team, Reason = value.Reason + $",team:{team:+0.00;-0.00;0.00}," + evidence };
     }
 
     internal static Valuation RemoveForDecision(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
@@ -471,10 +469,10 @@ internal static class BuildValue
         // decision edits inverse as well, so a removal plan cannot strip the
         // party's only applier for less than a reward would have paid for it.
         var before = deck.Where(c => !ReferenceEquals(c, card)).ToArray();
-        var team = AppliedTeamBonus(card, player, before, Add(card, player, before).Total);
-        return team <= 0.01
+        var team = AppliedTeamBonus(card, player, before, Add(card, player, before).Total, out var evidence);
+        return Math.Abs(team) <= 0.01
             ? value
-            : value with { Total = value.Total - team, Reason = value.Reason + $",team:-{team:F2}" };
+            : value with { Total = value.Total - team, Reason = value.Reason + $",team:{-team:+0.00;-0.00;0.00}," + evidence };
     }
 
     internal static Valuation UpgradeForDecision(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
@@ -482,25 +480,36 @@ internal static class BuildValue
         var value = UpgradeDelta(card, player, deckOverride);
         if (CardProfile.Upgraded(card, StableEnergy(player)) is not { } upgraded) return value;
         var deck = deckOverride ?? player.Deck.Cards.ToList();
-        var before = CoopBots.TeamCoordinator.TeamBonus(card, player, deck, null);
-        var after = CoopBots.TeamCoordinator.TeamBonus(upgraded.Card, player, deck, null);
-        var team = after - before;
+        var joint = UsesJointSynergy(card, player, deck);
+        var before = CoopBots.TeamCoordinator.TeamBonus(card, player, deck, null, !joint);
+        var after = CoopBots.TeamCoordinator.TeamBonus(upgraded.Card, player, deck, null, !joint);
+        if (!deck.Any(c => ReferenceEquals(c, card))) deck = deck.Append(card).ToArray();
+        var upgradedDeck = deck.Select(c => ReferenceEquals(c, card) ? upgraded.Card : c).ToArray();
+        var change = TeamSynergyEvaluator.Marginal(player, deck, upgradedDeck);
+        var team = after - before + change.Total;
         var combined=Math.Abs(team) <= 0.01
             ? value
-            : value with { Total = value.Total + team, Reason = value.Reason + $",team:{team:+0.00;-0.00;0.00}" };
+            : value with { Total = value.Total + team, Reason = value.Reason + $",team:{team:+0.00;-0.00;0.00},team-damage:{change.Damage:F2},team-prevention:{change.Prevention:F2}" };
         return UpgradePreference.Apply(card,player,deck,combined);
     }
 
-    // Decision-layer bound: a team term may add at most this share of the edit's
-    // own deck-strength gain, so it can break a near-tie but never carry an edit
-    // the deck itself does not want. Same share MarginalCore uses, measured
-    // against the number the reward and shop paths actually rank by.
-    private static double AppliedTeamBonus(CardModel card, Player player, IReadOnlyList<CardModel> deckBefore, double ownTotal)
+    // The legacy heuristic retains its own-value bound. The contributor's joint
+    // model adds a signed marginal for shared damage and damage prevention.
+    private static double AppliedTeamBonus(CardModel card, Player player, IReadOnlyList<CardModel> deckBefore,
+        double ownTotal, out string evidence)
     {
-        var team = CoopBots.TeamCoordinator.TeamBonus(card, player, deckBefore, null);
-        if (team <= 0) return 0;
-        return Math.Min(team, Math.Max(0, ownTotal) * TeamBonusBuildShare);
+        var added = deckBefore.Any(c => ReferenceEquals(c, card)) ? (CardModel)card.MutableClone() : card;
+        var change = TeamSynergyEvaluator.Marginal(player, deckBefore, deckBefore.Append(added).ToArray());
+        evidence = $"team-damage:{change.Damage:F2},team-prevention:{change.Prevention:F2}";
+        var joint = UsesJointSynergy(card, player, deckBefore);
+        var team = CoopBots.TeamCoordinator.TeamBonus(card, player, deckBefore, null, !joint);
+        return change.Total + Math.Min(Math.Max(0, team), Math.Max(0, ownTotal) * TeamBonusBuildShare);
     }
+
+    private static bool UsesJointSynergy(CardModel card, Player player, IReadOnlyList<CardModel> deck)
+        => TeamSynergyNative.HasComponent(TeamSynergyNative.Component(card, CardProfile.Of(card, StableEnergy(player)).Cost))
+           && player.RunState.Players.Any(p => p.NetId != player.NetId
+               && TeamBuildingContext.TryGet(player.RunState, p.NetId)?.Synergy is not null);
 
     /// <summary>Replace the native instance with an isolated native upgraded clone.</summary>
     internal static Valuation UpgradeDelta(CardModel card, Player player, IReadOnlyList<CardModel>? deckOverride = null)
@@ -567,14 +576,34 @@ internal static class BuildValue
         var bestValue = takeBar;
         var bestAny = candidates.Count > 0 ? 0 : -1;
         var bestAnyValue = double.NegativeInfinity;
+        var bestKey = -1;
+        var bestKeyValue = double.NegativeInfinity;
         for (var index = 0; index < candidates.Count; index++)
         {
             double value;
             try { value = AddForDecision(candidates[index], player).Total; }
-            catch { continue; }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error)
+            {
+                if (!ConstructionDecision.AwaitingValues)
+                    Log.Warn($"CoopBots reward evaluation failed: bot={player.NetId} card={candidates[index].Id.Entry} error={error}");
+                continue;
+            }
+            if (!double.IsFinite(value))
+            {
+                if (!ConstructionDecision.AwaitingValues)
+                    Log.Warn($"CoopBots reward evaluation nonfinite: bot={player.NetId} card={candidates[index].Id.Entry} value={value}");
+                continue;
+            }
             if (value > bestValue) { bestValue = value; best = index; }
             if (value > bestAnyValue) { bestAnyValue = value; bestAny = index; }
+            if (KeyCardAcquisition.Preferred(candidates[index], player) && value > bestKeyValue)
+            {
+                bestKeyValue = value;
+                bestKey = index;
+            }
         }
+        if (bestKey >= 0) return bestKey;
         return allowSkip ? best : bestAny;
     }
 

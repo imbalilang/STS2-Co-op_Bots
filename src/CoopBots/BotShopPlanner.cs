@@ -128,6 +128,18 @@ internal static class BotShopPlanner
             var price = entries[removalEntry].Cost;
             return ShopPlan.Single(new Choice(removalEntry, curse, price, price), 0);
         }
+        // The contributor's first-key-card policy follows immediate curse removal:
+        // select the cheapest affordable first copy before comparing investments.
+        var keyCard = entries.Select((entry, index) => (Entry: entry, Index: index))
+            .Where(item => item.Entry is MerchantCardEntry { CreationResult: not null } card
+                && item.Entry.IsStocked && item.Entry.Cost >= 0 && item.Entry.Cost <= player.Gold
+                && KeyCardAcquisition.Preferred(card.CreationResult.Card, player, deck))
+            .OrderBy(item => item.Entry.Cost).ThenBy(item => item.Index).FirstOrDefault();
+        if (keyCard.Entry is not null)
+        {
+            Log.Info($"CoopBots shop priority: bot={player.NetId} card={Key(keyCard.Entry)} policy=first-key-card cost={keyCard.Entry.Cost} gold={player.Gold}");
+            return ShopPlan.Single(new Choice(keyCard.Index, -1, keyCard.Entry.Cost, keyCard.Entry.Cost), 0);
+        }
         var removal = removalEntry >= 0 ? BestRemoval(deck, player) : (index: -1, value: 0d);
         var offers = new List<PurchaseComparison.Offer>();
         var diagnostics = new List<string>();

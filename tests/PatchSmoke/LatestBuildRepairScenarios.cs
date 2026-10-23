@@ -95,7 +95,13 @@ internal static class LatestBuildRepairScenarios
     {
         var player=Fixture("STRIKE_IRONCLAD","STRIKE_IRONCLAD","STRIKE_IRONCLAD","STRIKE_IRONCLAD","STRIKE_IRONCLAD",
             "DEFEND_IRONCLAD","DEFEND_IRONCLAD","DEFEND_IRONCLAD","DEFEND_IRONCLAD","BASH");
-        var offer=new[]{Card("ANGER",player)};
+        // Ordinary positive offer: the imported scoring no longer guarantees
+        // Anger is beneficial here. Keep this off the key-card priority path.
+        // Original package and rebuilt DLLs pass the updated whole scenario;
+        // frozen v21 still passes the original fixture. Permanent-choice fault
+        // RED1, exact source restore GREEN0: same task's r2-single-choice/proof.json.
+        // RED: Latest build repair: native optional permanent single choice must evaluate and take a useful offer
+        var offer=new[]{Card("POMMEL_STRIKE",player)};
         Check(BuildValue.AddForDecision(offer[0],player).Total>0,"fixture must offer a useful native permanent card");
         var before=ConstructionDecision.Fingerprint(player);
         var getter=AccessTools.PropertyGetter(typeof(CombatManager),"IsInProgress");

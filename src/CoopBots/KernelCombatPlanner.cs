@@ -295,7 +295,7 @@ internal sealed partial class KernelCombatPlanner
     // asked is "how long may this think", not "how many times may it try".
     private int openingAttempts;
     private long openingEpisodeStartMs;
-    private int openingNoRouteAtCap;
+    private int openingNoRouteCompleted;
     private int openingExtensionMs = OpeningSearchExtensionMs;
 
     // Beam-width portfolio, ported from CombatSolver's BeamWidthPortfolio: run several
@@ -952,7 +952,7 @@ internal sealed partial class KernelCombatPlanner
             openingSearch = true;
             planCommitted = false;
             ContinuationSource = null;
-            // openingAttempts / openingNoRouteAtCap are deliberately NOT cleared here:
+            // openingAttempts / openingNoRouteCompleted are deliberately NOT cleared here:
             // the summary further down describes the fight that just ENDED, and zeroing
             // them first made both fields print 0 for every fight. That is exactly how a
             // real ten-minute extension ladder (1 opening search + 5 extensions + the
@@ -1003,7 +1003,7 @@ internal sealed partial class KernelCombatPlanner
                     + $"noScript={planTicksWithoutScript} "
                     + $"seatSkips={seatStepsSkipped} "
                     + $"openingAttempts={openingAttempts} "
-                    + $"openingNoRoute={openingNoRouteAtCap} "
+                    + $"openingNoRoute={openingNoRouteCompleted} "
                     + $"stale={fallbackStale}(root={fallbackStaleRoot},notification={fallbackStaleNoise}), "
                     + $"first-action-refused={fallbackFirstAction}({refusalSummary}), "
                     + $"potion-declined={potionDeclined}, "
@@ -1023,7 +1023,7 @@ internal sealed partial class KernelCombatPlanner
             fallbackStaleRoot = fallbackStaleNoise = 0; potionDeclined = 0; noActionKinds.Clear();
             planRefusals = 0; planTicksWithoutScript = 0; seatStepsSkipped = 0;
             fallbackFirstAction = 0; firstActionKinds.Clear(); probesDone = false; shadowDone = false; shadowChoice = null; shadowCombat = null; tournamentDriven = 0; tournamentPasses = 0; tournamentDeclined = null;
-            openingAttempts = 0; openingNoRouteAtCap = 0;
+            openingAttempts = 0; openingNoRouteCompleted = 0;
             // The three L1 counters were missing from this reset, so they accumulated
             // across fights while planRefusals beside them was cleared — a summary would
             // read `planRefusals=0(drift=13)`, or `routes=3/2`, which is how a single
@@ -1797,60 +1797,16 @@ internal sealed partial class KernelCombatPlanner
                 // gives the whole plan up the moment one no longer holds. A stale
                 // assumption therefore still cannot be played out — it ends the plan,
                 // and the next tick searches again.
-                // X3: a plan that never reached the end of the fight is not a route, and
-                // accepting it means playing to wherever the depth happened to run out.
-                // Escalate and look again — this is "if it found none, keep looking" in
-                // the only form that cannot hang: bounded, and it falls through to the
-                // partial plan once the attempts are spent.
-                // The ladder: a five-minute opening search, then up to five one-minute
-                // extensions, and an error at the end of it. BETWEEN attempts the plan is
-                // NOT handed to the legacy planner — this returns Pending so the tick does
-                // nothing and the next tick starts the extension. Letting a card be played
-                // in between would change the board the search is trying to solve, which is
-                // the opposite of "keep thinking about this board". AT THE END of the ladder
-                // it is the opposite: the rest of the combat goes to the legacy planner,
-                // because a partial line is a plan already known to run out.
-                // Both halves of the ladder are OPENING ONLY. Gated on superBrain alone,
-                // the error below re-fired on every later repair search — a 286-node
-                // mid-fight search printed "the opening search spent 611375ms over 20
-                // attempt(s)", which is both false and alarming; and the extension would
-                // have kept a repair from ever being deployed.
+                // A completed search has no frontier left to extend. Deploy its
+                // best available line and plan again from the live board when
+                // that line runs out. In-progress searches retain the bounded
+                // clock-extension path above.
                 if (superBrain && openingSearch && search is { HasRoute: false })
                 {
                     var episodeElapsed = Environment.TickCount64 - openingEpisodeStartMs;
-                    // The extension is trimmed to what is left of the ten minutes, so the
-                    // cap is a real ceiling rather than "the last attempt may overshoot".
-                    var remaining = OpeningSearchHardCapMs - episodeElapsed;
-                    // Every failure extends — `frontier-empty` included. It used to be
-                    // excluded on the theory that re-searching the same board hits the same
-                    // wall, but an extension does not re-search the same shape: the depth
-                    // doubles (512 -> 1024 -> 2048), which is exactly what reaches past a
-                    // frontier that closed too early. The ceiling is the ten-minute clock
-                    // AND the five-extension count, whichever binds first.
                     var spent = search!.CompletedResult!.StopReason;
-                    if (remaining > 0 && openingAttempts < OpeningSearchMaxExtensions)
-                    {
-                        openingAttempts++;
-                        openingExtensionMs = (int)Math.Min(OpeningSearchExtensionMs, remaining);
-                        Report($"no route to the end of the fight yet; extending by "
-                            + $"{openingExtensionMs / 1000}s "
-                            + $"(attempt {openingAttempts + 1}/{OpeningSearchMaxExtensions + 1}, "
-                            + $"episodeElapsed={episodeElapsed}ms of {OpeningSearchHardCapMs}ms, "
-                            + $"previousStop={spent})");
-                        Reset();
-                        return Status.Pending;
-                    }
-                    // The ceiling is reached and even the horizon was not reached by any line.
-                    // Under bounded lookahead this can no longer mean "the search failed to
-                    // solve the fight" — it cannot solve the fight BY CONSTRUCTION — so the old
-                    // response (disable the kernel for the whole combat) is no longer available:
-                    // it was measured on 2026-09-20 to turn every action of the fight into
-                    // `via=legacy`. Report the shortfall, then fall through and DEPLOY the best
-                    // line found. A shorter script is a worse script, not a reason to stop
-                    // thinking; the next script is planned from the live board when this one
-                    // runs out.
-                    openingNoRouteAtCap++;
-                    ReportSearchLine($"opening search hit its ceiling without reaching the horizon "
+                    openingNoRouteCompleted++;
+                    ReportSearchLine($"opening search completed without reaching the horizon "
                         + $"(spent={episodeElapsed}ms over {openingAttempts + 1} attempt(s), "
                         + $"best: actions={result.Actions.Count}, nodes={result.ExpandedNodes}, "
                         + $"stop={spent}); deploying it and planning the next script from the live board");
@@ -2269,7 +2225,7 @@ internal sealed partial class KernelCombatPlanner
                 // against another's. That mistake produced the bogus field=hp 55/66/59 and
                 // gold 249/99 drifts when the sentinel was per-seat.
                 var (before, after) = planActionStates[planLastExecuted];
-                var landed = KernelSession.FirstLiveDifference(combat, after);
+                var landed = KernelSession.LiveDifferences(combat, after);
                 if (landed is not null)
                 {
                     if (KernelSession.FirstLiveDifference(combat, before) is null)

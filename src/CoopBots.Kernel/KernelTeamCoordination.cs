@@ -29,6 +29,14 @@ internal static class KernelTeamCoordination
     internal static double SetupPayoff(KernelSession before, IReadOnlyList<Player> actors,
         CardModel card, Creature? target)
     {
+        if (card is Flanking or Knockdown or Debilitate)
+        {
+            var amplified = before.CardBranches(card, target, maximumBranches: 1)
+                .FirstOrDefault(b => b.Boundary.Length == 0)?.State;
+            return amplified is null ? 0 : AttackGainValue(amplified,
+                amplified.WithTeamAmplifiersFrom(before), actors,
+                amplified.Enemies.Where(amplified.IsPrimaryEnemy).ToArray());
+        }
         // Offensive buffs and Expose's shield/Artifact removal have the same
         // ordering dependency as Vulnerable. Compare native damage, after paying
         // its energy, instead of letting cheap rollouts spend the triggers first.
@@ -64,6 +72,19 @@ internal static class KernelTeamCoordination
         if (!actors.Any(p => state.CanAct(p)
             && state.Hand(p).Any(c => c.Type == CardType.Attack && state.CanPlay(c)))) return 0;
         return AttackGainValue(state, state.WithoutEnemyVulnerable(), actors, enemies);
+    }
+
+    internal static double SharedSetupValue(KernelSession state, IReadOnlyList<Player> actors,
+        IReadOnlySet<Creature>? selectedEnemies = null)
+    {
+        if (!state.Enemies.Any(state.HasTeamAmplifier)) return VulnerableValue(state, actors, selectedEnemies);
+        var enemies = state.Enemies.Where(e => state.IsPrimaryEnemy(e)
+            && (state.Power<VulnerablePower>(e) > 0 || state.HasTeamAmplifier(e))
+            && (selectedEnemies is null || selectedEnemies.Contains(e))).ToArray();
+        if (enemies.Length == 0 || !actors.Any(p => state.CanAct(p)
+            && state.Hand(p).Any(c => c.Type == CardType.Attack && state.CanPlay(c)))) return 0;
+        var plain = state.WithTeamAmplifiersFrom(null).WithoutEnemyVulnerable();
+        return AttackGainValue(state, plain, actors, enemies);
     }
 
     private static double AttackGainValue(KernelSession state, KernelSession plain,

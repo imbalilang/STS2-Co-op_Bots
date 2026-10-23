@@ -1,5 +1,7 @@
 ﻿using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Cards;
 
 namespace CoopBots.Kernel;
 
@@ -9,6 +11,8 @@ namespace CoopBots.Kernel;
 // existing frame/deadline scheduler in control. No nested lookahead.
 internal sealed class KernelInvestmentProbe
 {
+    internal static bool IsInvestment(CardModel card)
+        => card.Type == CardType.Power || card is Nightmare or DualWield or HeirloomHammer;
     private readonly KernelSession root;
     private readonly IReadOnlyList<Player> party, actors;
     private readonly RolloutOptions options;
@@ -36,7 +40,7 @@ internal sealed class KernelInvestmentProbe
         // score. Duplicate instances share one trial, different owners do not.
         foreach (var policy in new[] { RolloutPolicyKind.Growth, RolloutPolicyKind.Defend })
         foreach (var p in actors.Where(root.CanAct))
-        foreach (var card in root.Hand(p).Where(c => c.Type == CardType.Power && root.CanPlay(c))
+        foreach (var card in root.Hand(p).Where(c => IsInvestment(c) && root.CanPlay(c))
             .DistinctBy(root.CardStateKey))
         foreach (var target in root.Targets(card).Take(1))
         {

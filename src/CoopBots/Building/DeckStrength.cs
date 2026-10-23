@@ -101,7 +101,7 @@ internal static class DeckStrength
             return decision.Request(deck, player, memoKey!);
         var resistance = DeckRobustness.Evaluate(deck,player,energy);
         var cycle = resistance.Clean;
-        var hands = CounterfactualDraft.Strength(deck, energy);
+        var hands = CounterfactualDraft.StrengthForOwner(deck, energy, player.Creature.CurrentHp, player.Creature.MaxHp);
         // Every deck uses the same mixture and the same six-turn unit. In
         // particular, neither size nor the edited card selects a different model.
         var combat = CombatScale * 6 * (.65 * cycle + .35 * hands);

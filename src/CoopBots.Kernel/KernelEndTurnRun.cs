@@ -19,6 +19,7 @@ public sealed class KernelEndTurnRun
         || phaseClock is not null && phaseClock.Elapsed.TotalMilliseconds >= budgetMs;
     private string RequestStop => request is { IsStopped: true } stopped ? stopped.StopReason : "phase-deadline";
     private IEnumerator<Node>? trials;
+    private readonly Dictionary<string, (string Card, double Value, int Steps, int Compared)> openingScores = new(StringComparer.Ordinal);
     public bool Done { get; private set; }
     public IReadOnlyList<KernelTeamSearch.Action>? Actions { get; private set; }
     public double Gain { get; private set; }
@@ -26,6 +27,9 @@ public sealed class KernelEndTurnRun
     public int Compared { get; private set; }
     public int Attempted { get; private set; }
     public string StopReason { get; private set; } = "pending";
+    public double BaselineValue { get; private set; } = double.NaN;
+    public string OpeningComparison => string.Join(';', openingScores.Values.Select(r =>
+        $"{r.Card}:gain={r.Value - BaselineValue:F1}:steps={r.Steps}:compared={r.Compared}"));
 
     public KernelEndTurnRun(KernelSession root, Player player, int budgetMs = 80,
         KernelDecisionRequest? request = null)
@@ -62,6 +66,7 @@ public sealed class KernelEndTurnRun
     private IEnumerable<Node> Compare()
     {
         if (Stopped || !root.CanFork || !root.CanAct(player) || !TryValue(root, out var baseline)) yield break;
+        BaselineValue = baseline;
         var best = baseline;
         var level = new List<Node> { new(root, Array.Empty<KernelTeamSearch.Action>(), baseline) };
         yield return level[0]; // baseline settlement counts against the slice
@@ -92,6 +97,14 @@ public sealed class KernelEndTurnRun
                                 ChoiceOrdinals: branch.ChoiceOrdinals, CardStateKey: node.State.CardStateKey(card))
                                 { TurnStartChoices = branch.TurnStartChoices };
                             var child = new Node(branch.State, node.Actions.Append(action).ToArray(), value);
+                            var opening = child.Actions[0];
+                            var openingCard = opening.Card!;
+                            var key = opening.CardStateKey ?? openingCard.Id.Entry;
+                            var found = openingScores.TryGetValue(key, out var previous);
+                            openingScores[key] = (openingCard.Id.Entry + (openingCard.IsUpgraded ? "+" : ""),
+                                found ? Math.Max(previous.Value, value) : value,
+                                !found || value > previous.Value ? child.Actions.Count : previous.Steps,
+                                found ? previous.Compared + 1 : 1);
                             if (value > best + .01)
                             { best = value; Gain = value - baseline; Actions = child.Actions; }
                             children.Add(child);
@@ -123,7 +136,7 @@ public sealed class KernelEndTurnRun
         {
             var hp = end.Hp(member.Creature);
             if (hp <= 0) { value -= 10_000; continue; }
-            value += hp + end.Block(member.Creature) + end.PersistentValue(member, 0, 0) + KernelExhaustPolicy.Reserve(end, member);
+            value += hp + end.Block(member.Creature) + end.PersistentValue(member, 0, 0, root) + KernelExhaustPolicy.Reserve(end, member);
         }
         return true;
     }

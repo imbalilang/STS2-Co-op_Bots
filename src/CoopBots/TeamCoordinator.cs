@@ -105,7 +105,7 @@ internal static class TeamCoordinator
     internal static double TeamBonus(CardModel card, Player player) => TeamBonus(card, player, null, null);
 
     internal static double TeamBonus(CardModel card, Player player, IReadOnlyList<CardModel>? ownDeckOverride,
-        DeckStructure.Summary? ownSummaryOverride)
+        DeckStructure.Summary? ownSummaryOverride, bool includeSharedDebuffs = true)
     {
         IRunState run;
         IReadOnlyList<Player> party;
@@ -131,7 +131,7 @@ internal static class TeamCoordinator
 
         var bonus = card.TargetType == TargetType.AnyAlly
             ? AllySupportBonus(card, facts, run, player, party, own, ownSupport, ownCopies)
-            : DebuffBonus(card, facts, run, player, party, own, ownCopies)
+            : (includeSharedDebuffs ? DebuffBonus(card, facts, run, player, party, own, ownCopies) : 0)
               + PayoffBonus(card, facts, run, player, party, own, ownCopies, ownDeck);
         return Math.Clamp(bonus, 0, MaxTeamBonus);
     }

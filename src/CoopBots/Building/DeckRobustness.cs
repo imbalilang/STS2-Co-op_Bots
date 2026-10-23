@@ -22,14 +22,16 @@ internal static class DeckRobustness
         =>ascension>=10?new[]{.80,.90,1.0}[Math.Clamp(act,0,2)]:new[]{.40,.55,.70}[Math.Clamp(act,0,2)];
     internal static Estimate Evaluate(IReadOnlyList<CardModel> deck,Player player,int energy)
     {
-        var clean=SustainedDeckValue.ScenarioStrength(deck,energy,Interference.None);
+        var ownerHp=player.Creature.CurrentHp;
+        var ownerMaxHp=player.Creature.MaxHp;
+        var clean=SustainedDeckValue.ScenarioStrengthForOwner(deck,energy,Interference.None,false,ownerHp,ownerMaxHp);
         // A short ordinary encounter can end before Wither escalates. Compare
         // all three endurance alternatives for nine turns at identical 240 HP
         // and pressure, normalized to the same per-turn unit as ordinary play.
-        var baseline=SustainedDeckValue.ScenarioStrength(deck,energy,Interference.None,true);
-        var wither=SustainedDeckValue.ScenarioStrength(deck,energy,Interference.Wither,true);
-        var chains=SustainedDeckValue.ScenarioStrength(deck,energy,Interference.Chains,true);
-        var adaptable=SustainedDeckValue.ScenarioStrength(deck,energy,Interference.Adaptable,true);
+        var baseline=SustainedDeckValue.ScenarioStrengthForOwner(deck,energy,Interference.None,true,ownerHp,ownerMaxHp);
+        var wither=SustainedDeckValue.ScenarioStrengthForOwner(deck,energy,Interference.Wither,true,ownerHp,ownerMaxHp);
+        var chains=SustainedDeckValue.ScenarioStrengthForOwner(deck,energy,Interference.Chains,true,ownerHp,ownerMaxHp);
+        var adaptable=SustainedDeckValue.ScenarioStrengthForOwner(deck,energy,Interference.Adaptable,true,ownerHp,ownerMaxHp);
         // A strong answer to one boss must not conceal a collapse against the
         // other. Retain an average share so further useful improvements count.
         var stressed=.65*Math.Min(Math.Min(wither,chains),adaptable)+.35*(wither+chains+adaptable)/3;

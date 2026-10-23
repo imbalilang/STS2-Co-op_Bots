@@ -31,6 +31,7 @@ internal static class TabletEventScenarios
             typeof(Player).GetField("<Character>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .SetValue(player, ModelDb.Character<Ironclad>());
             var run = RunState.CreateForTest(new[] { player }, seed: "TABLET-SAFETY");
+            player.MaxEnergy = 3; // Deprived's 100-energy mock is not a native run budget.
             var combat = new CombatState(runState: run);
             foreach (var card in player.Deck.Cards.ToList()) player.Deck.RemoveInternal(card);
             player.Deck.AddInternal(combat.CreateCard<StrikeIronclad>(player));

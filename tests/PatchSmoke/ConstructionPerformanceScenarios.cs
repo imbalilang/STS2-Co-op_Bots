@@ -180,6 +180,17 @@ internal static class ConstructionPerformanceScenarios
 
     internal static void Run()
     {
+        // 2026-10-23 contribution import: all 768 legacy hand results retain
+        // the exact hash. Rebase ONLY Total/Combat/Cycle/Growth/Robustness/
+        // Wither/Chains across the 22 HP-aware deck vectors. The frozen v21
+        // runtime reproduces the previous golden within the same 1e-8 check;
+        // the contribution DLLs reproduce every rebuilt score exactly.
+        // All other vector fields, cache counts and the 2MiB allocation guard
+        // remain unchanged. Raw paired snapshots and field attribution:
+        // work/merge-key-card-acquisition-20261023/performance-rebase.json.
+        // Actual R2: removing ExtraLossCost produced exit 1:
+        // "Construction performance: full deck scores or decision-scope invalidation changed".
+        // Exact source restoration passed (exit 0), r2-integration/hp-golden.json.
         var expected=JsonSerializer.Deserialize<Snapshot>(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,"construction-performance.json")))!;
         var actual=Measure();
         if(actual.Hands!=expected.Hands)throw new Exception("Construction performance: sampled hand results or stable tie order changed");

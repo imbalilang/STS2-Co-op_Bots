@@ -80,8 +80,10 @@ internal static class BuildTrace
             }
             var pick = skip || chosen < 0 ? "SKIP" : candidates[chosen].Id.Entry;
             var timing = started == 0 ? "" : $" elapsedMs={System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds:F1}";
+            var acquisition = chosen >= 0 && !skip && KeyCardAcquisition.Preferred(candidates[chosen], player)
+                ? " acquisition=first-key-card" : "";
             Log.Info($"{LogPrefix}: reward bot={player.NetId} pick={pick} size={player.Deck.Cards.Count}"
-                + $"{timing} bar={takeBar:F1} | {string.Join(" ", parts)}");
+                + $"{timing} bar={takeBar:F1}{acquisition} | {string.Join(" ", parts)}");
         }
         catch { /* instrumentation must never break a run */ }
     }

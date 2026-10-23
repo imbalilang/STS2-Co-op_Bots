@@ -9,6 +9,14 @@
 // complete-value-equality: System.InvalidOperationException: Expiry optimization: complete tactical/persistent/future values and native residual states must equal the unoptimized baseline; first=a0-m0-rFalse/action expected=40715429E379D071 actual=40714A9049E036D7
 // single-party-projection: System.InvalidOperationException: Expiry optimization: party tactical value must share one native residual projection without repeating an expiry scan for every owner; calls=3
 // Actual R2 compiled fixture SHA256 (before these comment-only annotations): 55c3100f74425b7b3d9ce2db474f0ef59b0d7fe2ee8aba662a8ade5c42ceb367
+// 2026-10-23 community import: frozen v21 reproduces the prior 128 rows exactly;
+// original package and rebuilt source match exactly. Only 16 /future scalars
+// decrease by .5 because Weak no longer prices damage already covered by block;
+// all other 112 scalar/native-state rows remain byte-identical.
+// Evidence: work/merge-key-card-acquisition-20261023/expiry-parity.json.
+// R2 ignoring future block: RED1, exact source restore GREEN0 (128 rows, 0 bytes,
+// one party projection), r2-expiry/proof.json in that same task directory.
+// Raw RED: Expiry optimization: complete tactical/persistent/future values and native residual states must equal the unoptimized baseline; first=a0-m0-rFalse/future expected=4038000000000001 actual=4039000000000001
 using System.Text.Json;
 using CoopBots.Kernel;
 using CoopBots.Kernel.Vendor;

@@ -1160,23 +1160,20 @@ internal static class BuildValueScenarios
                 + $"got {gambitLate.Total:F1} contextual={gambitLate.Contextual} ({gambitLate.Reason}).");
         Console.WriteLine("PASS: THE_GAMBIT is vetoed on every acquisition path (-100) and never outbids skipping.");
 
-        // NIGHTMARE is a different kind of veto: the kernel CAN simulate it
-        // (--nightmare-probe: choice resolved, NightmarePower applied, three
-        // copies in the next hand), but the tournament objective compares
-        // remaining enemies/HP and never pays for the setup turn, so the live
-        // 2026-10-02 run left NIGHTMARE+ in hand across twelve combats with zero
-        // plays. Until the objective values delayed copies, do not acquire it.
+        // Owner 2026-10-23 imports the contribution's copy investment/choice
+        // continuation policy and removes the 2026-10-02 Nightmare veto.
+        // Ordinary deck value may still reject it; the card is no longer a
+        // fixed -100 acquisition ban. Keep THE_GAMBIT and PANIC_BUTTON vetoes.
+        // R2: restoring NIGHTMARE to the production blacklist caused exit 1:
+        // "Nightmare must leave the acquisition blacklist when delayed-copy planning is imported".
+        // Exact restoration passed, evidence: merge-key-card-acquisition-20261023/r2/nightmare-veto.
         Clear();
         Give<StrikeSilent>(5); Give<DefendSilent>(4);
         var nightmare = BuildValue.Add(combat.CreateCard<Nightmare>(bot), bot);
-        if (Math.Abs(nightmare.Total - (-100)) > 0.01)
-            throw new Exception($"NIGHTMARE must carry the flat acquisition veto, "
+        if (!double.IsFinite(nightmare.Total) || nightmare.Reason.Contains("blacklist:nightmare", StringComparison.Ordinal))
+            throw new Exception($"NIGHTMARE must use ordinary finite acquisition valuation after copy planning is imported, "
                 + $"got {nightmare.Total:F1} ({nightmare.Reason}).");
-        if (!nightmare.Reason.Contains("blacklist:nightmare", StringComparison.Ordinal))
-            throw new Exception($"The Nightmare veto must be named in the reason, got {nightmare.Reason}.");
-        if (BuildValue.BestReward(bot, new List<CardModel> { combat.CreateCard<Nightmare>(bot) }, allowSkip: true) != -1)
-            throw new Exception("A blacklisted Nightmare must never beat skipping on the reward screen.");
-        Console.WriteLine("PASS: NIGHTMARE is vetoed (-100) while the kernel simulation itself is verified.");
+        Console.WriteLine("PASS: NIGHTMARE uses ordinary acquisition valuation after delayed-copy planning is imported.");
 
         // PANIC_BUTTON is the same acquisition shape for a different reason: the
         // kernel applies NoBlockPower (CardEffectSpecRegistry), but the tournament

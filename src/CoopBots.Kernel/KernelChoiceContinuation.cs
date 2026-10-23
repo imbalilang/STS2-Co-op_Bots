@@ -51,7 +51,7 @@ internal static class KernelChoiceContinuation
         => Evaluate(root, selected, owner, choiceCount).Value;
 
     internal static Evaluation Evaluate(KernelSession root, KernelSession selected, Player owner,
-        int choiceCount)
+        int choiceCount, bool copyChoice = false)
     {
         var request = KernelSearchBudgetScope.Current;
         bool Stopped() => request?.IsStopped == true;
@@ -70,32 +70,36 @@ internal static class KernelChoiceContinuation
             return new(double.NegativeInfinity, 0, 0) { StopReason = request!.StopReason };
         }
         var party = selected.ChoiceParty;
+        IReadOnlyList<Player> actors = copyChoice ? selected.ChoiceActors(owner) : [owner];
         var best = double.NegativeInfinity;
-        var steps = Math.Min(16, Math.Max(1, MaximumSteps / (Math.Max(1, choiceCount) * 3)));
+        var policyCount = copyChoice ? 2 : 3;
+        var steps = Math.Min(copyChoice ? 24 : 16,
+            Math.Max(1, MaximumSteps / (Math.Max(1, choiceCount) * policyCount)));
         var used = 0;
         var complete = 0;
         using var guard = Enter();
         var opportunity = root.ExhaustOpportunityCost(selected, owner);
-        // With no legal affordable card, all three policies take the same
+        // Ordinary cleanup with no legal affordable card makes all three policies take the same
         // native EndTurn. Resolve that boundary once; this is still a complete
         // witness, including held status, orbs and the real enemy phase.
         // A playable zero-cost card keeps the ordinary three-policy comparison.
-        var policies = selected.Hand(owner).Any(selected.CanPlay)
-            ? new[] { RolloutPolicyKind.Kill, RolloutPolicyKind.Defend, RolloutPolicyKind.Growth }
-            : new[] { RolloutPolicyKind.Kill };
+        var policies = copyChoice ? new[] { RolloutPolicyKind.Kill, RolloutPolicyKind.Defend }
+            : selected.Hand(owner).Any(selected.CanPlay)
+                ? new[] { RolloutPolicyKind.Kill, RolloutPolicyKind.Defend, RolloutPolicyKind.Growth }
+                : new[] { RolloutPolicyKind.Kill };
         // Optional continuation work must not start after the same outer
         // request expires. Mandatory native menu/action settlement is elsewhere.
         if (Stopped()) return new(best, used, complete) { StopReason = request!.StopReason };
         var seed = selected.Fork();
-        seed.SampleChoiceDrawPool(owner);
-        seed.PrepareChoiceHand(owner);
+        foreach (var actor in actors) seed.SampleChoiceDrawPool(actor);
+        seed.PrepareChoiceHand(owner, copyChoice);
         var prefixCache = policies.Length > 1 ? new KernelChoicePrefixCache(seed) : null;
         foreach (var policy in policies)
         {
             if (Stopped()) break;
             var child = prefixCache?.ForkSeed() ?? seed;
-            var run = new RolloutRun(child, party, [owner],
-                new(policy, MaxSteps: steps, MaxRounds: child.RoundsAdvanced + 1)
+            var run = new RolloutRun(child, party, actors,
+                new(policy, MaxSteps: steps, MaxRounds: child.RoundsAdvanced + (copyChoice ? 2 : 1))
                 { InvestmentLookahead = false, SequenceLookahead = true, SequenceHandLookahead = false })
             { ChoicePrefixCache = prefixCache, StopRequested = Stopped };
             while (!run.Done)
@@ -106,13 +110,16 @@ internal static class KernelChoiceContinuation
                 run.Step();
             }
             used += run.Result!.Steps;
-            if (!run.State.CanFork || !run.State.HasTerminal && !run.State.EnemyPhaseCompleted) continue;
-            complete++;
-            var value = KernelTacticalPolicy.ActionValue(root, run.State, party, [owner])
-                + run.State.FutureDebuffValue([owner], elapsedTurns: 0, reference: root);
-            // Only a completed unfinished fight has later draw opportunities.
-            // Actual victory or survival remains native; no choice is forbidden.
+            if (!run.State.CanFork) continue;
+            var completed = run.State.HasTerminal || run.State.EnemyPhaseCompleted;
+            if (!completed && (!copyChoice || run.Result.StopReason != "step-cap")) continue;
+            if (completed) complete++;
+            var value = KernelTacticalPolicy.ActionValue(root, run.State, party, actors)
+                + run.State.FutureDebuffValue(actors, elapsedTurns: 0, reference: root);
+            // Copy choices can retain bounded value at the step cap. Actual
+            // victory or survival remains native; no choice is forbidden.
             if (!run.State.HasWon) value -= opportunity + run.State.ChoicePollutionCost(owner);
+            if (copyChoice && !run.State.HasWon) value += run.State.CopyResidualValue(root, owner);
             best = Math.Max(best, value);
         }
         return new(best, used, complete) { NativePrefixHits = prefixCache?.Hits ?? 0,
@@ -124,6 +131,9 @@ public sealed partial class KernelSession
 {
     private Queue<PlanCardChoice>? preparedAfterStartChoices;
     internal IReadOnlyList<Player> ChoiceParty => Combat.Players;
+
+    internal IReadOnlyList<Player> ChoiceActors(Player owner)
+        => Combat.Players.Where(p => p == owner || synchronousChoicePlayers.Contains(p.NetId)).ToArray();
 
     internal double ExhaustOpportunityCost(KernelSession selected, Player owner)
     {
@@ -159,12 +169,13 @@ public sealed partial class KernelSession
                 future.simulator.State.FindCard(c.Original) ?? c, available));
     }
 
-    // Analysis only: other seats' already-visible HP/block stay fixed while
-    // this owner's affordable hand is played to the real shared enemy phase.
+    // Analysis only: ordinary cleanup fixes the other seats' visible HP/block
+    // while this owner plays; copy choices can continue the delegated team.
     // These pass markers are not returned as deployable actions.
-    internal void PrepareChoiceHand(Player owner)
+    internal void PrepareChoiceHand(Player owner, bool includeTeam = false)
     {
-        ready = Combat.Players.Where(p => p != owner).Select(p => p.NetId).ToHashSet();
+        if (!includeTeam)
+            ready = Combat.Players.Where(p => p != owner).Select(p => p.NetId).ToHashSet();
         EnemyPhaseCompleted = false;
         AutoResolveEnemyChoices = true;
         AutoResolveTurnStartChoices = true;

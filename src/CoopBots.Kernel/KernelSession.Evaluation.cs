@@ -94,6 +94,26 @@ public sealed partial class KernelSession
     internal KernelSession WithoutEnemyVulnerable()
         => WithEnemyVulnerableFrom(null);
 
+    internal KernelSession WithTeamAmplifiersFrom(KernelSession? reference)
+    {
+        var copy = Fork();
+        var previous = reference?.Combat.EffectivePowers()
+            .Where(p => p is FlankingPower or KnockdownPower or DebilitatePower).ToList() ?? [];
+        foreach (var power in copy.Combat.EffectivePowers()
+            .Where(p => p is FlankingPower or KnockdownPower or DebilitatePower).ToArray())
+        {
+            var old = previous.FirstOrDefault(p => p.GetType() == power.GetType()
+                && p.Owner == power.Owner && p.Applier == power.Applier);
+            copy.Combat.SetPowerAmount(power, old?.Amount ?? 0);
+            if (old is not null) previous.Remove(old);
+        }
+        return copy;
+    }
+
+    internal bool HasTeamAmplifier(Creature enemy)
+        => Combat.EffectivePowers().Any(p => p.Owner == enemy && p.Amount > 0
+            && p is FlankingPower or KnockdownPower or DebilitatePower);
+
     internal KernelSession WithEnemyVulnerableFrom(KernelSession? reference)
     {
         var copy = Fork();

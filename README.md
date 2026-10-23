@@ -4,7 +4,14 @@
 
 Configurable AI teammates for Slay the Spire 2's official multiplayer lobbies. Contributions from developers and coding agents are welcome; start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## 最新源码 / Latest source：0.39.1 开发快照（2026-10-13）
+## 最新更新 / Latest：0.39.2（2026-10-23）
+
+- 集成此前开发快照中的四席联合规划、执行合同、临时属性与多人开局等待修复，并合入 `key-card-acquisition-20261022` 的构筑、队伍协同及复制牌规划增量。
+- 首张优先实际对应战士的**势不可当（JUGGERNAUT）**及多人局的夹击、击倒；**主宰（DOMINATE）**仍按易伤层数获得力量，两张牌不混用。
+- 构筑增加格挡事件触发伤害及低血风险，选牌、删除、升级纳入联合队伍边际收益；恢复 Nightmare 普通获取评分并扩大复制续演。
+- 本版提供对应源码与安装包，完成离线构建、独立类型加载和完整内核回归；尚未开展新的 Steam 实机或整塔胜率测试。来源、范围与保留的模型限制见 [合入说明](docs/COMMUNITY_PACKAGE_20261022.md)，完整变更见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 上次公开快照：0.39.1（2026-10-13）
 
 本次公开当前算法、回归组件与 Steam 实机测试管线，邀请其他作者共同优化。源码快照保留 0.39.1 版本号；工坊安装包与 GitHub 源码的交付身份应分别核对。
 

@@ -234,8 +234,15 @@ internal static class TemporaryStatsCombatScenarios
         Pow<WeakPower>(enemy, 4); Pow<StrengthPower>(enemy, 9);
         for (var i = 0; i < 8; i++) Hand<StrikeIronclad>(p[0], c);
         var root = KernelSession.Capture(c); var temp = root.Fork();
+        // The imported policy prices defense for every living teammate even
+        // when only p[0] contributes attack opportunities. Neither seat has block.
+        // Both original Strength guards re-proved RED1 / exact restore GREEN0:
+        // work/merge-key-card-acquisition-20261023/r2-future-stats/proof.json.
+        // RED: Temporary stats combat: future Weak must price permanent enemy Strength in its restored native attack amount
+        // RED: Temporary stats combat: future Weak must use restored enemy Strength rather than this-turn PiercingWail reduction
         var expected = root.CurrentAttacks().Where(attack => attack.Enemy == enemy)
-            .Sum(attack => Math.Max(0, (double)attack.Raw + 9) * attack.Repeats) * .25 * 3;
+            .Sum(attack => Math.Max(0, (double)attack.Raw + 9) * attack.Repeats) * .25 * 3
+            * p.Count(seat => seat.Creature.CurrentHp > 0);
         Check(Math.Abs(root.FutureDebuffValue([p[0]], reference: root) - expected) < .001,
             "future Weak must price permanent enemy Strength in its restored native attack amount");
         Combat(temp).ApplyTemporaryStrengthLoss<PiercingWailPower>(enemy, 6, p[0].Creature); Settle(temp);

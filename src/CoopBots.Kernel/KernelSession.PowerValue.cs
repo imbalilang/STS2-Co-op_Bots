@@ -43,7 +43,6 @@ public sealed partial class KernelSession
             // and can cash out Dominate before the native duration multiplier.
             output += plays * Math.Max(0, f.AttackDamage + futureStats.Power<StrengthPower>(player.Creature));
         }
-        if (output <= 0) return 0;
         var totalHp = Math.Max(1, reference.Enemies.Sum(reference.Hp));
         var future = Math.Clamp(totalHp / Math.Max(1, referenceOutput) - 1, 0, 8);
         var attacks = reference.CurrentAttacks();
@@ -62,11 +61,25 @@ public sealed partial class KernelSession
             // whole round down. The rules simulation still sees the real creature.
             try
             {
-                debuffValue += .8 * Math.Min(Math.Max(0, Power<VulnerablePower>(enemy) - elapsedTurns), future)
-                        * output * reference.Hp(enemy) / totalHp * .5
-                    + Math.Min(Math.Max(0, Power<WeakPower>(enemy) - elapsedTurns), future)
-                        * attacks.Where(a => a.Enemy == enemy).Sum(a => Math.Max(0,
-                            (double)a.Raw + futureStats.Power<StrengthPower>(enemy)) * a.Repeats) * .25;
+                var vulnerable = Math.Min(Math.Max(0, Power<VulnerablePower>(enemy) - elapsedTurns), future);
+                var weak = Math.Min(Math.Max(0, Power<WeakPower>(enemy) - elapsedTurns), future);
+                var debilitate = Math.Min(Math.Max(0, Power<DebilitatePower>(enemy) - elapsedTurns), future);
+                debuffValue += .8 * (vulnerable + Math.Min(vulnerable, debilitate))
+                    * output * reference.Hp(enemy) / totalHp * (TeamSynergyNative.VulnerableFactor - 1);
+                foreach (var player in ChoiceParty.Where(p => Hp(p.Creature) > 0 && reference.Hp(p.Creature) > 0))
+                {
+                    var raw = attacks.Where(a => a.Enemy == enemy).Sum(a => Math.Max(0,
+                        (double)a.Raw + futureStats.Power<StrengthPower>(enemy)) * a.Repeats);
+                    var pcs = reference.simulator.State.GetPlayerCombatState(player);
+                    var opportunities = reference.ReadPowerOpportunities(player,
+                        pcs.Hand.Cards.Concat(pcs.DrawPile.Cards).Concat(pcs.DiscardPile.Cards).ToArray());
+                    var block = opportunities.Blocks * opportunities.Block;
+                    var reduction = 1 - TeamSynergyNative.WeakFactorFor(player, enemy);
+                    var ordinary = Math.Max(0, raw - block) - Math.Max(0, raw * (1 - reduction) - block);
+                    var amplified = Math.Max(0, raw - block)
+                        - Math.Max(0, raw * Math.Max(0, 1 - 2 * reduction) - block);
+                    debuffValue += weak * ordinary + Math.Min(weak, debilitate) * (amplified - ordinary);
+                }
             }
             catch (InvalidOperationException)
             {
@@ -74,6 +87,71 @@ public sealed partial class KernelSession
             }
         }
         return debuffValue;
+    }
+
+    internal double CopyResidualValue(KernelSession reference, Player owner)
+    {
+        if (!CanFork || HasTerminal || Hp(owner.Creature) <= 0 || KernelSearchBudgetScope.IsStopped) return 0;
+        var original = CombatCards(reference, owner).Select(c => c.Original).ToHashSet();
+        var source = CombatCards(this, owner);
+        var copies = source.Where(c => !original.Contains(c.Original)).ToList();
+        var nightmares = Combat.EffectivePowers().OfType<NightmarePower>()
+            .Where(p => p.Owner == owner.Creature && p.Amount > 0).ToArray();
+        foreach (var nightmare in nightmares)
+        {
+            var selected = Combat.GetNightmareSelection(nightmare);
+            for (var i = 0; i < Math.Min(10, nightmare.Amount); i++) copies.Add(selected);
+        }
+        if (!copies.Any(c => TeamSynergyNative.HasComponent(TeamSynergyNative.Component(c.Preview,
+            c.GetEnergyCostWithModifiers(simulator, simulator.State.GetPlayerCombatState(owner)))))) return 0;
+        var before = new List<TeamSynergyMath.Seat>();
+        var after = new List<TeamSynergyMath.Seat>();
+        var unchanged = source.Where(c => original.Contains(c.Original)).ToArray();
+        foreach (var player in ChoiceParty)
+        {
+            var cards = player == owner ? unchanged : CombatCards(this, player);
+            before.Add(CopySeat(player, cards));
+            after.Add(player == owner ? CopySeat(player, unchanged.Concat(copies).ToArray()) : before[^1]);
+        }
+        var hp = Enemies.Sum(Hp);
+        var pressure = new TeamSynergyMath.Pressure(hp, 0, 0,
+            Enemies.Count > 0 && Enemies.All(e => Power<ArtifactPower>(e) > 0) ? 1 : 0);
+        var ordinary = TeamSynergyMath.Evaluate(before, pressure);
+        var copied = TeamSynergyMath.Evaluate(after, pressure);
+        var ordinaryOutput = before.Sum(s => s.Attack + s.OtherDamage);
+        var marginal = copied.Damage - ordinary.Damage
+            - (copied.UnamplifiedDamage - ordinary.UnamplifiedDamage);
+        var pcs = simulator.State.GetPlayerCombatState(owner);
+        var inHand = copies.Any(c => pcs.Hand.Cards.Contains(c));
+        var arrival = nightmares.Length > 0 ? 1 : inHand ? 0 : Math.Max(1, pcs.DrawPile.Cards.Count / 5d);
+        var danger = ChoiceParty.Where(p => Hp(p.Creature) > 0)
+            .Max(p => Threat(p).HpLoss / Math.Max(1d, Hp(p.Creature)));
+        var survival = Math.Clamp(1 - danger, 0, 1);
+        return .8 * TeamSynergyMath.DelayedMarginal(marginal, hp, ordinaryOutput, arrival, 1, survival);
+    }
+
+    private static PredictedCard[] CombatCards(KernelSession state, Player player)
+    {
+        var pcs = state.simulator.State.GetPlayerCombatState(player);
+        return pcs.Hand.Cards.Concat(pcs.DrawPile.Cards).Concat(pcs.DiscardPile.Cards).ToArray();
+    }
+
+    private TeamSynergyMath.Seat CopySeat(Player player, IReadOnlyList<PredictedCard> cards)
+    {
+        var opportunities = ReadPowerOpportunities(player, cards);
+        var energy = Math.Max(0, PersistentPowerSupport.GetModifiedMaxEnergy(Combat, player));
+        var pcs = simulator.State.GetPlayerCombatState(player);
+        var components = cards.Where(c => !c.Preview.Keywords.Contains(CardKeyword.Ethereal)
+                && c.GetStarCostWithModifiers(simulator, pcs) <= pcs.Stars)
+            .OrderBy(CardChoiceSupport.ChoiceCardKey, StringComparer.Ordinal)
+            .Select(c => TeamSynergyNative.Component(c.Preview, c.GetEnergyCostWithModifiers(simulator, pcs)))
+            .Where(TeamSynergyNative.HasComponent).ToArray();
+        var attack = Math.Min(opportunities.Attacks, energy / Math.Max(1d, opportunities.AttackCost))
+            * Math.Max(0, opportunities.AttackDamage + Power<StrengthPower>(player.Creature));
+        return new(cards.Count, Math.Min(cards.Count, 5 + Math.Min(3, opportunities.Draws)), energy,
+            attack, 0, opportunities.Blocks * opportunities.Block, Hp(player.Creature), MaxHp(player.Creature),
+            components, TeamSynergyNative.VulnerableFactorFor(player, Enemies.FirstOrDefault()),
+            TeamSynergyNative.WeakFactorFor(player));
     }
 
     // Upstream's generic fallback is one point per stack for these powers.

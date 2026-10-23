@@ -226,6 +226,7 @@ internal static class RestSiteScenarios
             var aidRun = RunState.CreateForTest(new[] { pillowOwner, woundedAlly }, seed: "CAMP-AID-OVERFLOW");
             aidRun.CurrentActIndex = 2;
             pillowOwner.ResetCombatState(); woundedAlly.ResetCombatState();
+            pillowOwner.MaxEnergy = 3; woundedAlly.MaxEnergy = 3;
             pillowOwner.Creature.SetMaxHpInternal(80); pillowOwner.Creature.SetCurrentHpInternal(55);
             woundedAlly.Creature.SetMaxHpInternal(77); woundedAlly.Creature.SetCurrentHpInternal(38);
             pillowOwner.AddRelicInternal(ModelDb.Relic<RegalPillow>().ToMutable());
@@ -238,8 +239,10 @@ internal static class RestSiteScenarios
             // RegalPillow heal is a real, paid-for benefit of the HEAL option and is
             // NOT to be written off as overflow. Do not add a no-overflow exception
             // to the discount: the ruling is the flat 0.75.
-            if (Pick(pillowOwner, new SmithRestSiteOption(pillowOwner), new HealRestSiteOption(pillowOwner),
-                    new MendRestSiteOption(pillowOwner)) != 1)
+            // HP-aware construction may now put SMITH above both heal options.
+            // Pin the owner's 0.75 self-vs-ally preference on the two healing
+            // candidates; the following healthy-seat check still includes SMITH.
+            if (Pick(pillowOwner, new HealRestSiteOption(pillowOwner), new MendRestSiteOption(pillowOwner)) != 0)
                 throw new Exception("With the 0.75 self-preference bias, a 55/80 seat heals itself rather "
                     + "than aiding a 38/77 ally: the aid is discounted below the seat's own heal.");
             pillowOwner.Creature.SetCurrentHpInternal(78); woundedAlly.Creature.SetCurrentHpInternal(70);

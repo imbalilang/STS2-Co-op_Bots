@@ -11,6 +11,18 @@ var harmony = new Harmony("cn.xiwa.sts2.coopbots.smoke");
 LobbyBotService.ValidateRuntimeSchema();
 harmony.PatchAll(typeof(ModEntry).Assembly);
 
+if (args.Contains("--community-package-only"))
+{
+    CommunityPackageScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--community-package-case="))?.Split('=', 2)[1]);
+    return;
+}
+
+if (args.Contains("--expiry-only") || args.Contains("--expiry-record"))
+{
+    ExpiryValueScenarios.Run(args.Contains("--expiry-record"));
+    return;
+}
+
 if (args.Contains("--party-setup-pending-only"))
 {
     PartySetupPendingNativeScenarios.Run(args.FirstOrDefault(argument => argument.StartsWith("--party-setup-pending-case="))?.Split('=', 2)[1]); return;
@@ -766,6 +778,7 @@ catch (Exception error) when (error is IOException or UnauthorizedAccessExceptio
     // An unreadable manifest is not a reason to fail the suite.
 }
 
+CommunityPackageScenarios.Run();
 UnifiedDeckStrengthScenarios.Run();
 EnergyCommitmentScenarios.Run();
 ConstructionOutcomeScenarios.Run();
@@ -882,4 +895,3 @@ catch (Exception error)
     Console.Error.WriteLine(error);
     Environment.ExitCode = 1;
 }
-

@@ -131,7 +131,7 @@ public sealed partial class KernelSession
         if (!branches.MoveNext()) yield break;
         var first = branches.Current;
         if (KernelSearchBudgetScope.IsStopped || KernelChoiceContinuation.Active || !first.Choices.Any(c => c.Pile == PileType.Hand
-            && c.Effect is "Discard" or "Exhaust" or "DiscardAndDraw"))
+            && c.Effect is "Discard" or "Exhaust" or "DiscardAndDraw" or "Nightmare" or "Duplicate"))
         {
             yield return first;
             for (var i = 1; i < maximumBranches && !KernelSearchBudgetScope.IsStopped
@@ -149,8 +149,9 @@ public sealed partial class KernelSession
         using (KernelChoiceContinuation.Enter())
             ranked = candidates.Select((b, i) => (Branch: b, Value: b.Boundary.Length == 0
                 && i < KernelChoiceContinuation.MaximumChoices
-                    ? KernelChoiceContinuation.Value(this, b.State, owner,
-                        Math.Min(candidates.Count, KernelChoiceContinuation.MaximumChoices)) : double.NegativeInfinity))
+                    ? KernelChoiceContinuation.Evaluate(this, b.State, owner,
+                        Math.Min(candidates.Count, KernelChoiceContinuation.MaximumChoices),
+                        b.Choices.Any(c => c.Effect is "Nightmare" or "Duplicate")).Value : double.NegativeInfinity))
                 .OrderByDescending(v => v.Value).Take(maximumBranches).Select(v => v.Branch).ToArray();
         foreach (var branch in ranked) yield return branch;
     }
@@ -343,6 +344,7 @@ public sealed partial class KernelSession
             // menu must survive enumeration. Multiselect keeps its old bound.
             var limit = spec.SourcePile == PileType.Hand && spec.MinCount == 1 && spec.MaxCount == 1
                 && spec.Effect is PlanChoiceEffect.Discard or PlanChoiceEffect.Exhaust
+                    or PlanChoiceEffect.Duplicate or PlanChoiceEffect.Nightmare
                     ? KernelChoiceContinuation.MaximumChoices : 8;
             var options = KernelRelicChoices.CleanupChoices(spec, limit).Take(limit).ToArray();
             // 上游怎么做：BuildSpec/BuildChoices 只给有界候选的"代表序"，弃牌时不区分牌型，

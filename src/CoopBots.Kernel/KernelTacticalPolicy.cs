@@ -40,10 +40,17 @@ internal static class KernelTacticalPolicy
         // is now realized; keep that conversion neutral. Newly applied Vulnerable
         // still earns its remaining-hand setup benefit, and expired/removed
         // Vulnerable is not refunded.
-        var continuing=before.Enemies.Where(e=>before.Power<MegaCrit.Sts2.Core.Models.Powers.VulnerablePower>(e)>0
-            && after.Enemies.Contains(e) && after.Power<MegaCrit.Sts2.Core.Models.Powers.VulnerablePower>(e)>0).ToHashSet();
-        value+=(KernelTeamCoordination.VulnerableValue(before,actors,continuing)
-            -KernelTeamCoordination.VulnerableValue(after,actors,continuing))*.8;
+        var continuing=before.Enemies.Where(e=>(before.Power<MegaCrit.Sts2.Core.Models.Powers.VulnerablePower>(e)>0
+                || before.HasTeamAmplifier(e)) && after.Enemies.Contains(e)
+            && (after.Power<MegaCrit.Sts2.Core.Models.Powers.VulnerablePower>(e)>0
+                || after.HasTeamAmplifier(e))).ToHashSet();
+        if (continuing.Count > 0)
+        {
+            var retained=continuing.Any(e=>before.HasTeamAmplifier(e)||after.HasTeamAmplifier(e))
+                ? after.WithTeamAmplifiersFrom(before).WithEnemyVulnerableFrom(before) : after;
+            value+=(KernelTeamCoordination.SharedSetupValue(before,actors,continuing)
+                -KernelTeamCoordination.SharedSetupValue(retained,actors,continuing))*.8;
+        }
         return value - LastingEnemyReactionCost(before,after,party);
     }
 
@@ -90,7 +97,7 @@ internal static class KernelTacticalPolicy
         // frontier. They pruned its setup before the real future ticks occurred.
         value += state.Enemies.Where(state.IsPrimaryEnemy).Sum(e => Math.Min(state.Hp(e),
             CardPoisonEffects.TwoTicks(state.Power<MegaCrit.Sts2.Core.Models.Powers.PoisonPower>(e))) * .8);
-        value += KernelTeamCoordination.VulnerableValue(state, actors ?? party) * .8;
+        value += KernelTeamCoordination.SharedSetupValue(state, actors ?? party) * .8;
         // Share one native residual-stat projection across the party's future
         // values. Current Threat and hand output keep the real visible stats.
         var persistentState = state.AfterTemporaryStatExpiry(party.Select(player => player.Creature));

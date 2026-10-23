@@ -7,13 +7,16 @@ namespace CoopBots.Building;
 internal static class PayableHands
 {
     internal const double TemporaryStatShare = .7;
-    internal sealed record Card(ConstructionCard Model, CardProfile.Facts Facts, double Remaining, double PlayBlock = 0);
+    internal sealed record Card(ConstructionCard Model, CardProfile.Facts Facts, double Remaining, double PlayBlock = 0,
+        double PlayBlockEvents = 0);
     internal sealed record Outcome(double[] Plays, double[] Exhausted, double[] Targets,
         double Spent, double Refunded, double StatusDamage, double StatusExhausted,
         double WitherExhausted, double Generated, int Counter, double Drawn)
     {
         internal double TriggeredPoison { get; init; }
         internal double TriggeredBlock { get; init; }
+        internal double BlockEvents { get; init; }
+        internal double BlockTriggerDamage { get; init; }
         internal double TemporaryDamage { get; init; }
         internal double TemporaryBlock { get; init; }
         internal double[] AutomaticPlays { get; init; } = [];
@@ -30,12 +33,14 @@ internal static class PayableHands
         double incoming, double health, int enemies, int turn, double corruption, int trajectory = -1, int drawOffset = 0,
         double statuses = 0, double withers = 0, double witherDamage = 0, int counter = 0, bool chains = false,
         double exhaustDraw = 0, double exhaustBlock = 0, int initialWithers = 0,
-        int startDiscard = 0, double juggling = 0, double phantomBlades = 0, double skillEnrage = 0)
+        int startDiscard = 0, double juggling = 0, double phantomBlades = 0, double skillEnrage = 0,
+        double blockTriggerDamage = 0, double ownerHp = 0, double ownerMaxHp = 0)
     {
         var plays = new double[cards.Length]; var automatic = new double[cards.Length];
         var burned = new double[cards.Length]; var targets = new double[cards.Length];
         double spent=0, refunded=0, damage=0, removed=0, witherRemoved=0, generated=0, drawn=0,
-            triggeredPoison=0, triggeredBlock=0, temporaryDamage=0, temporaryBlock=0, copiedAttackDamage=0, firstShivDamage=0, startDiscardCount=0;
+            triggeredPoison=0, triggeredBlock=0, temporaryDamage=0, temporaryBlock=0, copiedAttackDamage=0, firstShivDamage=0, startDiscardCount=0,
+            blockEvents=0, blockTriggeredDamage=0;
         var finalCounter=counter;
         var samples=trajectory>=0?1:8;
         for(var sample=0;sample<samples;sample++)
@@ -59,11 +64,13 @@ internal static class PayableHands
             var offset=trajectory<0 || order.Length==0?0:drawOffset%order.Length;
             var indices=order.Skip(offset).Concat(order.Take(offset)).Take(ConstructionHand.Window).Select(x=>x.Index).ToArray();
             var hand=indices.Select(i=>i<0 ? new ConstructionHand.Slot(null,null,i<=-2,i==-3?witherDamage:0)
-                : new ConstructionHand.Slot(cards[i].Model,cards[i].Facts,cards[i].Facts.Unplayable,PlayBlock:cards[i].PlayBlock)).ToArray();
+                : new ConstructionHand.Slot(cards[i].Model,cards[i].Facts,cards[i].Facts.Unplayable,PlayBlock:cards[i].PlayBlock,
+                    PlayBlockEvents:cards[i].PlayBlockEvents)).ToArray();
             var selection=ConstructionHand.Solve(hand,SampleCount(Math.Max(0,draw),"draw"),
                 new(energy,incoming,health,enemies,chains,witherDamage,counter,exhaustDraw,exhaustBlock,
                     Unit("corruption",0,key)<corruption,initialWithers,deckSize)
-                { StartDiscard=startDiscard, Juggling=juggling, PhantomBlades=phantomBlades, SkillEnrage=skillEnrage });
+                { StartDiscard=startDiscard, Juggling=juggling, PhantomBlades=phantomBlades, SkillEnrage=skillEnrage,
+                    BlockTriggerDamage=blockTriggerDamage, OwnerHp=ownerHp, OwnerMaxHp=ownerMaxHp });
             for(var j=0;j<indices.Length;j++)
             {
                 var index=indices[j]; if(index<0)continue;
@@ -80,6 +87,8 @@ internal static class PayableHands
             drawn+=selection.Drawn/(double)samples; finalCounter=selection.Counter;
             triggeredPoison += selection.TriggeredPoison / samples;
             triggeredBlock += selection.TriggeredBlock / samples;
+            blockEvents += selection.BlockEvents / samples;
+            blockTriggeredDamage += selection.BlockTriggeredDamage / samples;
             temporaryDamage += selection.TemporaryDamage / samples;
             temporaryBlock += selection.TemporaryBlock / samples;
             copiedAttackDamage += selection.CopiedAttackDamage / samples;
@@ -88,6 +97,7 @@ internal static class PayableHands
         }
         return new(plays,burned,targets,spent,refunded,damage,removed,witherRemoved,generated,finalCounter,drawn)
             { TriggeredPoison=triggeredPoison, TriggeredBlock=triggeredBlock,
+                BlockEvents=blockEvents, BlockTriggerDamage=blockTriggeredDamage,
                 TemporaryDamage=temporaryDamage, TemporaryBlock=temporaryBlock, AutomaticPlays=automatic,
                 CopiedAttackDamage=copiedAttackDamage, FirstShivDamage=firstShivDamage,StartDiscardCount=startDiscardCount };
     }

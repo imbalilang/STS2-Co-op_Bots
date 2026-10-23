@@ -362,7 +362,7 @@ public sealed class RolloutRun
         if (investment is null)
         {
             var powers = actors.Where(session.CanAct)
-                .SelectMany(p => session.Hand(p).Where(c => c.Type == CardType.Power && session.CanPlay(c)))
+                .SelectMany(p => session.Hand(p).Where(c => KernelInvestmentProbe.IsInvestment(c) && session.CanPlay(c)))
                 .Select(c => (Player: session.CardOwner(c), Key: session.CardStateKey(c))).Distinct().ToArray();
             // A new draw, newly affordable power, or energy gain changes the
             // investment choice even within the same turn. Ordinary damage

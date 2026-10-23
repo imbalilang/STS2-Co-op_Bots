@@ -30,7 +30,9 @@ internal static class RestSiteValueScenarios
         var pillow = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 2, 9));
         var lower = Player.CreateForNewRun<Deprived>(UnlockState.all, BotRegistry.CreateId(BotDifficulty.Pro, 3, 9));
         var run = RunState.CreateForTest(new[] { owner, pillow, lower }, seed: "CAMP-TARGET-VALUE");
-        foreach (var p in run.Players) { p.ResetCombatState(); p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80); }
+        // Deprived defaults to 100 test energy. This patient-selection fixture
+        // represents an ordinary run, including the construction forecast.
+        foreach (var p in run.Players) { p.ResetCombatState(); p.MaxEnergy = 3; p.Creature.SetMaxHpInternal(80); p.Creature.SetCurrentHpInternal(80); }
         pillow.Creature.SetCurrentHpInternal(25); lower.Creature.SetCurrentHpInternal(10);
         pillow.AddRelicInternal(ModelDb.Relic<RegalPillow>().ToMutable());
         // Use an ordinary deck so this patient-selection fixture is not also
@@ -43,12 +45,22 @@ internal static class RestSiteValueScenarios
         if (BotRestSitePatch.BestMendTarget(owner) != pillow)
             throw new Exception("MEND must compare useful native healing, not only the lowest HP percentage.");
         var plan = Plan();
-        if ((int)plan.GetType().GetProperty("Index")!.GetValue(plan)! != 2
-            || (ulong)plan.GetType().GetProperty("Patient")!.GetValue(plan)! != pillow.NetId)
+        // Owner 2026-10-23 imports HP-aware construction. The contribution's
+        // upgrade forecast now wins this former MEND-vs-SMITH anchor. Preserve
+        // that behavior separately from the actual patient identity contract.
+        // Actual R2: forcing production SMITH value to 2 exited 1:
+        // "HP-aware construction must preserve the imported camp upgrade choice".
+        // Exact restoration passed, merge-key-card-acquisition-20261023/r2-integration/camp-upgrade.json.
+        if ((int)plan.GetType().GetProperty("Index")!.GetValue(plan)! != 0)
+            throw new Exception("HP-aware construction must preserve the imported camp upgrade choice.");
+        var mendPlan = choose.Invoke(null, new object[] { owner, new RestSiteOption[]
+            { new HealRestSiteOption(owner), new MendRestSiteOption(owner) } })!;
+        if ((int)mendPlan.GetType().GetProperty("Index")!.GetValue(mendPlan)! != 1
+            || (ulong)mendPlan.GetType().GetProperty("Patient")!.GetValue(mendPlan)! != pillow.NetId)
             throw new Exception("Camp option valuation must choose the same best MEND patient.");
         if (MendRestSiteOptionFixture.RemoteChoice(owner).AsPlayerId() != pillow.NetId)
             throw new Exception("The actual remote MEND answer must match the patient used by valuation.");
-        Console.WriteLine("PASS: camp valuation and remote MEND execution share the target with the best useful heal.");
+        Console.WriteLine("PASS: imported camp upgrade pricing and actual MEND execution preserve the best useful-heal target.");
 
         owner.AddRelicInternal(ModelDb.Relic<VenerableTeaSet>().ToMutable());
         if (BotRestSitePatch.SelfHealRewardValue(owner) != 0)

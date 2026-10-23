@@ -33,12 +33,17 @@ internal static class SustainedDeckValue
     }
 
     internal static double ScenarioStrength(IReadOnlyList<CardModel> deck,int energy,DeckRobustness.Interference interference,bool endurance=false)
-        => ConstructionJobs.Value(() => PrepareScenario(deck, energy, interference, endurance));
+        => ScenarioStrengthForOwner(deck, energy, interference, endurance, 0, 0);
 
-    private static Func<double> PrepareScenario(IReadOnlyList<CardModel> deck,int energy,DeckRobustness.Interference interference,bool endurance)
+    internal static double ScenarioStrengthForOwner(IReadOnlyList<CardModel> deck,int energy,
+        DeckRobustness.Interference interference,bool endurance,double ownerHp,double ownerMaxHp)
+        => ConstructionJobs.Value(() => PrepareScenario(deck, energy, interference, endurance, ownerHp, ownerMaxHp));
+
+    private static Func<double> PrepareScenario(IReadOnlyList<CardModel> deck,int energy,DeckRobustness.Interference interference,
+        bool endurance,double ownerHp,double ownerMaxHp)
     {
         var entries=deck.Select(c=>new Entry(c,CardProfile.Of(c,energy))).ToArray();
-        var plan=new ScenarioPlan(entries,energy);
+        var plan=new ScenarioPlan(entries,energy,ownerHp,ownerMaxHp);
         var scenarios=new List<Func<int,double>>();
         foreach(var threat in endurance?new[]{18d,26d}:new[]{12d,26d})
         foreach(var enemies in endurance?new[]{1}:new[]{1,3})
@@ -75,8 +80,12 @@ internal static class SustainedDeckValue
         internal readonly double Finale;
         internal readonly int InitialStatus, EtherealStatuses, PoisonSources, NonAttacks;
         internal readonly bool ShuffleSoot;
-        internal ScenarioPlan(Entry[] deck,int energy)
+        internal readonly double OwnerHp, OwnerMaxHp;
+        internal ScenarioPlan(Entry[] deck,int energy,double ownerHp=0,double ownerMaxHp=0)
         {
+            var creature=deck.FirstOrDefault()?.Original.Owner?.Creature;
+            OwnerHp=ownerMaxHp>0?ownerHp:creature?.CurrentHp??0;
+            OwnerMaxHp=ownerMaxHp>0?ownerMaxHp:creature?.MaxHp??0;
             Finale=GrandFinaleAvailability.Estimate(deck.Select(e=>e.Original).ToArray(),energy);
             var corruption=deck.Any(e=>e.Card.Kind is nameof(Corruption));
             var ordinary=deck.Where(e=>!e.Facts.Unplayable && !e.Facts.IsPower && !Unsupported(e.Card)).ToArray();
@@ -108,6 +117,9 @@ internal static class SustainedDeckValue
         internal int ShuffleStatusesGenerated { get; init; }
         internal double TriggeredPoison { get; init; }
         internal double TriggeredBlock { get; init; }
+        internal double BlockTriggerDamage { get; init; }
+        internal double OwnerHpAfter { get; init; }
+        internal double SurvivalPenalty { get; init; }
         internal double PoisonDamage { get; init; }
         internal int BossPhase { get; init; }
         internal double ReactiveStrength { get; init; }
@@ -145,13 +157,13 @@ internal static class SustainedDeckValue
     internal static bool KnownPower(CardModel c) => c is Pyre or Afterimage or Footwork or InfiniteBlades
         or MachineLearning or Inflame or DemonForm or FeelNoPain or DarkEmbrace
         or Accelerant or Accuracy or Cruelty or Unmovable or FanOfKnives or SerpentForm or Corruption or Sneaky or Tank
-        or ToolsOfTheTrade or Juggling or PhantomBlades;
+        or ToolsOfTheTrade or Juggling or PhantomBlades or Juggernaut;
     internal static bool Cleanup(CardModel c) => c is SecondWind or TrueGrit or BurningPact
         or Cinder or FiendFire or Prepared or CalculatedGamble or Survivor or Purity or Acrobatics or DaggerThrow;
     internal static bool KnownPower(ConstructionCard c) => c.Kind is nameof(Pyre) or nameof(Afterimage) or nameof(Footwork) or nameof(InfiniteBlades)
         or nameof(MachineLearning) or nameof(Inflame) or nameof(DemonForm) or nameof(FeelNoPain) or nameof(DarkEmbrace)
         or nameof(Accelerant) or nameof(Accuracy) or nameof(Cruelty) or nameof(Unmovable) or nameof(FanOfKnives) or nameof(SerpentForm) or nameof(Corruption) or nameof(Sneaky) or nameof(Tank)
-        or nameof(ToolsOfTheTrade) or nameof(Juggling) or nameof(PhantomBlades);
+        or nameof(ToolsOfTheTrade) or nameof(Juggling) or nameof(PhantomBlades) or nameof(Juggernaut);
     internal static bool Cleanup(ConstructionCard c) => c.Kind is nameof(SecondWind) or nameof(TrueGrit) or nameof(BurningPact)
         or nameof(Cinder) or nameof(FiendFire) or nameof(Prepared) or nameof(CalculatedGamble) or nameof(Survivor) or nameof(Purity) or nameof(Acrobatics) or nameof(DaggerThrow);
     internal static bool Unsupported(ConstructionCard c) => c.Type==CardType.Power && !KnownPower(c)
@@ -342,6 +354,7 @@ internal static class SustainedDeckValue
         double witherStock=0;
         var witherCounter=0;
         double ownVulnerable=0,sharedCredit=0;
+        double cumulativeHpLoss=0;
         var hasAutoPlay=ordinary.Any(e=>e.Card.Kind is nameof(Cascade) or nameof(Havoc));
         // HP LOSS IS A RESOURCE THIS DECK CAN SPEND, and nothing read it. Rupture turns
         // each self-hit into Strength; Spite hits 2 (3 upgraded) instead of 1 once the
@@ -477,7 +490,8 @@ internal static class SustainedDeckValue
                     if(unplayable!=f.Unplayable || damage!=f.Damage || block!=f.Block || extraDraw!=f.Draw)
                         f=f with {Unplayable=unplayable,Damage=damage,Block=block,Draw=extraDraw};
                     return new PayableHands.Card(e.Card,f,remaining[e.Index],
-                        afterimage*(1+f.Effects.GeneratedShivs)+feelNoPain*exhausts(e));
+                        afterimage*(1+f.Effects.GeneratedShivs)+feelNoPain*exhausts(e),
+                        (afterimage>0?1+f.Effects.GeneratedShivs:0)+(feelNoPain>0?exhausts(e):0));
                 }).Concat(hasAutoPlay ? powers.Select(p=>new PayableHands.Card(p.Card,p.Facts with {AutoOnly=true},1-active[p.Index])) : []).ToArray();
                 // Setup cards trigger Wither too; their generated cards are
                 // available to the ordinary hand's cleanup this turn.
@@ -493,7 +507,9 @@ internal static class SustainedDeckValue
                     pollution?3+3*((turn-1)/3):0,witherCounter,chains && turn>=2,
                     Power<DarkEmbrace>("Cards",1),Power<FeelNoPain>("Power"),setupWithers,
                     startDiscard:(int)tools,juggling:Power<Juggling>("Power",1),phantomBlades:Power<PhantomBlades>("PhantomBladesPower"),
-                    skillEnrage:adaptable is not null && bossPhase==0?adaptable.Enrage:0);
+                    skillEnrage:adaptable is not null && bossPhase==0?adaptable.Enrage:0,
+                    blockTriggerDamage:Power<Juggernaut>("JuggernautPower"),
+                    ownerHp:Math.Max(0,plan.OwnerHp-cumulativeHpLoss),ownerMaxHp:plan.OwnerMaxHp);
                 var plays=handOutcome.Plays;
                 for (var i = 0; i < ordinary.Length; i++) weights[i] = plays[i];
                 if(hasAutoPlay)for(var i=0;i<powers.Length;i++)
@@ -734,7 +750,17 @@ internal static class SustainedDeckValue
             var attackDamage=damage;
             var vulnerablePayoff=ordinary.Sum(e=>DamagePerVulnerable(e.Card)*W(e));
             damage*=1+vulnerable*(.5+Power<Cruelty>("CrueltyPower")/100);
-            damage+=serpent;
+            var blockEvents=handOutcome?.BlockEvents ?? ordinary.Where(e=>e.Facts.Block>0)
+                .Sum(e=>W(e)*(e.Card.Kind is nameof(SecondWind)?ExhaustTargets(e,badHand):1+Math.Max(0,e.Card.GetEnchantedReplayCount())))
+                +(Power<Afterimage>("AfterimagePower",1)>0?triggerPlays:0)
+                +(Power<FeelNoPain>("Power")>0?exhausted:0)
+                +(triggeredBlock>0?attackPlays:0);
+            var alliedBlockEvents=Power<Sneaky>("SneakyPower")>0 && allyAttacks is not null && turn<=allyAttacks.Count
+                ? allyAttacks[turn-1] : 0;
+            var blockTriggerDamage=Math.Min(health,(handOutcome?.BlockTriggerDamage
+                ?? ConstructionCombatMath.BlockTriggerDamage(Power<Juggernaut>("JuggernautPower"),blockEvents,health))
+                +ConstructionCombatMath.BlockTriggerDamage(Power<Juggernaut>("JuggernautPower"),alliedBlockEvents,health));
+            damage+=serpent+blockTriggerDamage;
             var statusDamage=handOutcome?.StatusDamage ?? (pollution ? Math.Max(0,badHand-cleaned)*(3+3*((turn-1)/3)) : 0);
             var harm=ordinary.Sum(e=>e.Facts.HpLoss*W(e))+Math.Max(0,incoming+statusDamage-block);
             if (outcomes)
@@ -774,6 +800,10 @@ internal static class SustainedDeckValue
                 }
             }
             else total+=damage+poisonDamage+Math.Min(incoming+statusDamage,block)-harm*1.3;
+            var survivalPenalty=SurvivalValue.ExtraLossCost(plan.OwnerHp,plan.OwnerMaxHp,cumulativeHpLoss+harm)
+                -SurvivalValue.ExtraLossCost(plan.OwnerHp,plan.OwnerMaxHp,cumulativeHpLoss);
+            total-=survivalPenalty;
+            cumulativeHpLoss+=harm;
             // Discard prevents this hand's damage; only exhaust removes future
             // pollution. The ordinary scenario never fabricates boss statuses.
             status=Math.Max(0,status+(handOutcome?.Generated??0)-(handOutcome is null?Math.Min(cleaned,permanent):permanent));
@@ -805,7 +835,8 @@ internal static class SustainedDeckValue
                 { AttackPlays = attackPlays + repeats, VulnerableApplied = appliedVulnerable, EnemyHealthAfter = outcomes ? health : double.NaN, StatusDamage=statusDamage,
                     AttackDamage=attackDamage,VulnerablePayoff=vulnerablePayoff,ExhaustCount=exhausted,Block=block,Incoming=incoming,
                     BossPhase=bossPhase,ReactiveStrength=reactiveStrength,HandDrawn=handOutcome?.Drawn??draw,StartDiscardCount=handOutcome?.StartDiscardCount??0,
-                    ShuffleStatusesGenerated=shuffleStatuses,TriggeredPoison=triggeredPoison,TriggeredBlock=triggeredBlock,PoisonDamage=poisonDamage });
+                    ShuffleStatusesGenerated=shuffleStatuses,TriggeredPoison=triggeredPoison,TriggeredBlock=triggeredBlock,PoisonDamage=poisonDamage,
+                    BlockTriggerDamage=blockTriggerDamage,OwnerHpAfter=Math.Max(0,plan.OwnerHp-cumulativeHpLoss),SurvivalPenalty=survivalPenalty });
             if (outcomes && health <= 0)
             {
                 if(adaptable is null || ++bossPhase>=adaptable.Health.Length)break;

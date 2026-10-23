@@ -12,7 +12,7 @@ namespace CoopBots.Building;
 internal static class ConstructionHand
 {
     internal readonly record struct Slot(ConstructionCard? Model, CardProfile.Facts? Facts,
-        bool Status = false, double EndDamage = 0, double PlayBlock = 0);
+        bool Status = false, double EndDamage = 0, double PlayBlock = 0, double PlayBlockEvents = 0);
     internal readonly record struct Context(double Energy, double Incoming, double Health,
         int Enemies = 1, bool Chains = false, double WitherDamage = 0, int Counter = 0,
         double ExhaustDraw = 0, double ExhaustBlock = 0, bool Corruption = false, int InitialWithers = 0, double DeckSize = 0, int ExhaustBefore = 0,
@@ -25,6 +25,9 @@ internal static class ConstructionHand
         internal double Juggling { get; init; }
         internal double PhantomBlades { get; init; }
         internal double SkillEnrage { get; init; }
+        internal double BlockTriggerDamage { get; init; }
+        internal double OwnerHp { get; init; }
+        internal double OwnerMaxHp { get; init; }
     }
     internal sealed record Result(int Played, int Removed, int Exhausted, int Drawn,
         double EnergySpent, double EnergyLeft, double Damage, double Block, double SelfLoss,
@@ -34,7 +37,11 @@ internal static class ConstructionHand
         internal int ExhaustTriggers { get; init; }
         internal double TriggeredPoison { get; init; }
         internal double TriggeredBlock { get; init; }
+        internal double BlockEvents { get; init; }
+        internal double ActiveBlockTriggerDamage { get; init; }
+        internal double BlockTriggeredDamage { get; init; }
         internal double EnemyAttackDamage { get; init; }
+        internal double ProjectedHpLoss { get; init; }
         internal double FirstPoisonTickDamage { get; init; }
         internal double TemporaryDamage { get; init; }
         internal double TemporaryBlock { get; init; }
@@ -49,6 +56,7 @@ internal static class ConstructionHand
     {
         internal int Played, AutomaticPlayed, Removed, Exhausted, Drawn, BoundPlayed, Generated, Counter, HandWithers;
         internal double Energy, Spent, Damage, Block, Loss, Vulnerable, Weak, StrengthDown;
+        internal double BlockEvents;
         internal double Strength, Dexterity, Hits, Blocks, Payoff, Future;
         internal double TemporaryStrength, TemporaryDexterity, TemporaryDamage, TemporaryBlock;
         internal int NextDraw, NextEnergy, StatusExhausted, WitherExhausted;
@@ -61,6 +69,7 @@ internal static class ConstructionHand
         internal int Burst, AttacksPlayed, SkillsPlayed, StartDiscarded;
         internal ulong Executions;
         internal double CopiedAttackDamage, FirstShivDamage;
+        internal double BlockTrigger, BlockTriggeredDamage;
         internal bool ShivPlayed;
     }
     // One scratch buffer per executing thread; nested callers take a separate
@@ -132,7 +141,8 @@ internal static class ConstructionHand
         if(context.Chains)for(var i=0;i<cards.Length && boundCount<3;i++)
             if(cards[i].Model?.HasAffliction != true){bound|=1<<i;boundCount++;}
         var initial = new State { Drawn = Math.Min(cards.Length, Math.Max(0, opening)), Energy = context.Energy, Counter = context.Counter,
-            HandWithers=context.InitialWithers,Generated=context.InitialWithers,ExhaustTriggers=context.ExhaustBefore };
+            HandWithers=context.InitialWithers,Generated=context.InitialWithers,ExhaustTriggers=context.ExhaustBefore,
+            BlockTrigger=context.BlockTriggerDamage };
         var best = initial; var bestValue = PlanningValue(initial);
         var frontier = work.Frontier;
         frontier[0] = initial;
@@ -208,7 +218,8 @@ internal static class ConstructionHand
             Damage(best), Block(best), best.Loss, StatusDamage(best), best.Generated, best.Counter,
             best.StatusExhausted, best.WitherExhausted, best.NextDraw, best.NextEnergy, Value(best), targets)
             { ExhaustTriggers=best.ExhaustTriggers, TriggeredPoison=best.TriggeredPoison, TriggeredBlock=best.TriggeredBlock,
-                EnemyAttackDamage=EnemyAttackDamage(best), FirstPoisonTickDamage=PoisonTickDamage(best),
+                BlockEvents=best.BlockEvents, ActiveBlockTriggerDamage=best.BlockTrigger, BlockTriggeredDamage=best.BlockTriggeredDamage,
+                EnemyAttackDamage=EnemyAttackDamage(best), ProjectedHpLoss=HpLoss(best), FirstPoisonTickDamage=PoisonTickDamage(best),
                 TemporaryDamage=best.TemporaryDamage, TemporaryBlock=best.TemporaryBlock,
                 AutomaticPlayed=best.AutomaticPlayed, Executions=best.Executions,
                 CopiedAttackDamage=best.CopiedAttackDamage, FirstShivDamage=best.FirstShivDamage,
@@ -216,7 +227,8 @@ internal static class ConstructionHand
 
         double PlanningValue(State s) => Value(s) - (Damage(s) >= context.Health ? 0 : s.ExhaustRetentionLoss);
 
-        double Damage(State s) => (s.Damage + .5*s.Vulnerable*s.Payoff) * (s.Vulnerable > 0 ? 1.25 : 1);
+        double Damage(State s) => (s.Damage + .5*s.Vulnerable*s.Payoff) * (s.Vulnerable > 0 ? 1.25 : 1)
+            + s.BlockTriggeredDamage;
         double Block(State s) => s.Block;
         double TargetHealth(State s, int target)
         {
@@ -269,13 +281,22 @@ internal static class ConstructionHand
             }
             return damage;
         }
+        double HpLoss(State s)
+        {
+            // A kill ends combat before hand-end statuses or enemy attacks.
+            var incoming = Damage(s) >= context.Health ? 0 : EnemyAttackDamage(s) + StatusDamage(s);
+            return s.Loss + Math.Max(0,incoming-Block(s));
+        }
         double Value(State s)
         {
             var damage = Damage(s);
-            // A kill ends combat before hand-end statuses or enemy attacks.
-            var incoming = damage >= context.Health ? 0 : EnemyAttackDamage(s) + StatusDamage(s);
-            return Math.Min(context.Health,damage)-1.3*(s.Loss+Math.Max(0,incoming-Block(s)))
+            return Math.Min(context.Health,damage)-SurvivalValue.LossCost(context.OwnerHp,context.OwnerMaxHp,HpLoss(s))
                 +(damage>=context.Health?0:s.Future+PoisonCredit(s));
+        }
+        void GainBlockEvents(ref State s, double count)
+        {
+            s.BlockEvents += count;
+            s.BlockTriggeredDamage += ConstructionCombatMath.BlockTriggerDamage(s.BlockTrigger,count,context.Health);
         }
         State Draw(State s, int count)
         {
@@ -302,6 +323,7 @@ internal static class ConstructionHand
             s.ExhaustTriggers += extraPlays;
             var rageBlock = s.BlockPerAttack * extraPlays;
             s.Block += rageBlock; s.TriggeredBlock += rageBlock;
+            if (s.BlockPerAttack > 0) GainBlockEvents(ref s,extraPlays);
             if (context.WitherDamage <= 0) return s;
             var ownPlays=executions;
             var total=s.Counter+ownPlays+extraPlays;
@@ -355,6 +377,10 @@ internal static class ConstructionHand
             var blockEvents=facts.Block>0 && cards[i].Model!.Kind is not nameof(SecondWind)?replay:0;
             var temporaryBlock=s.TemporaryDexterity*blockEvents;
             s.Block+=p.Block+s.Dexterity*blockEvents+temporaryBlock;
+            GainBlockEvents(ref s,blockEvents);
+            if (cards[i].Model!.Kind is nameof(Juggernaut))
+                s.BlockTrigger += cards[i].Model!.Amount("JuggernautPower") * executions;
+            GainBlockEvents(ref s,cards[i].PlayBlockEvents);
             s.TemporaryBlock+=temporaryBlock;
             s.Vulnerable+=p.Vulnerable; s.Weak+=p.Weak; s.StrengthDown+=p.StrengthDown;
             s.Strength+=p.Strength; s.Dexterity+=p.Dexterity; s.Hits+=p.Hits; s.Blocks+=p.Blocks;
@@ -373,6 +399,7 @@ internal static class ConstructionHand
             {
                 var rageBlock = s.BlockPerAttack * replay;
                 s.Block += rageBlock; s.TriggeredBlock += rageBlock;
+                if (s.BlockPerAttack > 0) GainBlockEvents(ref s,replay);
             }
             s.PoisonPerDraw += effects.PoisonPerDraw * replay;
             s.BlockPerAttack += effects.BlockPerAttack * replay;
@@ -382,6 +409,7 @@ internal static class ConstructionHand
                 // The copied execution pays no energy, but its printed effect
                 // and draws execute again. Cleanup below pays both selections.
                 s.Damage += (p.Damage + s.Strength * effects.GeneratedShivs) / replay;
+                GainBlockEvents(ref s,(blockEvents > 0 ? 1 : 0) + cards[i].PlayBlockEvents / replay);
                 s.Block += p.Block / replay + s.Dexterity * (blockEvents > 0 ? 1 : 0) + s.TemporaryDexterity * (blockEvents > 0 ? 1 : 0);
                 s.TemporaryBlock += s.TemporaryDexterity * (blockEvents > 0 ? 1 : 0);
                 s.Energy += p.Energy / replay; s.Loss += p.Loss / replay;
@@ -518,6 +546,7 @@ internal static class ConstructionHand
                     for(var j=0;j<cards.Length;j++)if((mask&harmful&(1<<j))!=0 && cards[j].EndDamage>0)harmfulCount++;
                     t.StatusExhausted+=status+withers; t.WitherExhausted+=harmfulCount+withers;
                     t.Block+=context.ExhaustBlock*count;
+                    if (context.ExhaustBlock > 0) GainBlockEvents(ref t,count);
                     t=Draw(t,(int)(context.ExhaustDraw*count));
                     if(card.Kind is nameof(FiendFire))
                     {
@@ -527,6 +556,7 @@ internal static class ConstructionHand
                     if(card.Kind is nameof(SecondWind))
                     {
                         t.Block+=(f.Block+t.Dexterity+t.TemporaryDexterity)*count;
+                        if (f.Block+t.Dexterity+t.TemporaryDexterity > 0) GainBlockEvents(ref t,count);
                         t.TemporaryBlock+=t.TemporaryDexterity*count;
                     }
                 }

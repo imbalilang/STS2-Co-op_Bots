@@ -22,6 +22,8 @@ namespace CoopBots.Kernel;
 /// </summary>
 internal static class TeamDamageMirrors
 {
+    internal const decimal FlankingApplicationFactor = 2m;
+
     internal static void Register(MethodMirrorRegistry<AbstractModel, ModifyDamageMirrorContext, decimal> registry)
     {
         registry.Register<FlankingPower>(FlankingMultiplier);

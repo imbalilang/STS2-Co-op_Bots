@@ -26,10 +26,19 @@ internal static class CounterfactualDraft
     private static readonly (int Enemies, double Incoming)[] Scenarios = [(1, 8), (1, 16), (1, 24), (3, 12)];
 
     internal static double Strength(IReadOnlyList<CardModel> deck, int energy)
-        => ConstructionJobs.Value(() => PrepareStrength(deck, energy));
+        => StrengthForOwner(deck, energy, 0, 0);
 
-    private static Func<double> PrepareStrength(IReadOnlyList<CardModel> deck, int energy)
+    internal static double StrengthForOwner(IReadOnlyList<CardModel> deck, int energy, double ownerHp, double ownerMaxHp)
+        => ConstructionJobs.Value(() => PrepareStrength(deck, energy, ownerHp, ownerMaxHp));
+
+    private static Func<double> PrepareStrength(IReadOnlyList<CardModel> deck, int energy, double ownerHp, double ownerMaxHp)
     {
+        var creature = deck.FirstOrDefault()?.Owner?.Creature;
+        if (ownerMaxHp <= 0)
+        {
+            ownerHp = creature?.CurrentHp ?? 0;
+            ownerMaxHp = creature?.MaxHp ?? 0;
+        }
         var finaleAvailability = GrandFinaleAvailability.Estimate(deck, energy);
         var cards = deck.Select(c =>
         {
@@ -57,7 +66,7 @@ internal static class CounterfactualDraft
                 .OrderByDescending(c => c.Card.Model?.Keywords.Contains(MegaCrit.Sts2.Core.Entities.Cards.CardKeyword.Innate) == true).ThenBy(c => c.Key).Select(c => c.Card).ToArray();
             foreach (var scenario in Scenarios)
                 values.Add(Opening(ordered, energy, scenario.Enemies, scenario.Incoming,
-                    scenario.Incoming <= 8 ? 18 : scenario.Incoming <= 16 ? 42 * scenario.Enemies : 100));
+                    scenario.Incoming <= 8 ? 18 : scenario.Incoming <= 16 ? 42 * scenario.Enemies : 100, ownerHp, ownerMaxHp));
         }
         // Hand returns a discounted two-turn mean. Convert it to ONE opening
         // encounter before mixing with the six-turn cycle; multiplying that
@@ -66,14 +75,18 @@ internal static class CounterfactualDraft
         };
     }
 
-    private static double Opening(ConstructionHand.Slot[] ordered,int energy,int enemies,double incoming,double health)
+    private static double Opening(ConstructionHand.Slot[] ordered,int energy,int enemies,double incoming,double health,
+        double ownerHp=0,double ownerMaxHp=0)
     {
-        var first=ConstructionHand.Solve(ordered,5,new(energy,incoming,health,enemies));
+        var first=ConstructionHand.Solve(ordered,5,new(energy,incoming,health,enemies)
+            { OwnerHp=ownerHp, OwnerMaxHp=ownerMaxHp });
         if(first.Damage>=health)return first.Utility;
         var remaining=ordered.Skip(first.Drawn).Concat(ordered.Take(first.Drawn)
             .Where((c,i)=>(first.Exhausted&(1<<i))==0 && !((first.Played&(1<<i))!=0 && c.Facts?.IsPower==true))).ToArray();
         var second=ConstructionHand.Solve(remaining,5+first.NextDraw,new(energy+first.NextEnergy,incoming,health-first.Damage,enemies,
-            ExhaustBefore:first.ExhaustTriggers));
+            ExhaustBefore:first.ExhaustTriggers)
+            { BlockTriggerDamage=first.ActiveBlockTriggerDamage,
+                OwnerHp=Math.Max(0,ownerHp-first.ProjectedHpLoss), OwnerMaxHp=ownerMaxHp });
         return first.Utility+.7*second.Utility;
     }
 

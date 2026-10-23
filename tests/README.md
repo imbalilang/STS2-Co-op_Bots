@@ -173,3 +173,15 @@ DraftSim 默认不参与回归，只在显式传参时运行（`tests/PatchSmoke
 `python scripts/building_repeat_probe.py` 默认仅生成计划与干跑汇总；`--run` 才启动固定四场 PM001 重复探针，最多两个进程并发，单场 120 秒、批次 360 秒。四次都完整且终局语义相同时退出 0，否则退出非零。语义一致只覆盖一个种子，不证明所有种子确定或策略更强。
 
 `python scripts/building_budget_probe.py` 默认干跑；`--run` 执行 4s/20s 软预算 × dop1/2 的八场顺序对照，每格两次、单进程120秒、总720秒。它以完整终局是否齐全决定退出码，语义重复性单独报告，不自动批准模型。测试入口已包含于 `test_building*.py`。
+
+## 2026-10-23 贡献包增量回归
+
+`CommunityPackageScenarios` 纳入默认完整入口，也可通过 `--community-package-only` 聚焦运行；可选 `--community-package-case=acquisition|survival|juggernaut|team|copy` 单独定位。覆盖首张关键牌奖励／网格／商店与诅咒优先、取消传播、当前血量成本、势不可当的启动与格挡事件、可支付的队友增伤和复制投资。JUGGERNAUT 是势不可当，DOMINATE 是主宰，测试显式区分两张牌。
+
+十个生产故障实际 RED1、精确恢复 GREEN0 的命令与原文保存在维护者本机 `work/merge-key-card-acquisition-20261023/r2/`，断言注释保留对应失败文本。聚焦通过不代表完整门禁或 Steam 实机通过；完整结果以本次 `work/verification/` 收据为准。
+
+血量评分快照与营火新升级选择另经两个生产故障验证 RED1／精确恢复 GREEN0，证据在同一任务目录的 `r2-integration/`。首次“关闭血量风险应同时翻转营火选择”的假设未被检出，其失败尝试保留于 `r2-hp-baseline/`；不将该假设计作有效故障证明。
+
+临时属性到期回归可用 `--expiry-only` 聚焦运行，`--expiry-record` 仅在运行目录导出128条测量值。贡献包只改变其中16条未来虚弱估值，其余112条保持逐位相等；冻结旧DLL／原包DLL／重建DLL三方对照在 `expiry-parity.json`。忽略未来格挡的生产故障另经 RED1／精确恢复 GREEN0，证据在 `r2-expiry/`。负力量回归改按所有存活队友计算虚弱收益，永久力量和临时恢复两项原守卫重新故障验证，证据在 `r2-future-stats/`。
+
+普通永久单选夹具保留原全部断言，将不再保证正收益的 ANGER 换成非关键牌 POMMEL_STRIKE。原包与重建DLL通过更新后的整个 LatestBuildRepairScenarios，旧DLL通过原夹具；错误分流故障 RED1／精确恢复 GREEN0 证据在 `r2-single-choice/`。原包／旧基线对照命令在 `latest-policy-parity.json`，本次共16项有效故障证明。

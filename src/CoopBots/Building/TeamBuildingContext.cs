@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using CoopBots.Kernel;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -10,23 +11,24 @@ using MegaCrit.Sts2.Core.Runs;
 namespace CoopBots.Building;
 
 /// <summary>
-/// A combat-start snapshot of every player's *permanent* deck, reduced to plain
-/// counts and card ids.
+/// A shared-boundary snapshot of every player's *permanent* deck, reduced to
+/// plain counts, card ids and immutable joint-synergy estimates.
 ///
 /// Rewards are resolved concurrently on every peer (see
 /// <c>RewardPatches.BotRemoteChoicePatch</c>, which computes locally with no
 /// host authority), so scoring one player's reward must never read a teammate's
 /// mutable <c>Deck</c> while that teammate may be editing its own. This context
-/// is captured once, at the shared gameplay boundary
+/// is captured at shared gameplay boundaries: combat setup and entry to an
+/// event, shop or rest site. The combat boundary is
 /// <c>CombatManager.SetUpCombat</c>, before the engine calls
 /// <c>PopulateCombatState</c> and before any temporary combat piles exist. Every
 /// candidate in one offer reads the same immutable summary, so teammate reward
 /// order cannot change the current offer's result.
 ///
-/// It is explicitly a combat-start snapshot for combat-reward decisions, not a
-/// live view of the deck after the battle. Storage is weakly keyed by the
+/// For combat rewards it remains a combat-start snapshot, rather than a live
+/// view of the deck after battle. Storage is weakly keyed by the
 /// <see cref="IRunState"/> and versioned by act/floor/room; a read that does not
-/// match the current location (a new room, a resumed or reconnected run, a shop,
+/// match the current location (a new room without a capture, a resumed or reconnected run,
 /// an unknown map) is treated as unknown and the caller <b>never</b> falls back
 /// to rereading a teammate deck. Capture is bounded, synchronous, IO/rng/network
 /// free, and any failure clears the stale entry and fails harmlessly.
@@ -38,7 +40,10 @@ internal static class TeamBuildingContext
         int Size, int Attacks, int Blocks, int Draws, int Energies,
         int Debuffs, int Supports,
         IReadOnlyDictionary<string, int> IdCounts,
-        IReadOnlyDictionary<string, int> RoleCounts);
+        IReadOnlyDictionary<string, int> RoleCounts)
+    {
+        internal TeamSynergyMath.Seat? Synergy { get; init; }
+    }
 
     private sealed record RunCapture(
         int ActIndex, int TotalFloor, int RoomCount,
@@ -199,7 +204,10 @@ internal static class TeamBuildingContext
             catch { }
         }
         return new PlayerSummary(summary.Size, summary.Attacks, summary.Blocks, summary.Draws,
-            summary.Energies, debuffs, supports, summary.IdCounts, summary.RoleCounts);
+            summary.Energies, debuffs, supports, summary.IdCounts, summary.RoleCounts)
+        {
+            Synergy = TeamSynergyEvaluator.Summarize(player, deck)
+        };
     }
 }
 

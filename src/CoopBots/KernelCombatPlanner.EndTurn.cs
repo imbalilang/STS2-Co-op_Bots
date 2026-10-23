@@ -27,7 +27,8 @@ internal sealed partial class KernelCombatPlanner
         var comparison = endTurnComparison;
         endTurnComparison = null;
         Log.Info($"CoopBots end-turn comparison: player={player.NetId} attempted={comparison.Attempted} compared={comparison.Compared} "
-            + $"gain={comparison.Gain:F1} steps={comparison.Actions?.Count ?? 0} compute={comparison.ComputeMs:F1}ms stop={comparison.StopReason}");
+            + $"gain={comparison.Gain:F1} steps={comparison.Actions?.Count ?? 0} compute={comparison.ComputeMs:F1}ms stop={comparison.StopReason} "
+            + $"baseline={comparison.BaselineValue:F1} openings=[{comparison.OpeningComparison}]");
         if (tournamentRequest?.IsCancelled == true || comparison.Actions is not { Count: > 0 } repair) return false;
         // Rebuild only this turn's evidence, preserving the other seats' planned
         // actions. Reuse the repair directly instead of launching another 6s
