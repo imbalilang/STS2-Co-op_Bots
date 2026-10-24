@@ -1,3 +1,6 @@
+// V2 focused R2 2026-10-24: actual production build0/RED1 -> exact restore -> build0/GREEN0.
+// Receipt: work/v2-validation/r2/focus-pass/receipts.json
+// runtime-focus-prepared-slot: System.InvalidOperationException: Mixed runtime pacing: an explicit manual focus command must retire an unsubmitted card and update the actual planner intent
 // V2 R2 actual 2026-10-24: production build0 -> named runtime RED1 -> exact source restore -> build0/GREEN0.
 // Private receipts: work/v2-validation/r2/{receipts,second-pass/receipts,final-pass/receipts}.json.
 // These are fault controls, not distinct gameplay bug or live-performance counts.
@@ -44,7 +47,8 @@ internal static class MixedRuntimePacingScenarios
         foreach (var test in new (string Name, Action Body)[] {
             ("team", TeamCadence), ("finished", FinishedCleanup), ("delay", DelayedCard),
             ("invalid", InvalidProposal), ("pause", PauseAndBusy), ("flash", FlashCadence),
-            ("enqueue", SuccessfulQueueClock), ("resume", ResumedCardClock) })
+            ("enqueue", SuccessfulQueueClock), ("resume", ResumedCardClock),
+            ("focus", ExplicitFocusRetiresOnlyUnsubmittedCard) })
             if (selected is null || selected == test.Name)
             { test.Body(); Console.WriteLine("PASS: mixed runtime pacing " + test.Name); }
     }
@@ -63,6 +67,7 @@ internal static class MixedRuntimePacingScenarios
         internal bool Finished, RejectEnqueue;
         internal BotDifficulty Difficulty = BotDifficulty.Pro;
         internal readonly List<(ulong Owner, long At)> Submitted = [];
+        internal readonly List<uint?> SubmittedTargets = [];
         private readonly Harmony harmony = new("coopbots.mixed-runtime-pacing");
         private readonly IDisposable native;
         private readonly Dictionary<PropertyInfo, object?> managerSaved;
@@ -71,6 +76,7 @@ internal static class MixedRuntimePacingScenarios
         private readonly Dictionary<FieldInfo, object?> pacingSaved;
         private readonly Dictionary<ulong, (int Turn, int Actions)> turnSaved;
         private readonly bool paused;
+        private readonly uint? focusSaved;
         private readonly TournamentRun background;
         private readonly Dictionary<uint, CardModel> oldIdCards;
         private readonly Dictionary<CardModel, uint> oldCardIds;
@@ -78,6 +84,7 @@ internal static class MixedRuntimePacingScenarios
         internal Scope()
         {
             Check(active is null, "runtime fixture cannot nest");
+            focusSaved = BotCooperation.FocusTarget; SetFocus(null);
             Bots = Enumerable.Range(0, 3).Select(i => Player.CreateForNewRun<Deprived>(UnlockState.all,
                 i == 2 ? 19602UL : BotRegistry.CreateId(BotDifficulty.Pro, 96, i))).ToArray();
             AutoPilot.Set(Bots[2].NetId, true);
@@ -136,11 +143,11 @@ internal static class MixedRuntimePacingScenarios
             AccessTools.Field(typeof(KernelCombatPlanner), "tournamentRun").SetValue(Planner, background);
             AutoPilot.Set(Human.NetId, false); active = this;
         }
-        internal object Prepare(int seat)
+        internal object Prepare(int seat, Creature? target = null)
         {
             var player = Bots[seat]; var card = player.PlayerCombatState!.Hand.Cards.First();
             var decision = new TeamCombatPlanner.Decision(player,
-                new BotBrain.CombatMove(card, Enemy, 10, "runtime-cadence-fixture"), 1);
+                new BotBrain.CombatMove(card, target ?? Enemy, 10, "runtime-cadence-fixture"), 1);
             var type = AccessTools.Inner(typeof(BotRuntime), "PendingCardSubmission");
             var pending = Activator.CreateInstance(type, Instance, null,
                 [Combat, decision, KernelCombatPlanner.Status.Ready, "剧本", Now], null)!;
@@ -162,7 +169,7 @@ internal static class MixedRuntimePacingScenarios
             turns.Clear(); foreach (var pair in turnSaved) turns.Add(pair.Key, pair.Value);
             foreach (var pair in managerSaved) pair.Key.SetValue(RunManager.Instance, pair.Value);
             if (BotCooperation.Gate.Paused != paused) BotCooperation.Gate.TogglePause();
-            AutoPilot.Set(Human.NetId, false); AutoPilot.Set(Bots[2].NetId, false); native.Dispose();
+            AutoPilot.Set(Human.NetId, false); AutoPilot.Set(Bots[2].NetId, false); SetFocus(focusSaved); native.Dispose();
             var db = NetCombatCardDb.Instance;
             var idCards = (Dictionary<uint, CardModel>)AccessTools.Field(typeof(NetCombatCardDb), "_idToCard").GetValue(db)!;
             var cardIds = (Dictionary<CardModel, uint>)AccessTools.Field(typeof(NetCombatCardDb), "_cardToId").GetValue(db)!;
@@ -279,13 +286,42 @@ internal static class MixedRuntimePacingScenarios
         Check(s.Submitted.Count == 2 && s.Submitted[^1].At == 2601,
             "human EndTurn immediately releases a resumed active card through the same submit path");
     }
+    private static void ExplicitFocusRetiresOnlyUnsubmittedCard()
+    {
+        using var s = new Scope(); s.Prepare(0); s.Tick(1000); s.Tick(2500);
+        var previous = s.Prepare(1); s.Tick(2600);
+        BotRuntime.ExternalInputSettled(); s.Tick(2700);
+        Check(ReferenceEquals(previous, s.Pending) && s.Submitted.Count == 1,
+            "an ordinary settled human action must retain the same prepared card and its pacing window");
+        var target = s.Combat.CreateCreature(ModelDb.Monster<MockAttackMonster>().ToMutable(), CombatSide.Enemy, "focus-target");
+        s.Combat.AddCreature(target); target.Monster!.SetUpForCombat(); target.SetMaxHpInternal(500); target.SetCurrentHpInternal(500);
+        SetFocus(target.CombatId); s.Tick(2800);
+        Check(s.Pending is null && s.Submitted.Count == 1
+            && (uint?)AccessTools.Field(typeof(KernelCombatPlanner), "focus").GetValue(s.Planner) == target.CombatId,
+            "an explicit manual focus command must retire an unsubmitted card and update the actual planner intent");
+        s.Prepare(1, target); s.Tick(3999);
+        Check(s.Submitted.Count == 1, "manual focus cannot reset or discount the shared successful-card clock");
+        s.Tick(4000);
+        Check(s.Submitted.Count == 2 && s.SubmittedTargets[^1] == target.CombatId && s.Submitted[^1].At == 4000,
+            "the replacement focus decision must submit at the original cadence deadline to its newly selected native target");
+        s.Prepare(2, target);
+        s.Running(new EndPlayerTurnAction(s.Human, 1)); SetFocus(s.Enemy.CombatId); s.Tick(4100);
+        Check(s.Pending is not null && s.Submitted.Count == 2,
+            "a focus command cannot reinterpret or cancel a native transaction while the queue is busy");
+        s.Running(null); s.Tick(4101);
+        Check(s.Pending is null && s.Submitted.Count == 2,
+            "the focus command must take effect at the next stable submission boundary");
+    }
+    private static void SetFocus(uint? target)
+        => AccessTools.Property(typeof(BotCooperation), "FocusTarget").SetValue(null, target);
     private static bool Enqueue(GameAction __0, ulong __1)
     {
         if (active is not { } s) return true;
         if (s.RejectEnqueue) return false;
         Check(__0.OwnerId == __1, "transport must preserve the submitting seat");
         s.Queue.EnqueueWithoutSynchronizing(__0);
-        if (__0 is PlayCardAction) s.Submitted.Add((__1, s.Now));
+        if (__0 is PlayCardAction card)
+        { s.Submitted.Add((__1, s.Now)); s.SubmittedTargets.Add(card.TargetId); }
         __0.Execute().GetAwaiter().GetResult(); return false;
     }
     private static bool CardBody(PlayCardAction __instance, ref Task __result)

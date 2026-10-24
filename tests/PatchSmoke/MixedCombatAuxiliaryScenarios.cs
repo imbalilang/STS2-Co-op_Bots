@@ -1,3 +1,9 @@
+// V2 focused R2 2026-10-24: actual production build0/RED1 -> exact restore -> build0/GREEN0.
+// Receipt: work/v2-validation/r2/focus-pass/receipts.json
+// focus-before-prepared-return: System.InvalidOperationException: Mixed combat auxiliary: changing manual focus must retire the old script and both replay proposals without a live action
+// aux-prepared-not-consumed: System.InvalidOperationException: Mixed combat auxiliary: an adopted mixed proposal must retain its controlled opening and pre-action lease without consuming a merely prepared step
+// aux-end-waits-human: System.InvalidOperationException: Mixed combat auxiliary: a legal historical EndTurn must remain parked while humans act instead of forcing a foreground rescue search
+// mixed-end-no-blocking-comparison: System.InvalidOperationException: Mixed combat auxiliary: human completion must release the same historical owner's recorded EndTurn contract without mandatory card or bottle comparison
 using System.Diagnostics;
 using CoopBots;
 using CoopBots.Kernel;
@@ -7,6 +13,9 @@ using MegaCrit.Sts2.Core.Entities.Ascension;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
+using MegaCrit.Sts2.Core.GameActions;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Afflictions;
 using MegaCrit.Sts2.Core.Models.Cards;
@@ -20,7 +29,10 @@ using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Unlocks;
 
 // These regressions enter the production tournament through Poll. Cached
-// forecasts are fixture inputs; rescue survival and leases use native replay.
+// forecasts are fixture inputs. V2 retains legal historical proposals while
+// optional quality/rescue work cannot preempt them; preparation is not payment.
+// Potion/card lease R2 lines below are historical 0.39.3 policy receipts,
+// superseded by the V2 cases; new mutation evidence is recorded separately.
 // R2 actual 2026-10-24: production mutant build0 / RED1 / exact restore / GREEN0.
 // Receipt: work/mixed-fixes-20261023T164339Z/r2-valid-proofs.json
 // manual-focus: System.InvalidOperationException: Mixed combat auxiliary: default mixed tournament must attack the human's focused enemy before the human ends the turn
@@ -34,6 +46,18 @@ internal static class MixedCombatAuxiliaryScenarios
 {
     private static KernelCombatPlanner? observedRescuePlanner;
     private static readonly List<string> rescueDropCauses = new();
+    private static PlayCardAction? leaseAction;
+    private static TeamCombatPlanner.Decision? leaseDecision;
+    private static bool LeaseCardBody(PlayCardAction __instance, ref Task __result)
+    {
+        if (!ReferenceEquals(__instance, leaseAction)) return true;
+        var card = leaseDecision!.Move.Card;
+        var paid = card.SpendResources().GetAwaiter().GetResult();
+        card.OnPlayWrapper(new ThrowingPlayerChoiceContext(), leaseDecision.Move.Target, false,
+            new ResourceInfo { EnergySpent = paid.Item1, EnergyValue = paid.Item1,
+                StarsSpent = paid.Item2, StarValue = paid.Item2 }, skipCardPileVisuals: true).GetAwaiter().GetResult();
+        __result = Task.CompletedTask; return false;
+    }
 
     internal static void Run(string? selected = null)
     {
@@ -200,11 +224,36 @@ internal static class MixedCombatAuxiliaryScenarios
         var root = KernelCombatCapture.Capture(b.Combat);
         var losing = CachedActions(b, root, defend);
         var planner = Cached(b, root, losing);
-        _ = Poll(planner, b, null);
-        Check(planner.ConfirmedPotion?.Potion == potion,
-            "mixed production Poll must emit the native Dexterity rescue ahead of its losing cached Defend");
-        VerifyLease(planner, b, root, expectedPotionOpening: true);
-        planner.Reset();
+        try
+        {
+            var status = planner.Poll(b.Combat, [b.Bot], 0, null, false, BotDifficulty.Pro, out var decision);
+            Check(status == KernelCombatPlanner.Status.Ready && decision?.Move.Card == defend
+                && planner.ConfirmedPotion is null && b.Bot.Potions.Contains(potion)
+                && Field<int>(planner, "tournamentPasses") == 0
+                && Field<int>(planner, "emergencyPotionCaptures") == 0,
+                "a legal historical Defend must be prepared immediately while optional potion rescue cannot preempt or block it");
+            VerifyLease(planner, b, root, losing[0]);
+            var bridge = new Harmony("coopbots.mixed-aux.lease-native-body");
+            bridge.Patch(AccessTools.Method(typeof(PlayCardAction), "ExecuteAction"),
+                prefix: new HarmonyMethod(typeof(MixedCombatAuxiliaryScenarios), nameof(LeaseCardBody)));
+            var action = new PlayCardAction(b.Bot, NetCombatCard.ForTesting(0), defend.Id, decision!.Move.Target?.CombatId);
+            var queue = new ActionQueueSet([b.Human, b.Bot]); queue.CombatStarted();
+            leaseAction = action; leaseDecision = decision;
+            try
+            {
+                planner.ConfirmActionQueued(action); queue.EnqueueWithoutSynchronizing(action);
+                action.Execute().GetAwaiter().GetResult();
+            }
+            finally { leaseAction = null; leaseDecision = null; bridge.UnpatchAll(bridge.Id); }
+            Check(Field<int>(planner, "tournamentScriptIndex") == 1 && !planner.HasPreparedSubmission
+                && b.Bot.PlayerCombatState!.Energy == 0 && !b.Bot.PlayerCombatState.Hand.Cards.Contains(defend)
+                && b.Bot.Potions.Contains(potion),
+                "the prepared historical card must actually pay and settle once before its lease cursor advances, without spending the optional bottle");
+            var lease = Field<KernelPlanContinuation>(planner, "mixedContinuation");
+            Check(lease.AdvanceTo(1, TimeSpan.FromSeconds(1)) && lease.Failure.Length == 0,
+                "the pre-action lease must replay the actually settled card rather than start from its already-consumed ending");
+        }
+        finally { planner.Reset(newCombat: true); }
     }
 
     private static void CardLease()
@@ -213,18 +262,30 @@ internal static class MixedCombatAuxiliaryScenarios
         var defend = Hand<DefendSilent>(b);
         var potion = ModelDb.Potion<DexterityPotion>().ToMutable(); b.Bot.AddPotionInternal(potion, silent: true);
         var root = KernelCombatCapture.Capture(b.Combat);
-        var planner = Cached(b, root, CachedActions(b, root));
+        var parked = CachedActions(b, root);
+        var planner = Cached(b, root, parked);
         rescueDropCauses.Clear(); observedRescuePlanner = planner;
         try
         {
-            var decision = Poll(planner, b, null);
-            Check(!rescueDropCauses.Any(reason => reason == "committed action window requires a new root"
-                || reason == "settled external input or control change"),
-                "a freshly adopted native card rescue must not be unnecessarily dropped and re-rooted before its first action: "
-                + string.Join(';', rescueDropCauses));
-            Check(planner.ConfirmedPotion is null && decision?.Move.Card == defend && b.Bot.Potions.Contains(potion),
-                "mixed production Poll must emit a surviving no-bottle Defend repair and retain Dexterity");
-            VerifyLease(planner, b, root, expectedPotionOpening: false);
+            for (var tick = 0; tick < 20; tick++)
+                Check(planner.Poll(b.Combat, [b.Bot], 0, null, false, BotDifficulty.Pro, out var decision)
+                    == KernelCombatPlanner.Status.Pending && decision is null && planner.ConfirmedEndTurn is null
+                    && Field<int>(planner, "tournamentScriptIndex") == 0
+                    && ReferenceEquals(Field<object>(planner, "tournamentScript"), parked),
+                    "a legal historical EndTurn must remain parked while humans act instead of forcing a foreground rescue search");
+            Check(planner.Poll(b.Combat, [b.Bot], 0, null, true, BotDifficulty.Pro, out var noCard)
+                == KernelCombatPlanner.Status.Ready && noCard is null && planner.ConfirmedEndTurn == b.Bot
+                && ReferenceEquals(planner.ConfirmedEndTurnChoices, parked[0].TurnStartChoices)
+                && planner.ConfirmedEndTurnChoices is { Complete: true }
+                && Field<int>(planner, "tournamentPasses") == 0
+                && Field<int>(planner, "emergencyPotionCaptures") == 0,
+                "human completion must release the same historical owner's recorded EndTurn contract without mandatory card or bottle comparison");
+            Check(b.Bot.PlayerCombatState!.Hand.Cards.Contains(defend) && b.Bot.Potions.Contains(potion)
+                && rescueDropCauses.Count == 0,
+                "parking and preparing EndTurn cannot spend a live card, bottle or silently replace the historical line");
+            VerifyLease(planner, b, root, parked[0]);
+            // Fresh EndTurn native receipt consumption is exercised by the
+            // multi-frame MixedStableScript fresh-end case, not duplicated here.
         }
         finally { observedRescuePlanner = null; planner.Reset(newCombat: true); }
     }
@@ -248,22 +309,21 @@ internal static class MixedCombatAuxiliaryScenarios
         return planner;
     }
 
-    private static void VerifyLease(KernelCombatPlanner planner, Board b, KernelSession root, bool expectedPotionOpening)
+    private static void VerifyLease(KernelCombatPlanner planner, Board b, KernelSession root,
+        KernelTeamSearch.Action opening)
     {
         var script = Field<IReadOnlyList<KernelTeamSearch.Action>>(planner, "tournamentScript");
         var continuation = Field<KernelPlanContinuation?>(planner, "mixedContinuation");
         var cursor = Field<int>(planner, "tournamentScriptIndex");
-        Check(continuation is not null && cursor == 1 && (script[0].Potion is not null) == expectedPotionOpening,
-            "each adopted mixed rescue must retain a continuation lease at the actually emitted opening cursor");
+        Check(continuation is not null && cursor == 0 && planner.HasPreparedSubmission
+            && ReferenceEquals(script[0], opening) && opening.Player == b.Bot,
+            "an adopted mixed proposal must retain its controlled opening and pre-action lease without consuming a merely prepared step");
         Check(continuation!.Evidence.Matches(root.PlanningState([b.Bot.NetId])),
-            "the rescue lease must capture the pre-action live root rather than its already-consumed ending: "
+            "the mixed proposal lease must capture the actual pre-action root rather than its already-consumed ending: "
             + continuation.Evidence.FirstMismatch(root.PlanningState([b.Bot.NetId])));
-        var expected = root.ForkForReplay();
-        for (var i = 0; i < cursor; i++)
-            Check(expected.ReplayPlanned(script[i], 80, out var reason), "independent rescue prefix replay must settle: " + reason);
-        Check(continuation.AdvanceTo(cursor, TimeSpan.FromSeconds(1)) && continuation.Failure.Length == 0
-            && continuation.Evidence.Matches(expected.PlanningState([b.Bot.NetId])),
-            "the mixed rescue lease must replay exactly its emitted potion or card prefix before subsequent review");
+        Check(continuation.AdvanceTo(0, TimeSpan.Zero) && continuation.Cursor == 0
+            && continuation.Failure.Length == 0 && continuation.Evidence.Matches(root.PlanningState([b.Bot.NetId])),
+            "reviewing an unsubmitted opening must perform zero prefix actions and retain its pre-action evidence");
     }
 
     private static T Field<T>(object owner, string name) => (T)AccessTools.Field(owner.GetType(), name).GetValue(owner)!;

@@ -5,9 +5,13 @@ namespace CoopBots;
 
 internal sealed partial class KernelCombatPlanner
 {
+    internal void NotifyManualFocusChanged(CombatState combat, uint? manualFocus)
+        => UpdateManualFocus(combat, manualFocus);
+
     private void UpdateManualFocus(CombatState combat, uint? manualFocus)
     {
         if (focus == manualFocus) return;
+        ClearMixedReplan("explicit human focus changed");
         if (ReferenceEquals(tournamentScriptCombat, combat))
             ClearTournamentScript($"human focus changed: {focus?.ToString() ?? "none"}->{manualFocus?.ToString() ?? "none"}");
         focus = manualFocus;

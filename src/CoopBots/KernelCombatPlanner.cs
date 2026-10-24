@@ -927,6 +927,7 @@ internal sealed partial class KernelCombatPlanner
         ConfirmedPotion = null;
         ConfirmedEndTurn = null;
         ConfirmedEndTurnChoices = null;
+
     }
 
     /// <summary>
@@ -1053,6 +1054,7 @@ internal sealed partial class KernelCombatPlanner
         ConfirmedEndTurn = null;
         ConfirmedEndTurnChoices = null;
 
+        if (TournamentDrives(combat, actors)) UpdateManualFocus(combat, manualFocus);
         if (HasPreparedSubmission)
         {
             ReviewMixedInput(combat);
@@ -1072,7 +1074,6 @@ internal sealed partial class KernelCombatPlanner
         }
         if (TournamentDrives(combat, actors))
         {
-            UpdateManualFocus(combat, manualFocus);
             // NEVER LET A TOURNAMENT DECLINE FALL INTO THE OPENING LADDER.
             //
             // This flag is what hands the ordinary path 180 s, then five one-minute extensions.

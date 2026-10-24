@@ -39,6 +39,7 @@ public static class BotRuntime
         KernelCombatPlanner.Status KernelStatus, string Branch, long PreparedAt)
     {
         internal bool ChoicesWaiting;
+        internal readonly uint? ManualFocus = BotCooperation.FocusTarget;
     }
     private static PendingCardSubmission? _preparedCard;
     private sealed record PendingNativeSubmission(GameAction Action, Action? Enqueue);
@@ -265,6 +266,17 @@ public static class BotRuntime
         if (BotCooperation.Gate.Paused || manager.ActionExecutor.CurrentlyRunningAction is not null
             || !manager.ActionQueueSet.IsEmpty) return;
         Pacing.Observe(combat, combat.RoundNumber, ClockMs);
+        if (_preparedCard is { } focusedCard && focusedCard.ManualFocus != BotCooperation.FocusTarget)
+        {
+            // An explicit team command changes the next decision's intent.
+            // Ordinary settled human cards only mark optional background work.
+            // This boundary has no queued native transaction to cancel.
+            _preparedNative = null;
+            BotTurnStartChoiceSync.Cancel();
+            AbandonPreparedCard($"explicit manual focus changed: {focusedCard.ManualFocus}->{BotCooperation.FocusTarget}");
+            KernelPlanner.NotifyManualFocusChanged(combat, BotCooperation.FocusTarget);
+            return;
+        }
         if (_preparedNative is { } nativePending)
         {
             if (nativePending.Action is EndPlayerTurnAction && !humansFinished) return;

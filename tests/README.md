@@ -16,7 +16,7 @@ V2混合局新增四个聚焦入口，也全部注册在无过滤完整入口：
 
 - `--mixed-cold-opening-only`，可加 `--mixed-cold-opening-case=constructor|units|prefix|cancel|portfolio|allbot`，检查构造不做全量开局、原子单位续枚举、真实已结算前缀截止发布、取消撤回、完整策略/联合工作继续，以及默认全Bot路径不变。
 - `--mixed-stable-script-only`，可加 `--mixed-stable-script-case=stable-prefix|reservation|recost|identity|unrelated-enemy|allbot-strict|expired-script|fresh-end|expired-card|expired-potion-baseline|no-candidate|control-rebind`。驱动真实多帧Poll、原生扣费动作与AfterFinished，检查真人穿插、四步后续打、准备不消费/结算单次消费、取消重试、物理身份、费用变化和已完成首步EndTurn退休。
-- `--mixed-runtime-pacing-only`，可加 `--mixed-runtime-pacing-case=team|finished|delay|invalid|pause|flash|enqueue|resume`。虚拟单调时钟驱动生产TickCombat与真实队列事件，检查跨席1500ms、真人结束立即收尾、慢动画不追赶、失败不改时钟、暂停/忙队列、Flash500ms和选择续租。夹具注入已选动作，搜索质量另由planner场景覆盖，不能把虚拟时钟结果报成实机帧耗时。
+- `--mixed-runtime-pacing-only`，可加 `--mixed-runtime-pacing-case=team|finished|delay|invalid|pause|flash|enqueue|resume|focus`。虚拟单调时钟驱动生产TickCombat与真实队列事件，检查跨席1500ms、真人结束立即收尾、慢动画不追赶、失败不改时钟、暂停/忙队列、Flash500ms和选择续租。夹具注入已选动作，搜索质量另由planner场景覆盖，不能把虚拟时钟结果报成实机帧耗时。
 - `--mixed-background-replan-only`，可加 `--mixed-background-replan-case=input-burst|full-options|stable-script|nonblocking|shared-budget|candidate|control|allbot|human-death|bot-death`。检查真人输入合并、前后相同完整配置、后台不阻塞前台、共享预算、实际原生候选严格改进/同根/准备槽保护，以及恢复全Bot未来优化。
 
 `--request-lifecycle-only --request-lifecycle-case=replay-completed-stop` 与 `--planning-state-only --planning-state-case=continuation-deadline` 区分计算截止、完整候选和有效执行剧本的寿命；`--turn-start-choice-only --turn-start-choice-case=transition-diagnostics` 用原生合同区分回合号、席位回合号和未消费选择三轴。历史日志中四次拒绝尚无足够细节确证具体轴，增加诊断不等于这些历史机制已经复现修好。
