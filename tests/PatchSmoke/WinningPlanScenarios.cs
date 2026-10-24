@@ -1,7 +1,8 @@
-// R2 2026-10-09: legacy fixture authority/request wiring; existing business assertions retained.
+﻿// R2 2026-10-09: legacy fixture authority/request wiring; existing business assertions retained.
 // Physical proof: work/architecture-refactor-20261009/r2/legacy-script-contract-proof-v1/proof.json
 // Each listed old mechanism: baseline build/run 0/0 -> mutant 0/1 -> exact-byte restoration 0/0.
-// Runtime fixture body below equals that compiled proof epoch; these lines are comment-only.
+// Historical proof epoch retained below. V2 establishes pure-Bot authority
+// before adoption; actual V2 RED/GREEN proof is recorded separately.
 // Actual RED: System.Exception: Winning plan: a winning planned end-turn must survive the useful-attack heuristic
 using CoopBots;
 using CoopBots.Kernel;
@@ -79,43 +80,55 @@ internal static class WinningPlanScenarios
             Script = script, ScriptAliveStates = script.Select(_ => new[] { p.NetId, ally.NetId }).ToArray(),
             ScriptEnemyStates = script.Select(_ => new[] { enemy }).ToArray(), JointNodes = 1 };
         var planner = new KernelCombatPlanner();
-        AccessTools.Method(typeof(KernelCombatPlanner), "AdoptTournamentScript").Invoke(planner, [result, combat]);
-        var offered = (bool)AccessTools.Method(typeof(KernelCombatPlanner), "TryPotionOpportunity")
-            .Invoke(planner, [combat, new[] { p, ally }, win, new[] { end }])!;
-        Check(!offered && planner.HasPendingStep, "live potion dispatch must leave the winning tail intact");
-        object?[] args = [combat, new[] { p, ally }, true, null];
-        // This scheduling oracle is a supplied pure-bot tail. A real human
-        // proposal requires separate actual-root replay evidence.
-        var controlled=new[]{p,ally};
-        var previousControl=controlled.Select(player=>AutoPilot.IsAutopiloted(player.NetId)).ToArray();
-        foreach(var player in controlled) AutoPilot.Set(player.NetId,true);
-        bool emitted;
-        try { emitted=(bool)AccessTools.Method(typeof(KernelCombatPlanner), "TryEmitFromTournamentScript").Invoke(planner,args)!; }
-        finally { for(var i=0;i<controlled.Length;i++) AutoPilot.Set(controlled[i].NetId,previousControl[i]); }
-        Check(emitted && planner.ConfirmedEndTurn == p,
-            "a winning planned end-turn must survive the useful-attack heuristic");
-        foreach (var bottle in p.Potions.ToArray()) p.DiscardPotionInternal(bottle, silent: true);
-        var radiant = ModelDb.Potion<RadiantTincture>().ToMutable();
-        p.AddPotionInternal(radiant, silent: true);
-        Check(KernelPotionOpportunity.Choose(KernelSession.Capture(combat), [p], [p, ally], null) is null,
-            "unknown full-belt value must not spend a non-full belt");
-        while (p.Potions.Count() < p.MaxPotionCount) p.AddPotionInternal(ModelDb.Potion<FairyInABottle>().ToMutable(), silent: true);
-        AccessTools.Method(typeof(KernelCombatPlanner), "AdoptTournamentScript").Invoke(planner, [result, combat]);
-        offered = (bool)AccessTools.Method(typeof(KernelCombatPlanner), "TryPotionOpportunity")
-            .Invoke(planner, [combat, new[] { p }, win, new[] { end }])!;
-        Check(offered && planner.ConfirmedPotion?.Potion == radiant && planner.ConfirmedPotion.Target == p.Creature,
-            "full belt must dispatch Radiant natively even with a winning tail");
-        Check(!planner.HasPendingStep, "unknown potion dispatch must clear the old script before replanning");
-        p.DiscardPotionInternal(radiant, silent: true);
-        var chooser = ModelDb.Potion<GamblersBrew>().ToMutable(); p.AddPotionInternal(chooser, silent: true);
-        Check(!KernelSession.CanModelPotion(chooser)
-            && KernelPotionOpportunity.Choose(KernelSession.Capture(combat), [p], [p, ally], win, [end])?.Action.Potion == chooser,
-            "full belt must allow an unmodeled chooser potion");
-        p.DiscardPotionInternal(chooser, silent: true);
-        p.AddPotionInternal(ModelDb.Potion<FairyInABottle>().ToMutable(), silent: true);
-        Check(KernelPotionOpportunity.Choose(KernelSession.Capture(combat), [p], [p, ally], win, [end]) is null,
-            "automatic Fairy must never be manually consumed");
-        Console.WriteLine("PASS: full belts dispatch unknown-valued/chooser bottles, clear the old live plan, preserve automatic Fairy and non-full belts.");
-        Console.WriteLine("PASS: verified winning scripts survive emergency/full-belt potion and spare-attack heuristics; losing plans retain rescue spending.");
+        // This is a supplied pure-Bot scheduling oracle. Establish authority
+        // before adoption, as real all-Bot capture/adoption does. Switching
+        // humans to Bot only at the emitter would be a genuine control change
+        // that must demote mixed evidence and retain its unsubmitted opening.
+        var controlled = new[] { p, ally };
+        var previousControl = controlled.Select(player => AutoPilot.IsAutopiloted(player.NetId)).ToArray();
+        foreach (var player in controlled) AutoPilot.Set(player.NetId, true);
+        try
+        {
+            AccessTools.Method(typeof(KernelCombatPlanner), "AdoptTournamentScript").Invoke(planner, [result, combat]);
+            var offered = (bool)AccessTools.Method(typeof(KernelCombatPlanner), "TryPotionOpportunity")
+                .Invoke(planner, [combat, new[] { p, ally }, win, new[] { end }])!;
+            Check(!offered && planner.HasPendingStep, "live potion dispatch must leave the winning tail intact");
+            object?[] args = [combat, new[] { p, ally }, true, null];
+            var emitted = (bool)AccessTools.Method(typeof(KernelCombatPlanner), "TryEmitFromTournamentScript").Invoke(planner, args)!;
+            Check(emitted && planner.ConfirmedEndTurn == p,
+                "a winning planned end-turn must survive the useful-attack heuristic");
+            foreach (var bottle in p.Potions.ToArray()) p.DiscardPotionInternal(bottle, silent: true);
+            var radiant = ModelDb.Potion<RadiantTincture>().ToMutable();
+            p.AddPotionInternal(radiant, silent: true);
+            Check(KernelPotionOpportunity.Choose(KernelSession.Capture(combat), [p], [p, ally], null) is null,
+                "unknown full-belt value must not spend a non-full belt");
+            while (p.Potions.Count() < p.MaxPotionCount) p.AddPotionInternal(ModelDb.Potion<FairyInABottle>().ToMutable(), silent: true);
+            AccessTools.Method(typeof(KernelCombatPlanner), "AdoptTournamentScript").Invoke(planner, [result, combat]);
+            offered = (bool)AccessTools.Method(typeof(KernelCombatPlanner), "TryPotionOpportunity")
+                .Invoke(planner, [combat, new[] { p }, win, new[] { end }])!;
+            Check(offered && planner.ConfirmedPotion?.Potion == radiant && planner.ConfirmedPotion.Target == p.Creature,
+                "full belt must dispatch Radiant natively even with a winning tail");
+            Check(!planner.HasPendingStep, "unknown potion dispatch must clear the old script before replanning");
+            p.DiscardPotionInternal(radiant, silent: true);
+            var chooser = ModelDb.Potion<GamblersBrew>().ToMutable(); p.AddPotionInternal(chooser, silent: true);
+            Check(!KernelSession.CanModelPotion(chooser)
+                && KernelPotionOpportunity.Choose(KernelSession.Capture(combat), [p], [p, ally], win, [end])?.Action.Potion == chooser,
+                "full belt must allow an unmodeled chooser potion");
+            p.DiscardPotionInternal(chooser, silent: true);
+            p.AddPotionInternal(ModelDb.Potion<FairyInABottle>().ToMutable(), silent: true);
+            Check(KernelPotionOpportunity.Choose(KernelSession.Capture(combat), [p], [p, ally], win, [end]) is null,
+                "automatic Fairy must never be manually consumed");
+            Console.WriteLine("PASS: full belts dispatch unknown-valued/chooser bottles, clear the old live plan, preserve automatic Fairy and non-full belts.");
+            Console.WriteLine("PASS: verified winning scripts survive emergency/full-belt potion and spare-attack heuristics; losing plans retain rescue spending.");
+        }
+        finally
+        {
+            planner.Reset(newCombat: true);
+            for (var i = 0; i < controlled.Length; i++) AutoPilot.Set(controlled[i].NetId, previousControl[i]);
+        }
     }
 }
+
+// V2 R2: invert production VerifiedVictory guard -> build 0, test 1:
+// System.Exception: Winning plan: a winning planned end-turn must survive the useful-attack heuristic
+// Exact production bytes restored; build 0, --winning-plan-only GREEN 0.

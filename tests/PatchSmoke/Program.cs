@@ -225,6 +225,35 @@ if (args.Contains("--shop-shortcuts-only"))
 if (args.Contains("--owner-policy-only")) { TestEnvironment.Ensure(); OwnerPolicyScenarios.Run(); return; }
 if (args.Contains("--decision-victory-only")) { DecisionConsistencyScenarios.RunVictory(); return; }
 if (args.Contains("--winning-plan-only")) { TestEnvironment.Ensure(); WinningPlanScenarios.Run(); return; }
+if (args.Contains("--late-regressions-only"))
+{
+    TestEnvironment.Ensure();
+WinningPlanScenarios.Run();
+LongValueScenarios.Run();
+    StrategicLookaheadScenarios.Run();
+CombatQualityScenarios.Run();
+DecisionFixScenarios.Run();
+ActTwoPriorityScenarios.Run();
+NightDecisionScenarios.Combat();
+NightDecisionScenarios.Refinement();
+ActTwoDecisionScenarios.Run();
+EnchantmentPriorityScenarios.Run();
+AncientOptionScenarios.Run();
+BossDraftScenarios.Run();
+SustainedBuildingScenarios.Run();
+MechanismCycleScenarios.Run();
+JointDiversityScenarios.Run();
+PowerPriorityScenarios.Run();
+LivePowerDecisionScenarios.Run();
+PaelWingScenarios.Run();
+ClassPowerScenarios.Run();
+ActOneFeedbackScenarios.Run();
+DecisionQualityScenarios.Run();
+GeneratedPotionScenarios.Run();
+PartySetupPendingNativeScenarios.Run();
+    return;
+}
+
 if (args.Contains("--decision-consistency-only")) { DecisionConsistencyScenarios.Run(); return; }
 if (args.Contains("--latest-policy-repairs-only")) { LatestPolicyRepairScenarios.Run(); return; }
 if (args.Contains("--latest-choice-divergence-only")) { LatestChoiceDivergenceScenarios.Run(); return; }
