@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using CoopBots;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Models.Cards;
@@ -73,6 +73,22 @@ if (args.Contains("--planning-state-only"))
 if (args.Contains("--planning-facts-only"))
 {
     KernelPlanningFactsScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--planning-facts-case="))?.Split('=', 2)[1]); return;
+}
+if (args.Contains("--mixed-cold-opening-only"))
+{
+    MixedColdOpeningScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-cold-opening-case="))?.Split('=', 2)[1]); return;
+}
+if (args.Contains("--mixed-stable-script-only"))
+{
+    MixedStableScriptScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-stable-script-case="))?.Split('=', 2)[1]); return;
+}
+if (args.Contains("--mixed-background-replan-only"))
+{
+    MixedBackgroundReplanScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-background-replan-case="))?.Split('=', 2)[1]); return;
+}
+if (args.Contains("--mixed-runtime-pacing-only"))
+{
+    MixedRuntimePacingScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-runtime-pacing-case="))?.Split('=', 2)[1]); return;
 }
 if (args.Contains("--mixed-input-only"))
 {
@@ -773,6 +789,10 @@ RoomWorkScenarios.Run();
 MixedRoomAndHandshakeScenarios.Run();
 MixedRoomSyncScenarios.Run();
 MixedResponsivenessScenarios.Run();
+MixedStableScriptScenarios.Run();
+MixedColdOpeningScenarios.Run();
+MixedBackgroundReplanScenarios.Run();
+MixedRuntimePacingScenarios.Run();
 MixedReplaySafetyScenarios.Run();
 MixedCombatAuxiliaryScenarios.Run();
 TransformEventScenarios.Run(); NightDecisionScenarios.Building();

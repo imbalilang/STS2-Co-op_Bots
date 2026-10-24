@@ -16,12 +16,11 @@ using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Unlocks;
 
-// Production Poll, real native suffix replay, then the actual short tournament.
-// A newly proved fatal old line is evidence for comparison, not an immediate
-// action when another current-root native opening preserves the living seats.
-// R2 actual 2026-10-24: production mutant build0 / RED1 / exact restore / GREEN0.
-// Receipt: work/mixed-fixes-20261023T164339Z/r2-valid-proofs.json
-// mixed-fatal-replay: System.InvalidOperationException: Mixed replay safety: a newly proved fatal replay must fund a current-root comparison and emit the surviving kill before human EndTurn
+// V2 tradeoff: a legal historical action remains deployable while optional
+// current-root quality work may find a better line. This case deliberately
+// proves that native legality and "best surviving line" are different claims.
+// The complete native replay below is fixture evidence, not a foreground gate.
+// Serial validation appends actual V2 production-mutant RED/GREEN evidence.
 internal static class MixedReplaySafetyScenarios
 {
     internal static void Run()
@@ -32,16 +31,16 @@ internal static class MixedReplaySafetyScenarios
         presentation.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Localization.LocString), "GetFormattedText"),
             prefix: new HarmonyMethod(typeof(MixedReplaySafetyScenarios), nameof(Format)));
         KernelCombatPlanner.TournamentOverride = null;
-        try { KnownFatalReplayMustCompare(); }
+        try { LegalHistoricalProposalDoesNotForceCompare(); }
         finally { KernelCombatPlanner.TournamentOverride = previous; presentation.UnpatchAll(presentation.Id); }
     }
 
-    private static void KnownFatalReplayMustCompare()
+    private static void LegalHistoricalProposalDoesNotForceCompare()
     {
         using var b = new Board();
         var root = KernelCombatCapture.Capture(b.Combat);
-        // Resolve and warm native candidate/side settlement outside the short
-        // timed request. Every operation below owns a fork of the same root.
+        // Warm native candidate/side settlement. Every replay below owns a
+        // fork of the same actual root; none gates foreground continuation.
         _ = KernelTournament.Run(root, b.Combat.Players.ToArray(), [b.Bot],
             new TournamentOptions(ReserveMs: 0, IncludePotions: false, IncludeEndTurns: false,
                 UsePolicyPortfolio: false, Rollout: new(MaxRounds: 1, MaxSteps: 32)), 5000);
@@ -70,21 +69,27 @@ internal static class MixedReplaySafetyScenarios
         var planner = new KernelCombatPlanner();
         try
         {
-            AccessTools.Field(typeof(KernelCombatPlanner), "mixedProposal").SetValue(planner, proposal);
-            TeamCombatPlanner.Decision? decision = null;
-            var clock = Stopwatch.StartNew();
-            while (clock.Elapsed < TimeSpan.FromSeconds(8))
-            {
-                var status = planner.Poll(b.Combat, [b.Bot], 0, null, false, BotDifficulty.Pro, out decision);
-                if (status == KernelCombatPlanner.Status.Ready && decision is not null) break;
-                Check(status != KernelCombatPlanner.Status.Fallback,
-                    "the supported actual root must retain the production tournament after replaying the fatal proposal");
-            }
-            var passes = (int)AccessTools.Field(typeof(KernelCombatPlanner), "tournamentPasses").GetValue(planner)!;
-            Check(decision?.Player == b.Bot && decision.Move.Card == b.Strike && decision.Move.Target == b.Enemy && passes > 0
+            // The action remains a proposal, never a renewed victory proof.
+            // Its target, physical card and controlled owner are live/valid.
+            var script = new[] { wrong, safe };
+            void Set(string key, object? value) => AccessTools.Field(typeof(KernelCombatPlanner), key).SetValue(planner, value);
+            Set("tournamentScript", script); Set("tournamentScriptIndex", 0);
+            Set("tournamentScriptCombat", b.Combat); Set("tournamentScriptRound", b.Combat.RoundNumber);
+            Set("tournamentScriptRecord", old with { Victory = true, Kind = EvidenceKind.VerifiedTerminal });
+            Set("tournamentScriptAliveStates", script.Select(_ => b.Combat.Players.Select(p => p.NetId).Order().ToArray()).ToArray());
+            Set("tournamentScriptEnemyStates", script.Select(_ => new[] { b.Enemy }).ToArray());
+            AccessTools.Method(typeof(KernelCombatPlanner), "CaptureMixedContinuation").Invoke(planner, [root, b.Combat, script, 0]);
+            planner.NoteMixedInput();
+            var status = planner.Poll(b.Combat, [b.Bot], 0, null, false, BotDifficulty.Pro, out var decision);
+            Check(status == KernelCombatPlanner.Status.Ready && decision?.Player == b.Bot
+                && decision.Move.Card == b.Offering
+                && (int)AccessTools.Field(typeof(KernelCombatPlanner), "tournamentPasses").GetValue(planner)! == 0
                 && b.Human.PlayerCombatState!.Phase == PlayerTurnPhase.Play,
-                "a newly proved fatal replay must fund a current-root comparison and emit the surviving kill before human EndTurn");
-            Console.WriteLine("PASS: mixed fatal suffix replay yields to a current-root native comparison and the surviving opening.");
+                "a legal historical Offering must remain a foreground proposal without mandatory quality search or a living-seat risk gate");
+            Check(AccessTools.Field(typeof(KernelCombatPlanner), "tournamentScriptRecord").GetValue(planner)
+                is TerminalRecord { Victory: false, Verified: false },
+                "continuing a legal historical action cannot preserve or claim its old verified victory");
+            Console.WriteLine("PASS: mixed historical action legality is independent of optional surviving-line optimization and stale victory is demoted.");
         }
         finally { planner.Reset(newCombat: true); }
     }

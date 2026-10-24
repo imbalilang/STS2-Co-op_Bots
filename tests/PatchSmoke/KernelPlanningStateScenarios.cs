@@ -1,3 +1,8 @@
+// V2 R2 actual 2026-10-24: production mutant build0 / named RED1 /
+// exact source restore / rebuild0 / named GREEN0. Receipt:
+// work/v2-validation/r2/receipts.json (only passed=true records below).
+// prefix-stops-new-work:
+// System.InvalidOperationException: Planning state: deadline expiration rather than only cancellation must forbid a new native prefix action
 using CoopBots;
 using CoopBots.Kernel;
 using CoopBots.Kernel.Vendor.Engine.Common;
@@ -45,6 +50,7 @@ internal static class KernelPlanningStateScenarios
             foreach (var test in new (string Name, Action Body)[] {
                 ("identity", Identity), ("piles-rng", PilesAndRng), ("mutable", Mutable),
                 ("control", Control), ("unsettled", Unsettled), ("continuation", Continuation),
+                ("continuation-deadline", ContinuationDeadline),
                 ("diagnostic-qualification", DiagnosticQualification),
                 ("diagnostic-battle", DiagnosticBattle), ("diagnostic-semantics", DiagnosticSemantics),
                 ("diagnostic-hidden", DiagnosticHidden), ("diagnostic-count", DiagnosticCount),
@@ -164,6 +170,33 @@ internal static class KernelPlanningStateScenarios
         try { lease.ForkMatchedState(root.PlanningState([owner.NetId])); }
         catch (InvalidOperationException) { refused = true; }
         Check(refused, "a changed actual root must not inherit the committed continuation");
+    }
+
+    private static void ContinuationDeadline()
+    {
+        var (combat, owner, enemy) = Board();
+        var root = KernelSession.Capture(combat);
+        var actions = root.Hand(owner).Select(card => new KernelTeamSearch.Action(owner, card, enemy,
+            CardStateKey: root.CardStateKey(card))).ToArray();
+        var expired = new KernelDecisionRequest(925, 0);
+        var waiting = new KernelPlanContinuation(root, actions, [owner.NetId]);
+        var before = waiting.Evidence;
+        Check(waiting.AdvanceTo(0, TimeSpan.Zero, expired) && waiting.Cursor == 0
+            && waiting.Evidence.Matches(before),
+            "zero-prefix review is complete without native work even when no new computation is allowed");
+        Check(waiting.AdvanceTo(1, TimeSpan.Zero, expired) && waiting.Cursor == 0
+            && waiting.Failure == "prefix-request-request-deadline" && waiting.Evidence.Matches(before),
+            "deadline expiration rather than only cancellation must forbid a new native prefix action");
+        var complete = new KernelPlanContinuation(root, actions, [owner.NetId]);
+        Check(complete.AdvanceTo(1, TimeSpan.FromSeconds(1)) && complete.Cursor == 1 && complete.Failure.Length == 0,
+            "the continuation fixture must first complete exactly one native prefix action");
+        var completed = complete.Evidence;
+        for (var poll = 0; poll < 20; poll++)
+            Check(complete.AdvanceTo(1, TimeSpan.Zero, expired) && complete.Cursor == 1
+                && complete.Failure.Length == 0 && complete.Evidence.Matches(completed),
+                "deadline cannot invalidate a completed prefix or make zero-work review repeat a native action");
+        Check(complete.ForkMatchedState(completed).PlanningState([owner.NetId]).Matches(completed),
+            "already completed exact prefix evidence remains usable after its computation allowance ends");
     }
 
     // Physical R2 2026-10-09: one shared actual baseline Rebuild0, named mutant

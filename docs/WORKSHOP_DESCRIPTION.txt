@@ -1,14 +1,15 @@
 [h1]Co-op Bots / 联机机器人[/h1]
 为《杀戮尖塔 2》的官方多人房间加入 AI 队友。Bot 使用真实玩家席位，动作通过游戏队列同步；所有真人需安装相同版本。
 
-[h2]最新更新 / Latest：0.39.3（2026-10-24）[/h2]
+[h2]最新更新 / Latest：0.39.4（2026-10-24）[/h2]
 [list]
-[*]修复真人奖励界面导致 Bot 不跟随选房，以及自动回合握手误清选牌计划。
-[*]真人仍行动时采用短预算比较，从已结算盘面验证续招，减少完整重搜；Bot 可在真人结束回合前穿插出牌。
-[*]补齐控制权交回、真人集火和急救续招，修复宝箱奖励及托管事件的多人同步。
+[*]混合局恢复稳定剧本续打；真人结束前后保持同一套完整锦标赛，不再每张真人牌都前台重搜。
+[*]真人行动时默认Pro/Cheated全队约1.5秒一张卡，Flash保留0.5秒；真人结束后取消人为间隔，按已有剧本快速收尾。
+[*]混合局后台按真人已结算动作比较新盘面，不阻塞合法旧剧本；全Bot保留原有未来回合优化。
+[*]修复重复采纳、游标提前消费和超时循环，补齐冷开局分帧、托管/死亡切换及原生回归。
 [/list]
-新增17个回归场景及31项故障注入红绿验证；发布构建验证收据随 GitHub Release 附件提供。尚未完成双客户端混合局实机验收，未验证实际延迟或胜率改善。
-Mixed-table fixes cover room voting, automatic handshakes, shorter searches with continuation replay, control handback, manual focus, rescues, and treasure/event sync. Bots can play before humans end their turn. Release validation accompanies the GitHub Release; two-client gameplay and latency remain unverified.
+发布验证收据随GitHub Release提供。尚未完成双客户端混合局实机验收；初次搜索、动画和同步选择可能延长实际间隔，未验证实机延迟或胜率改善。
+Mixed tables retain legal scripts and use one full tournament in both human phases. Pro/Cheated share a 1.5-second team cadence while humans act, then remove artificial delay for scripted cleanup. Human-driven optional replanning preserves all-Bot future optimization. Release validation is on GitHub; two-client latency and win-rate improvements remain unverified.
 
 [h2]此前公开快照（2026-10-13）[/h2]
 公开当前算法、Agent 规范与技能、完整回归和 Steam 实机测试管线，邀请社区共同优化。GitHub 源码更新与工坊安装包身份分别核对。
@@ -27,7 +28,7 @@ Flash / Pro / Cheated 共用算法；档位影响节奏与思考预算，Cheated
 多人同步或游戏版本变化可能需要更新兼容层；问题反馈请附 MOD/游戏版本和匿名化日志。
 
 [h2]开源协作[/h2]
-欢迎开发者及其 Agent 提交原生复现场景、性能证据和算法改进。全 Bot 基线保持路线与预算，真人行动时使用有界短比较；开发种子和留出种子分开，保留自然失败、卡死与异常尝试。不要用战斗胜率代替整塔通关率。
+欢迎开发者及其 Agent 提交原生复现场景、性能证据和算法改进。全 Bot 基线保持路线与预算，混合局真人结束前后使用同一套完整锦标赛；开发种子和留出种子分开，保留自然失败、卡死与异常尝试。不要用战斗胜率代替整塔通关率。
 
 [h2]许可与致谢[/h2]
 CoopBots 自有代码采用 MIT。CombatSolver / Random Foreseer 导入代码保留其 MIT 署名；Spire Codex 派生数据适用 PolyForm Noncommercial 1.0.0，详见仓库 THIRD_PARTY_NOTICES.md 及 licenses。

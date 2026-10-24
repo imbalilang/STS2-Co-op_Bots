@@ -17,17 +17,11 @@ using MegaCrit.Sts2.Core.Models.Monsters.Mocks;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Unlocks;
 
-// These drive the shipped Poll entry with an ordinary living human, not the
-// historical segmented planner. Native paid card bodies use the existing
-// presentation-only native fixture.
-// R2 actual 2026-10-24: production mutant build0 / RED1 / exact restore / GREEN0.
-// Receipt: work/mixed-fixes-20261023T164339Z/r2-valid-proofs.json
-// mixed-deadline: System.InvalidOperationException: Mixed responsiveness: live human planning must have a short interaction deadline rather than the all-Bot 6400ms allowance
-// mixed-current-root-proposal: System.InvalidOperationException: Mixed responsiveness: a suffix replayed from the actual changed root must supply its action without starting another tournament
-// tournament-status: System.InvalidOperationException: Mixed responsiveness: actual mixed tournament work must be visible and use a bounded native one-round comparison
-// mixed-round-horizon: System.InvalidOperationException: Mixed responsiveness: actual mixed tournament work must be visible and use a bounded native one-round comparison
-// mixed-control-handover: System.InvalidOperationException: Mixed responsiveness: returning control must retire old delegated scripts and in-flight proposals before replay
-// mixed-control-gain (existing planner-request regression): System.InvalidOperationException: Planner request: handing the last human seat to a Bot must renew the old mixed plan's control domain
+// The shipped Poll entry, real living human and queued native paid cards.
+// V2 keeps the complete tournament in both human phases. Stable mixed scripts
+// are proposals whose execution does not wait for optional quality work.
+// Historical R2 receipts apply only to superseded policy. V2 R2 evidence is
+// recorded by the serial validation owner after production mutations.
 internal static class MixedResponsivenessScenarios
 {
     private static readonly MethodInfo Paid = AccessTools.Method(typeof(KernelPlanningFactsScenarios), "NativePaidCard");
@@ -107,8 +101,15 @@ internal static class MixedResponsivenessScenarios
         internal void HumanCard()
         {
             var card = Human.PlayerCombatState!.Hand.Cards.First(c => c is StrikeIronclad);
-            var action = new PlayCardAction(Human, NetCombatCard.ForTesting(0), card.Id, Enemy.CombatId);
-            inputAction = action; inputCard = card; inputTarget = Enemy;
+            Execute(Human, card, Enemy);
+        }
+        internal void BotCard(TeamCombatPlanner.Decision decision)
+            => Execute(decision.Player, decision.Move.Card, decision.Move.Target);
+        private void Execute(Player owner, CardModel card, Creature? target)
+        {
+            var action = new PlayCardAction(owner, NetCombatCard.ForTesting(0), card.Id, target?.CombatId);
+            if (owner == Bot) Planner.ConfirmActionQueued(action);
+            inputAction = action; inputCard = card; inputTarget = target;
             try
             {
                 Queue.EnqueueWithoutSynchronizing(action);
@@ -128,41 +129,41 @@ internal static class MixedResponsivenessScenarios
     private static void ProgressBeforeHumanEnd()
     {
         using var b = new Board();
-        var first = b.Planner.Poll(b.Combat, [b.Bot], b.Queue.NextActionId, null, false, BotDifficulty.Pro, out _);
+        _ = b.Planner.Poll(b.Combat, [b.Bot], b.Queue.NextActionId, null, false, BotDifficulty.Pro, out _);
         var before = Get(b.Planner, "tournamentRequest") as KernelDecisionRequest;
-        Check(before is null || before.BudgetMs <= 400,
-            "live human planning must have a short interaction deadline rather than the all-Bot 6400ms allowance");
+        Check(before is null || before.BudgetMs >= 6400,
+            "a living human must not replace the complete tournament with the old 400ms request");
         for (var i = 0; i < 3; i++)
         {
             b.HumanCard();
-            if (before is not null) Check(before.IsCancelled, "settled human card must still cancel stale-root work");
+            // A root-search result may be retired, but a human action cannot
+            // consume a prepared foreground action or require human EndTurn.
             b.Planner.Poll(b.Combat, [b.Bot], b.Queue.NextActionId, null, false, BotDifficulty.Pro, out _);
-            before = Get(b.Planner, "tournamentRequest") as KernelDecisionRequest;
         }
         var decision = Decision(b);
         Check(decision.Player == b.Bot && decision.Move.Card.Owner == b.Bot
             && b.Human.PlayerCombatState!.Energy > 0 && b.Human.PlayerCombatState.Phase == PlayerTurnPhase.Play
             && KernelInputObserver.Revision == 3,
             "Bot must produce a native current-root card while the human still has energy and has never ended turn");
-        Paid.Invoke(null, [decision.Move.Card, decision.Move.Target]);
+        b.BotCard(decision);
         Check(b.Bot.PlayerCombatState!.Energy == 5 && b.Enemy.CurrentHp < 182,
             "the interleaved Bot card must actually execute through the paid native body");
-        Console.WriteLine("PASS: mixed continuous native human cards cancel stale work and Bot plays before the human ends turn.");
+        Console.WriteLine("PASS: complete mixed tournament produces a native Bot card while the human turn is still open.");
     }
 
     private static void RenewedProposalProvidesAction()
     {
         using var b = new Board();
         var initial = Decision(b);
-        Paid.Invoke(null, [initial.Move.Card, initial.Move.Target]);
+        b.BotCard(initial);
         var passes = (int)Get(b.Planner, "tournamentPasses")!;
         b.HumanCard();
         var next = Decision(b);
         Check((int)Get(b.Planner, "tournamentPasses")! == passes,
-            "a suffix replayed from the actual changed root must supply its action without starting another tournament");
+            "a legal old script must continue without a foreground tournament after a settled human card");
         Check(next.Player == b.Bot && b.Human.PlayerCombatState!.Energy > 0,
-            "renewed proposal action belongs only to a controlled seat before human end-turn");
-        Console.WriteLine("PASS: mixed current-root native suffix replay supplies the next Bot action without a fresh tournament.");
+            "stable proposal action belongs only to a controlled seat before human end-turn");
+        Console.WriteLine("PASS: mixed stable script supplies the next controlled Bot action without a fresh foreground tournament.");
     }
 
     private static void CurrentSearchIsVisible()
@@ -170,11 +171,26 @@ internal static class MixedResponsivenessScenarios
         using var b = new Board();
         var begin = AccessTools.Method(typeof(KernelCombatPlanner), "BeginTournamentPhase");
         Check((bool)begin.Invoke(b.Planner, [b.Combat, new[] { b.Bot }, false])!, "production phase must start");
-        var options = (TournamentOptions)Get(b.Planner, "tournamentOptions")!;
-        Check(b.Planner.IsSearching && b.Planner.SearchingWallBudgetMs <= 400
-            && options.Rollout?.MaxRounds == 1 && !options.EnableJointSearch,
-            "actual mixed tournament work must be visible and use a bounded native one-round comparison");
-        Console.WriteLine("PASS: mixed tournament pending work is visible with its real interaction deadline.");
+        var before = (TournamentOptions)Get(b.Planner, "tournamentOptions")!;
+        var request = (KernelDecisionRequest)Get(b.Planner, "tournamentRequest")!;
+        var other = new KernelCombatPlanner();
+        try
+        {
+            Check((bool)begin.Invoke(other, [b.Combat, new[] { b.Bot }, true])!, "post-human production phase must start");
+            var after = (TournamentOptions)Get(other, "tournamentOptions")!;
+            var afterRequest = (KernelDecisionRequest)Get(other, "tournamentRequest")!;
+            Check(b.Planner.IsSearching && request.BudgetMs >= 6400
+                && before.UsePolicyPortfolio && before.EnableJointSearch && before.TopK >= 20
+                && before.Rollout is { MaxRounds: >= 80, MaxSteps: >= 600 }
+                && before.TopK == after.TopK && before.Rollout == after.Rollout
+                && before.UsePolicyPortfolio == after.UsePolicyPortfolio
+                && before.EnableJointSearch == after.EnableJointSearch
+                && before.MaxDegreeOfParallelism == after.MaxDegreeOfParallelism
+                && request.BudgetMs == afterRequest.BudgetMs && request.MaxConcurrency == afterRequest.MaxConcurrency,
+                "human EndTurn may change end permission but must preserve complete strategies, joint search, horizon and request budget");
+            Console.WriteLine("PASS: mixed tournament keeps the same complete search capabilities and budget before and after human EndTurn.");
+        }
+        finally { other.Reset(newCombat: true); }
     }
 
     private static void ReturnedHumanOwnsTheirCards()
@@ -199,8 +215,8 @@ internal static class MixedResponsivenessScenarios
         AutoPilot.Set(b.Human.NetId, false);
         AccessTools.Method(typeof(KernelCombatPlanner), "ReviewMixedInput").Invoke(b.Planner, [b.Combat]);
         Check(Get(b.Planner, "mixedProposal") is null && Get(b.Planner, "mixedReadyProposal") is null
-            && Get(b.Planner, "tournamentScript") is null,
-            "returning control must retire old delegated scripts and in-flight proposals before replay");
+            && Get(b.Planner, "tournamentScript") is not null,
+            "returning control retires delegated quality proposals while preserving unaffected controlled card proposals");
         var next = Decision(b);
         Check(next.Player == b.Bot && next.Move.Card.Owner == b.Bot && b.Human.PlayerCombatState.Hand.Cards.Count == 6,
             "fresh production Poll after handback must leave every human card under human control");
@@ -210,7 +226,7 @@ internal static class MixedResponsivenessScenarios
     private static TeamCombatPlanner.Decision Decision(Board b)
     {
         var watch = Stopwatch.StartNew();
-        while (watch.Elapsed < TimeSpan.FromSeconds(8))
+        while (watch.Elapsed < TimeSpan.FromSeconds(15))
         {
             var status = b.Planner.Poll(b.Combat, [b.Bot], b.Queue.NextActionId, null, false, BotDifficulty.Pro, out var decision);
             if (status == KernelCombatPlanner.Status.Ready && decision is not null) return decision;

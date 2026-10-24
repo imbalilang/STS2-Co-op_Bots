@@ -1,4 +1,15 @@
-# 版本变更记录 / Changelog
+﻿# 版本变更记录 / Changelog
+
+## 0.39.4（2026-10-24）
+
+- 恢复0.39.0的稳定续打原则；真人结束前后保持当前完整策略组合、联合搜索、80回合/600步上限、并发与药水目标。真人已结算动作降低旧质量证明，不强制丢弃仍合法的物理牌后缀，也不再每四步重搜。
+- 默认Pro/Cheated以全队最近一次成功原生卡牌入队计时，真人行动时约1.5秒一张；Flash保留0.5秒。搜索与节奏重叠，不按思考时间抵扣；真人结束后按现有剧本立即撤掉人为间隔，慢动画后不追赶连发。
+- 混合局后台改为真人输入驱动：合并输入、实际根重放与完整锦标赛比较，同根严格更好且未占用准备槽时才换接。前台不等待可选候选；全Bot继续未来回合优化。
+- 完成结果单次安装后退休；准备槽跨帧保留，实际AfterFinished单次消费游标，取消及入队失败不消费。修复首步EndTurn等待和期限循环；无可执行牌/药水时直接等待真人或结束，零能量不跳过零费牌。
+- 混合局开局候选改为原子单位分帧枚举，截止保留完整结算前缀，不因普通截止转用legacy；共享预算不随每张真人牌刷新。控制交回、最后真人死亡/转托管、死Bot步骤退休均补回归。
+- 增加真实Poll、Runtime队列及原生动作回归、故障注入红绿证明和回合开始合同三轴诊断。发布门禁收据随GitHub Release提供。历史四次合同拒绝的具体机制尚未复现，双客户端实机响应及胜率仍待单独验证。
+
+Stable mixed-table scripts, one full tournament in both human phases, a shared 1.5-second Pro/Cheated submit cadence, and immediate scripted cleanup after human EndTurn. Optional human-driven background replanning preserves all-Bot future optimization. Includes result/cursor/deadline fixes, incremental cold openings, native-action regressions and fault-injection evidence. No new two-client latency or win-rate claim.
 
 ## 0.39.3（2026-10-24）
 

@@ -34,9 +34,12 @@ internal static class KernelInputObserver
 
     private static void Enqueued(GameAction action)
     {
-        if (AutoPilot.Drives(action.OwnerId) || action is not
-            (PlayCardAction or UsePotionAction or EndPlayerTurnAction or UndoEndPlayerTurnAction or DiscardPotionGameAction)) return;
+        // Unknown human mod actions can affect combat too. Automatic Ready is
+        // a protocol acknowledgement, excluded by the shared classifier; it
+        // neither invalidates a script nor starts an optional comparison.
         var battle = observedBattle;
+        if (!ExternalCombatInput.IsHumanAction(action) || battle is not CombatState combat
+            || !combat.Players.Any(player => player.NetId == action.OwnerId)) return;
         if (pending.ContainsKey(action)) return;
         pending.Add(action, Finished);
         action.AfterFinished += Finished;
@@ -45,7 +48,9 @@ internal static class KernelInputObserver
         {
             settled.AfterFinished -= Finished;
             settled.BeforeCancelled -= Cancelled;
-            pending.Remove(settled);
+            // Native callbacks are normally once, but duplicated/cancelled
+            // notifications must not manufacture multiple dirty revisions.
+            if (!pending.Remove(settled)) return;
             if (!ReferenceEquals(observedBattle, battle)) return;
             var next = Interlocked.Increment(ref revision);
             BotRuntime.ExternalInputSettled();

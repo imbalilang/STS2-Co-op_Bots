@@ -1,17 +1,18 @@
-# Co-op Bots / 联机机器人
+﻿# Co-op Bots / 联机机器人
 
 为《杀戮尖塔 2》的官方多人房间加入可配置的 AI 队友。Bot 使用真实玩家席位，通过游戏的动作队列同步出牌、选牌和局外决策。
 
 Configurable AI teammates for Slay the Spire 2's official multiplayer lobbies. Contributions from developers and coding agents are welcome; start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## 最新更新 / Latest：0.39.3（2026-10-24）
+## 最新更新 / Latest：0.39.4（2026-10-24）
 
-- 修复真人奖励界面导致 Bot 不跟随选房，以及自动回合握手误清选牌计划的问题。
-- 真人仍在行动时采用短预算比较，并从已结算盘面重新验证可用续招，减少反复完整重搜，让 Bot 能在真人结束回合前穿插出牌。
-- 补齐控制权交回、真人集火、卡牌/药水急救的计划更新，以及宝箱奖励和托管事件的多人同步。
-- 新增 17 个回归场景、31 项故障注入红绿验证；发布构建验证收据随 GitHub Release 附件提供。尚未完成两个真实游戏客户端的混合局验收，未对实机响应时间或胜率作结论。
+- 混合局恢复稳定剧本续打，真人结束前后使用同一套完整锦标赛；真人出牌不再逐张触发前台重搜。
+- 真人行动时，默认 Pro / Cheated 全队按约 1.5 秒一张卡的节奏提交；Flash 保留 0.5 秒。真人结束后取消人为间隔，按现有剧本快速收尾。
+- 混合局后台改为真人输入驱动的实际盘面比较，不阻塞可执行旧剧本；全 Bot 保留原有未来回合优化。
+- 修复完成结果重复采纳、提交前误消费游标及超时重搜循环；补齐冷开局分帧、取消、托管切换和死亡席位回归。
+- 发布构建、完整回归和故障注入证据随 GitHub Release 提供。尚未完成双客户端混合局实机验收；首次搜索、动画和同步选择仍可能延长实际出牌间隔，未对实机延迟或胜率改善作结论。
 
-Fixes mixed human/Bot room voting and automatic turn-handshake invalidation. Short searches and replay from the settled board reduce repeated full searches, allowing Bot cards before humans end their turn. Also covers control handback, manual focus, rescue continuations, and treasure/event synchronization. Includes 17 new scenarios and 31 fault-injection checks; build and full-suite evidence accompanies the GitHub Release; two-client gameplay, latency, and win-rate results remain unverified.
+Mixed tables now retain executable scripts and use the same full tournament before and after human EndTurn. A shared team clock spaces Pro / Cheated cards by about 1.5 seconds while humans act, then removes artificial delay for scripted cleanup. Human inputs drive optional current-board replanning; all-Bot future-turn optimization remains. Fixes result reuse, premature cursor consumption and deadline loops, with release validation attached on GitHub. Two-client gameplay, actual latency and win-rate improvements remain unverified.
 
 完整变更见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -32,8 +33,8 @@ Fixes mixed human/Bot room voting and automatic turn-handshake invalidation. Sho
 
 - 在官方多人大厅添加 Bot，可调整节奏和性能预算。
 - Flash、Pro、Cheated 共用算法；档位影响节奏、预算，Cheated 另有金币加成。
-- 支持全 Bot 和真人/Bot 混合桌。混合桌中的真人输入会使依赖旧盘面的计划失效，效果需单独测试。
-- Bot 可处理奖励、商店、事件、营地及路线建议。全 Bot 保留现有路线设置与搜索预算；真人行动时采用有界短比较，知识恶魔统一选择瓦解。
+- 支持全 Bot 和真人/Bot 混合桌。混合桌中的真人输入会降级旧质量证明，可执行的旧牌序继续执行，后台按实际盘面比较改进。
+- Bot 可处理奖励、商店、事件、营地及路线建议。全 Bot 保留现有路线设置与搜索预算；真人结束前后保持同一套完整锦标赛，知识恶魔统一选择瓦解。
 
 构建后将 `CoopBots.dll`、`CoopBots.Kernel.dll` 和 `mod_manifest.json` 放入游戏的 `mods/CoopBots/`，并安装匹配的 RitsuLib。构建脚本的输出与依赖路径见测试指南。
 

@@ -1,3 +1,4 @@
+using System.Reflection;
 // R2 physical refinement proof: work/architecture-refactor-20261009/r2/root-refinement-proof7-v3/proof.json
 // refinement-human-start: baseline 0 -> compiled mutant 1 -> exact restoration GREEN 0.
 // Actual RED: System.InvalidOperationException: Planner request: a living human seat must prevent speculative next-turn refinement
@@ -24,9 +25,10 @@ using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Unlocks;
 
-// Production planner entry and native simulated card replay. Only the order
-// test intercepts potion submission, so it observes planner scheduling without
-// executing a live potion. This is not a full live-game outcome oracle.
+// Production planner entry. V2 intentionally replaces historical clearing and
+// forced replay policy below with stable legal proposals and demoted quality.
+// R2 for the V2 assertions must be recorded by the serial validation owner.
+// This is not a full live-game outcome oracle.
 // R2 physical RED text and receipts are appended after the mutation runs.
 // R2 actual 2026-10-09: independent private forced Rebuild 0, named runtime RED 1,
 // exact restored source and six DLL/PDB artifacts; restored run 0.
@@ -43,12 +45,12 @@ internal static class KernelPlannerRequestScenarios
 {
     private sealed class SettledEnd(Player owner) : EndPlayerTurnAction(owner, 1)
     { protected override Task ExecuteAction() => Task.CompletedTask; }
-    private static bool potionSawRenewedRoot;
-    private static string replayObservation = "not-observed";
 
     internal static void Run(string? selected = null)
     {
         TestEnvironment.Ensure();
+        var priorTournament = KernelCombatPlanner.TournamentOverride;
+        KernelCombatPlanner.TournamentOverride = null;
         var presentation = new Harmony("coopbots.planner-request-presentation");
         var format = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Localization.LocString), "GetFormattedText");
         presentation.Patch(format, prefix: new HarmonyMethod(typeof(KernelPlannerRequestScenarios), nameof(Format)));
@@ -64,7 +66,7 @@ internal static class KernelPlannerRequestScenarios
                 if (selected is null || selected == test.Name)
                 { test.Body(); Console.WriteLine("PASS: planner request " + test.Name); }
         }
-        finally { presentation.Unpatch(format, HarmonyPatchType.All, presentation.Id); }
+        finally { presentation.Unpatch(format, HarmonyPatchType.All, presentation.Id); KernelCombatPlanner.TournamentOverride = priorTournament; }
     }
 
     private static void SettledKey()
@@ -205,14 +207,14 @@ internal static class KernelPlannerRequestScenarios
 
     private static void Reuse()
     {
-        WithPlan((planner, battle, _, _, root) => {
+        WithPlan((planner, battle, _, _, _) => {
             var request = new KernelDecisionRequest(921, 10000);
             Set(planner, "tournamentRequest", request);
+            var script = Get(planner, "tournamentScript");
             Check(!(bool)Invoke(planner, "ReviewMixedInput", battle)!, "an equal actual root needs no prefix wait");
-            var restored = (KernelSession?)Get(planner, "rootSession");
-            Check(Get(planner, "tournamentScript") is not null && restored is not null
-                && restored.PlanningState([1]).Matches(root.PlanningState([1])),
-                "planner must reuse the matched committed branch without dropping its script");
+            Check(ReferenceEquals(Get(planner, "tournamentScript"), script)
+                && (int)Get(planner, "tournamentScriptIndex")! == 0,
+                "review must leave a valid unsubmitted script and cursor intact");
             Check(ReferenceEquals(Get(planner, "tournamentRequest"), request) && !request.IsCancelled,
                 "a successful reuse cannot replace or cancel the current deadline");
         });
@@ -220,72 +222,38 @@ internal static class KernelPlannerRequestScenarios
 
     private static void RerootReplay()
     {
-        WithPlan((planner, battle, owner, enemy, root) => {
-            // This case tests completed replay evidence. Warm the native
-            // two-seat card path on an isolated branch before opening its
-            // request; a cold atomic step may legitimately consume the 120ms
-            // proposal phase and leave no complete result to adopt.
-            var oldScript = (IReadOnlyList<KernelTeamSearch.Action>)Get(planner, "tournamentScript")!;
-            var warm = new KernelScriptReplayRun(root, battle.Players.ToArray(),
-                new(oldScript[0], (TerminalRecord)Get(planner, "tournamentScriptRecord")!, [], 0, 0, "fixture-warmup")
-                { Script = oldScript }, 80);
-            for (var i = 0; !warm.Done && i < 10; i++) warm.Advance(TimeSpan.FromMilliseconds(6));
+        WithPlan((planner, battle, _, enemy, _) => {
             var request = new KernelDecisionRequest(922, 10000);
             Set(planner, "tournamentRequest", request);
+            var script = Get(planner, "tournamentScript");
             enemy.SetCurrentHpInternal(12);
-            Check(!(bool)Invoke(planner, "ReviewMixedInput", battle)!, "changed actual root completes a zero-prefix review");
-            Check(Get(planner, "tournamentScript") is null
+            planner.NoteMixedInput();
+            Check(!(bool)Invoke(planner, "ReviewMixedInput", battle)!,
+                "changed human state must not introduce a foreground replay wait");
+            Check(ReferenceEquals(Get(planner, "tournamentScript"), script)
+                && (int)Get(planner, "tournamentScriptIndex")! == 0
                 && ReferenceEquals(Get(planner, "tournamentRequest"), request) && !request.IsCancelled,
-                "a cache miss must discard the old script while preserving the current absolute deadline");
-            var proposal = (TournamentResult?)Get(planner, "mixedProposal");
-            Check(proposal is { Record.Victory: false, Record.Verified: false }
-                && !proposal.IsFor(request) && proposal.Script is { Count: 2 },
-                "old victory evidence must be demoted to an untrusted suffix proposal");
-            var actual = KernelCombatCapture.Capture(battle);
-            Set(planner, "tournamentRoot", actual); Set(planner, "tournamentParty", battle.Players.ToArray());
-            Set(planner, "tournamentActors", new[] { owner });
-            var phase = AccessTools.Field(typeof(KernelCombatPlanner), "tournamentPhase");
-            phase.SetValue(planner, Enum.Parse(phase.FieldType, "NoPotions"));
-            Set(planner, "tournamentOptions", new TournamentOptions { Request = request });
-            var replayObserver = new Harmony("coopbots.planner-proposal-observer");
-            var advance = AccessTools.Method(typeof(KernelScriptReplayRun), nameof(KernelScriptReplayRun.Advance));
-            replayObservation = "not-observed";
-            replayObserver.Patch(advance, postfix: new HarmonyMethod(typeof(KernelPlannerRequestScenarios), nameof(ReplayObserved)));
-            var ticks = 0;
-            try { while ((bool)Invoke(planner, "ReplayMixedProposal")! && ticks++ < 1000) { } }
-            finally { replayObserver.Unpatch(advance, HarmonyPatchType.All, replayObserver.Id); }
-            var renewed = ((TournamentOptions)Get(planner, "tournamentOptions")!).ReferenceResult;
-            Console.WriteLine($"Planner proposal observation: ticks={ticks} {replayObservation} requestStop={request.StopReason} renewed={renewed?.Record}");
-            Check(renewed is { Record.Verified: true, Record.Victory: true } && renewed.IsFor(request)
-                && Get(planner, "mixedProposal") is null,
-                "only a complete native replay from the changed actual root can renew proposal provenance");
+                "changed actual root retains the legal old script and existing absolute deadline");
+            var forecast = (TerminalRecord?)Get(planner, "tournamentScriptRecord");
+            Check(forecast is { Victory: false, Verified: false },
+                "a retained historical script cannot keep a current verified victory after live state changes");
+            Check(Get(planner, "mixedProposalReplay") is null,
+                "human input cannot force a foreground suffix replay before the next legal card");
         });
-    }
-
-    private static void ReplayObserved(KernelScriptReplayRun __instance)
-    {
-        var state = (KernelSession)AccessTools.Field(typeof(KernelScriptReplayRun), "state").GetValue(__instance)!;
-        var actions = (System.Collections.ICollection)AccessTools.Field(typeof(KernelScriptReplayRun), "actions").GetValue(__instance)!;
-        replayObservation = $"done={__instance.Done} failure={__instance.Failure} actions={actions.Count} "
-            + $"enemies=[{string.Join(',', state.Enemies.Select(e => state.Hp(e)))}] result={__instance.Result?.Record}";
     }
 
     private static void Order()
     {
         WithPlan((planner, battle, owner, enemy, _) => {
             enemy.SetCurrentHpInternal(12);
-            potionSawRenewedRoot = false;
-            var ordering = new Harmony("coopbots.planner-request-order");
-            var method = AccessTools.Method(typeof(KernelCombatPlanner), "TryPotionOpportunity");
-            ordering.Patch(method, prefix: new HarmonyMethod(typeof(KernelPlannerRequestScenarios), nameof(PotionAfterReview)));
-            try
-            {
-                Invoke(planner, "TryTournamentDecision", battle, new[] { owner }, false,
-                    KernelCombatPlanner.TournamentDecisionPoint(battle, 1), null);
-                Check(potionSawRenewedRoot,
-                    "new decision must review settled mixed input before using a cached potion forecast");
-            }
-            finally { ordering.Unpatch(method, HarmonyPatchType.All, ordering.Id); }
+            planner.NoteMixedInput();
+            var old = Get(planner, "tournamentScript");
+            var status = planner.Poll(battle, [owner], 1, null, false, BotDifficulty.Pro, out var decision);
+            Check(status == KernelCombatPlanner.Status.Ready && decision?.Player == owner
+                && ReferenceEquals(Get(planner, "tournamentScript"), old)
+                && Get(planner, "tournamentScriptRecord") is TerminalRecord { Victory: false, Verified: false },
+                "production Poll reviews historical quality while continuing the legal card without bottle or root-search waits"
+                + $" status={status} card={decision?.Move.Card.Id.Entry} sameScript={ReferenceEquals(Get(planner, "tournamentScript"), old)} record={Get(planner, "tournamentScriptRecord")}");
         });
     }
 
@@ -294,12 +262,18 @@ internal static class KernelPlannerRequestScenarios
         WithPlan((planner, battle, _, enemy, _) => {
             var request = new KernelDecisionRequest(923, 10000);
             Set(planner, "tournamentRequest", request);
+            var script = (IReadOnlyList<KernelTeamSearch.Action>)Get(planner, "tournamentScript")!;
             enemy.SetCurrentHpInternal(12); AutoPilot.Set(battle.Players[1].NetId, true);
-            Check(!(bool)Invoke(planner, "ReviewMixedInput", battle)!
-                && Get(planner, "tournamentScript") is null
-                && Get(planner, "mixedProposal") is TournamentResult { Record.Verified: false }
-                && ReferenceEquals(Get(planner, "tournamentRequest"), request),
-                "handing the last human seat to a Bot must renew the old mixed plan's control domain");
+            planner.NoteMixedInput();
+            var pending = (bool)Invoke(planner, "ReviewMixedInput", battle)!;
+            var current = (IReadOnlyList<KernelTeamSearch.Action>?)Get(planner, "tournamentScript");
+            Check(!pending && current is not null && current.SequenceEqual(script)
+                && (int)Get(planner, "tournamentScriptIndex")! == 0
+                && Get(planner, "tournamentScriptRecord") is TerminalRecord { Verified: false }
+                && ReferenceEquals(Get(planner, "tournamentRequest"), request)
+                && Get(planner, "refinement") is not null
+                && ReferenceEquals(Get(planner, "refinementScript"), current),
+                "gaining the last human seat retains the same unsubmitted actions, retires old quality and restarts future optimization on that actual-root suffix");
         });
     }
 
@@ -333,14 +307,6 @@ internal static class KernelPlannerRequestScenarios
         });
     }
 
-    private static bool PotionAfterReview(KernelCombatPlanner __instance, ref bool __result)
-    {
-        potionSawRenewedRoot = Get(__instance, "tournamentScript") is null
-            && Get(__instance, "mixedProposal") is TournamentResult { Record.Verified: false }
-            && Get(__instance, "tournamentRequest") is KernelDecisionRequest { IsCancelled: false };
-        __result = true; return false;
-    }
-
     private static void WithPlan(Action<KernelCombatPlanner, CombatState, Player,
         MegaCrit.Sts2.Core.Entities.Creatures.Creature, KernelSession> body)
     {
@@ -353,6 +319,8 @@ internal static class KernelPlannerRequestScenarios
         var ownerDriven = AutoPilot.IsAutopiloted(owner.NetId); var humanDriven = AutoPilot.IsAutopiloted(human.NetId);
         AutoPilot.Set(owner.NetId, true); AutoPilot.Set(human.NetId, false);
         var planner = new KernelCombatPlanner();
+        using var native = (IDisposable)Activator.CreateInstance(AccessTools.Inner(typeof(KernelPlanningFactsScenarios), "NativeFactsState"),
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, [battle], null)!;
         try
         {
             var root = KernelCombatCapture.Capture(battle);

@@ -1,3 +1,8 @@
+// V2 R2 actual 2026-10-24: production mutant build0 / named RED1 /
+// exact source restore / rebuild0 / named GREEN0. Receipt:
+// work/v2-validation/r2/receipts.json (only passed=true records below).
+// complete-replay-keeps-estimate:
+// System.InvalidOperationException: Request lifecycle: a complete nonterminal replay crossing its computation stop must retain its completed same-root candidate
 using System.Reflection;
 using CoopBots.Kernel;
 using CoopBots.Kernel.Vendor.Engine.InCombat.Simulation;
@@ -56,6 +61,7 @@ internal static class KernelRequestLifecycleScenarios
             if (only is null or "generation") GenerationsAndIncumbents();
             if (only is null or "replay-audit") ReplayAndAuditStops();
             if (only is null or "foreground") ForegroundStops();
+            if (only is null or "replay-completed-stop") ReplayCompletedAtStop();
         }
         finally
         {
@@ -491,6 +497,42 @@ internal static class KernelRequestLifecycleScenarios
         EnableJointSearch: false) { Request = request };
     private static RolloutOptions Cheap() => new(RolloutPolicyKind.Kill) {
         InvestmentLookahead = false, SequenceLookahead = false, SequenceHandLookahead = false };
+
+    private static void ReplayCompletedAtStop()
+    {
+        var (root, owner, enemy) = Board(30, 1);
+        var original = root.PartyStateText();
+        var card = root.Hand(owner).Single();
+        var action = new KernelTeamSearch.Action(owner, card, enemy, CardStateKey: root.CardStateKey(card));
+        var candidate = new TournamentResult(action, TerminalRecord.Capture(root, [owner], false, "fixture-reference"),
+            [], 0, 0, "fixture-reference") { Script = [action] };
+        var expired = new KernelDecisionRequest(7461, 0);
+        nativeCalls = 0; observeNative = true;
+        try
+        {
+            var neverStarted = new KernelScriptReplayRun(root, [owner], candidate, 80, expired);
+            for (var i = 0; i < 20; i++) neverStarted.Advance(TimeSpan.Zero);
+            Check(neverStarted.Done && neverStarted.Result is null && nativeCalls == 0
+                && neverStarted.Failure == "request-deadline" && root.PartyStateText() == original,
+                "zero-step replay must stop once at an expired deadline without native work or a Pending loop");
+            var request = new KernelDecisionRequest(7462, 10000);
+            // A deterministic phase cutoff becomes true inside the paid native
+            // wrapper. This is the same post-transaction stop boundary as an
+            // elapsed request, without wall-clock sleeps in this regression.
+            var completed = new KernelScriptReplayRun(root, [owner], candidate, 80, request) {
+                StopRequested = () => nativeCalls > 0 };
+            completed.Advance(TimeSpan.Zero);
+            var result = completed.Result;
+            Check(completed.Done && nativeCalls == 1 && result is { Record.Verified: false, Record.RemainingEnemyHp: 24 }
+                && result.Script?.Count == 1 && result.IsFor(request) && root.PartyStateText() == original,
+                "a complete nonterminal replay crossing its computation stop must retain its completed same-root candidate");
+            for (var i = 0; i < 20; i++) completed.Advance(TimeSpan.FromMilliseconds(1));
+            Check(ReferenceEquals(completed.Result, result) && nativeCalls == 1,
+                "polling a completed stopped replay must not repeat its native action or republish another result");
+        }
+        finally { observeNative = false; }
+        Console.WriteLine("PASS: replay deadlines stop zero-step work and retain exactly one fully settled nonterminal result.");
+    }
 
     private static void ForegroundStops()
     {

@@ -1,3 +1,11 @@
+// V2 R2 actual 2026-10-24: production mutant build0 / named RED1 /
+// exact source restore / rebuild0 / named GREEN0. Receipt:
+// work/v2-validation/r2/receipts.json (only passed=true records below).
+// The native scenario covers all three mismatch axes. This mutation
+// replaces axis selection with unknown and hits to-round first;
+// it is one valid mutation proof, not three independent RED runs.
+// turn-start-diagnostic-axis:
+// System.InvalidOperationException: Turn-start contract: a real native transition mismatch must identify its exact to-round axis and retain the other clock/consumption facts: turn-start-contract:unconsumed-or-transition:axis=unknown expectedToRound=3 actualToRound=2 expectedOwners=[16101:2,16102:2,16103:2,16104:2] actualOwners=[16101:2,16102:2,16103:2,16104:2] choicesConsumed=1/1
 using System.Reflection;
 using CoopBots;
 using CoopBots.Kernel;
@@ -53,6 +61,7 @@ internal static class TurnStartChoiceContractScenarios
             if (only is null or "unconsumed") NativeGuard("unconsumed");
             if (only is null or "duplicate") DuplicatePhysicalToken();
             if (only is null or "horizon") HorizonReplay();
+            if (only is null or "transition-diagnostics") TransitionDiagnostics();
         }
         finally { presentation.UnpatchAll(presentation.Id); }
     }
@@ -198,6 +207,38 @@ internal static class TurnStartChoiceContractScenarios
         b.AdvanceNative();
         CompareNativeReplay(b, actions, root);
         Console.WriteLine("PASS: short-horizon exact replay and explicit native Tools continuation preserve the recorded boundary.");
+    }
+
+    private static void TransitionDiagnostics()
+    {
+        using var b = new BoardScope(ordinaryEnergy: true);
+        var prediction = b.PredictExpired();
+        var original = prediction.Contract;
+        Check(original.OwnersTurnNumbers.Count == 4 && original.Choices.Count == 1,
+            "transition diagnostic fixture must record four real owner turns and the native Tools answer");
+        foreach (var axis in new[] { "to-round", "owner-turn-numbers", "choices-consumed" })
+        {
+            var owners = original.OwnersTurnNumbers.ToDictionary(p => p.Key, p => p.Value);
+            if (axis == "owner-turn-numbers") owners[b.Party[0].NetId]++;
+            var altered = axis switch {
+                "to-round" => original with { ToRound = original.ToRound + 1 },
+                "owner-turn-numbers" => original with { OwnersTurnNumbers = owners },
+                _ => original with { Choices = [original.Choices[0], original.Choices[0]] },
+            };
+            var replay = prediction.Root.Fork();
+            foreach (var action in prediction.Actions.Take(prediction.Actions.Count - 1))
+                Check(replay.ReplayPlanned(action, 80, out var early), "early native owner end remains exact: " + early);
+            var last = prediction.Actions[^1] with { TurnStartChoices = altered };
+            Check(!replay.ReplayPlanned(last, 80, out var why)
+                && why.StartsWith("turn-start-contract:unconsumed-or-transition:axis=" + axis + " ", StringComparison.Ordinal)
+                && why.Contains("expectedToRound=", StringComparison.Ordinal) && why.Contains("actualToRound=", StringComparison.Ordinal)
+                && why.Contains("expectedOwners=[", StringComparison.Ordinal) && why.Contains("actualOwners=[", StringComparison.Ordinal)
+                && why.Contains("choicesConsumed=", StringComparison.Ordinal)
+                && replay.LastTurnStartChoices is { Complete: false },
+                "a real native transition mismatch must identify its exact " + axis + " axis and retain the other clock/consumption facts: " + why);
+            Console.WriteLine("DIAG native turn-start mismatch " + why);
+        }
+        Console.WriteLine("PASS: native turn-start mismatch diagnostics distinguish round, owner-turn and unconsumed-choice axes without weakening the contract.");
     }
 
     private static void DuplicatePhysicalToken()

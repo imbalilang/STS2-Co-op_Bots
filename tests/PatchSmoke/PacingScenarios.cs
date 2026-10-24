@@ -16,13 +16,13 @@ internal static class PacingScenarios
         var pace = Activator.CreateInstance(type, true)!;
         var observe = type.GetMethod("Observe", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var due = type.GetMethod("IsDue", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        var mark = type.GetMethod("MarkAction", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var mark = type.GetMethod("MarkCardSubmitted", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var reset = type.GetMethod("Reset", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var combat = new object();
         void Observe(int round, long now) => observe.Invoke(pace, new object[] { combat, round, now });
         bool Due(long now, bool finished = false, bool paused = false, int interval = Pro)
             => (bool)due.Invoke(pace, new object[] { now, finished, paused, interval })!;
-        void Mark(long now, long planStarted = 0) => mark.Invoke(pace, new object[] { now, planStarted == 0 ? now : planStarted });
+        void Mark(long now) => mark.Invoke(pace, new object[] { now });
         Observe(1, 1000);
         Check(!Due(2499) && Due(2500), "Pro bots must start after 1.5 seconds while a human is still deciding.");
         Mark(2500);
@@ -47,16 +47,21 @@ internal static class PacingScenarios
         Mark(40_500);
         Check(Due(40_500, true, false, Flash), "Flash cleanup must not wait either.");
 
-        // A slow plan is not charged twice: in the human-facing phase the wait is
-        // shortened by how long the search actually took.
+        // Planning and the submit clock overlap in Runtime; computation never
+        // earns a discount on the spacing of two successfully queued cards.
         Observe(4, 50_000);
-        Mark(50_000, 50_000);
-        Check(!Due(51_499) && Due(51_500), "Pro mode must keep 1.5 seconds between actions when the plan was short.");
-        Mark(51_500, 50_700);
-        Check(!Due(52_199) && Due(52_200), "An 800 ms plan must shorten the wait to the remaining 700 ms, not pay 1.5 s on top.");
-        Mark(52_000, 0);
-        Check(!Due(53_499) && Due(53_500), "A missing plan stamp must not shorten the human-facing wait.");
-        Console.WriteLine("PASS: Pro 1.5s / Flash 0.5s while a human decides, no wait once everyone has finished, pause override, round/reload resets, plan time overlaps the wait.");
+        foreach (var planMs in new[] { 0, 200, 800 })
+        {
+            var submittedAt = 50_000 + planMs;
+            Mark(submittedAt);
+            Check(!Due(submittedAt + 1499) && Due(submittedAt + 1500),
+                $"A {planMs} ms plan must retain a full 1500 ms between actual card submissions.");
+        }
+        Mark(60_000);
+        Check(Due(70_000), "A delayed card must be immediately eligible once preparation or animation settles.");
+        Mark(70_000);
+        Check(!Due(70_001) && Due(71_500), "A late card restarts the clock without catch-up bursts.");
+        Console.WriteLine("PASS: Pro 1.5s / Flash 0.5s while a human decides, no wait once everyone has finished, pause override, round/reload resets, no planning discount or catch-up bursts.");
     }
     private static void Check(bool ok, string message) { if (!ok) throw new Exception(message); }
 }

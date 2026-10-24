@@ -83,7 +83,8 @@ public sealed partial class KernelSession
                     || turnStartReplayIndex != expected.Choices.Count)
                 {
                     success = false;
-                    boundary = failedBoundary = "turn-start-contract:unconsumed-or-transition";
+                    boundary = failedBoundary = TurnStartTransitionMismatch(expected,
+                        Combat.RoundNumber, owners, turnStartReplayIndex);
                 }
             }
             if (turnStartReplayFailure is not null)
@@ -104,6 +105,23 @@ public sealed partial class KernelSession
             turnStartJournal = null; turnStartOwners = null; turnStartReplay = null;
             turnStartReplayFailure = null; turnStartChoiceOwner = null;
         }
+    }
+
+    // A mismatch here is not necessarily a menu-token failure. Preserve all
+    // three transition facts so a historical replay cannot hide a wrong round,
+    // extra turn, or unconsumed answer behind one ambiguous refusal label.
+    private static string TurnStartTransitionMismatch(KernelTurnStartChoiceContract expected,
+        int actualRound, IReadOnlyDictionary<ulong, int> actualOwners, int consumed)
+    {
+        var sameOwners = expected.OwnersTurnNumbers.Count == actualOwners.Count
+            && expected.OwnersTurnNumbers.All(p => actualOwners.TryGetValue(p.Key, out var turn) && turn == p.Value);
+        var axis = expected.ToRound != actualRound ? "to-round" : !sameOwners ? "owner-turn-numbers" : "choices-consumed";
+        static string Owners(IReadOnlyDictionary<ulong, int> owners)
+            => string.Join(',', owners.OrderBy(p => p.Key).Select(p => $"{p.Key}:{p.Value}"));
+        return $"turn-start-contract:unconsumed-or-transition:axis={axis} "
+            + $"expectedToRound={expected.ToRound} actualToRound={actualRound} "
+            + $"expectedOwners=[{Owners(expected.OwnersTurnNumbers)}] actualOwners=[{Owners(actualOwners)}] "
+            + $"choicesConsumed={consumed}/{expected.Choices.Count}";
     }
 
     // Forecasting beyond a verified short prefix is a NEW prediction. The

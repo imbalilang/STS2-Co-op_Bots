@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -954,6 +954,10 @@ internal sealed partial class KernelCombatPlanner
             // stops a half-finished run from being resumed against a board that no longer exists.
             ClearTournament();
             ClearTournamentScript("new combat");
+            ClearMixedReplan("new combat", newCombat: true);
+            AbandonPreparedSubmission("new combat");
+            mixedPhysicalCards.Clear();
+            mixedStoppedPoint = null;
             mixedProposal = null; mixedProposalReplay = null; mixedProposalClock = null;
             openingSearch = true;
             planCommitted = false;
@@ -1049,7 +1053,23 @@ internal sealed partial class KernelCombatPlanner
         ConfirmedEndTurn = null;
         ConfirmedEndTurnChoices = null;
 
+        if (HasPreparedSubmission)
+        {
+            ReviewMixedInput(combat);
+            if (HasPreparedSubmission && PreparedSubmissionStillExecutable(combat))
+                return PollPreparedSubmission(humansFinished, out decision);
+            AbandonPreparedSubmission("prepared proposal no longer executable");
+        }
         if (actors.Count == 0) { Reset(); return Status.Ready; }
+        if (TournamentDrives(combat, actors) && MixedTable(combat) && !HasTournamentScript && NoAvailableCombatAction(actors))
+        {
+            ClearTournament("mixed table has no executable card or potion");
+            tournamentPoint = null;
+            LastNoAction = NoActionKind.Idle;
+            if (!humansFinished) return Status.Pending;
+            ConfirmedEndTurn = actors.FirstOrDefault(p => p.Creature.IsAlive);
+            return Status.Ready;
+        }
         if (TournamentDrives(combat, actors))
         {
             UpdateManualFocus(combat, manualFocus);
@@ -2628,6 +2648,7 @@ internal sealed partial class KernelCombatPlanner
                 + $"budget={request.BudgetMs} wall={request.ElapsedMs:F1}ms remaining={request.RemainingMs}ms "
                 + $"stop={request.StopReason} active={request.ActiveJobs} queued={request.QueuedJobs} "
                 + $"peakActive={request.PeakActiveJobs} completedJobs={request.CompletedJobs}");
+        if (tournamentRequest is { } accounted) AccountMixedForegroundRequest(accounted);
         tournamentRequest?.Cancel(reason);
         tournamentRun?.Cancel(reason);
         if (emergencyPotionPending)
@@ -2689,7 +2710,7 @@ internal sealed partial class KernelCombatPlanner
         {
             tournamentScript = script;
             tournamentScriptRecord = result.Record;
-            tournamentScriptIndex = 1;
+            tournamentScriptIndex = MixedTable(combat) ? 0 : 1;
             tournamentScriptCombat = combat;
             tournamentScriptRound = combat.RoundNumber;
             victoryCheckedRound = combat.RoundNumber;
@@ -2697,7 +2718,7 @@ internal sealed partial class KernelCombatPlanner
                 && result.Record is not { Victory: true, Verified: true };
             tournamentScriptAliveStates = aliveStates;
             tournamentScriptEnemyStates = result.ScriptEnemyStates;
-            CaptureMixedContinuation(tournamentRoot, combat, script);
+            CaptureMixedContinuation(tournamentRoot, combat, script, tournamentScriptIndex);
             StartRefinement(tournamentRoot, combat, script);
             ReportSearchLine($"tournament script cached: steps={script.Count} "
                 + $"ending={Describe(result.Record)}");
@@ -2708,9 +2729,11 @@ internal sealed partial class KernelCombatPlanner
 
     private void ClearTournamentScript(string reason)
     {
+        AbandonPreparedSubmission(reason);
         if (tournamentScript is null) return;
         ReportSearchLine($"tournament script dropped: {reason}");
         tournamentScript = null;
+        mixedHistoricalScript = null;
         tournamentScriptRecord = null;
         victoryReview = null; victoryReviewRoot = null; victoryReviewStamp = null; victoryCheckedRound = 0;
         tournamentScriptIndex = 0;
@@ -2811,13 +2834,14 @@ internal sealed partial class KernelCombatPlanner
             ClearTournamentScript("the combat changed");
             return false;
         }
-        TryAdoptRefinement(combat);
+        if (!MixedTable(combat)) TryAdoptRefinement(combat);
         if (ReviewMixedInput(combat)) return false;
         if (tournamentScript is null) return false;
-        if (ReviewVictoryAtRound(combat)) return false;
+        var mixed = UsesMixedExecution(combat);
+        if (!mixed && ReviewVictoryAtRound(combat)) return false;
         if (tournamentScript is null) return false;
         script = tournamentScript!;
-        if (tournamentReplanNextRound && combat.RoundNumber != tournamentScriptRound)
+        if (!mixed && tournamentReplanNextRound && combat.RoundNumber != tournamentScriptRound)
         {
             ClearTournamentScript("new round: reconsider a non-winning continuation with joint search");
             return false;
@@ -2826,9 +2850,9 @@ internal sealed partial class KernelCombatPlanner
         // death: the next step may legitimately expect a seat to be gone. Continue only while the
         // live set matches that step's prediction; a death earlier/later than the script planned,
         // or a different seat, drops the script and lets the fresh tournament re-plan.
-        if (tournamentScriptAliveStates is not { } aliveStates
+        if (!mixed && (tournamentScriptAliveStates is not { } aliveStates
             || tournamentScriptIndex >= aliveStates.Count
-            || !SameSeats(aliveStates[tournamentScriptIndex], LivingSeats(combat)))
+            || !SameSeats(aliveStates[tournamentScriptIndex], LivingSeats(combat))))
         {
             ClearTournamentScript(SeatSetDiff(tournamentScriptAliveStates, combat));
             return false;
@@ -2839,9 +2863,9 @@ internal sealed partial class KernelCombatPlanner
         // went unnoticed live on 2026-09-26: a two-enemy Toadpole fight where the party spent
         // three rounds on the healthy one and finished the near-dead one last, taking its
         // damage the whole time. See RunContinuationInvariants for the assertion.
-        if (tournamentScriptEnemyStates is not { } enemyStates
+        if (!mixed && (tournamentScriptEnemyStates is not { } enemyStates
             || tournamentScriptIndex >= enemyStates.Count
-            || !EnemiesStillMatch(enemyStates[tournamentScriptIndex], combat))
+            || !EnemiesStillMatch(enemyStates[tournamentScriptIndex], combat)))
         {
             ClearTournamentScript(EnemySetDiff(tournamentScriptEnemyStates, combat));
             return false;
@@ -2851,7 +2875,7 @@ internal sealed partial class KernelCombatPlanner
             ClearTournamentScript("exhausted");
             return false;
         }
-        if (CompareShortVictory(combat, actors)) return false;
+        if (!mixed && CompareShortVictory(combat, actors)) return false;
         var next = script[tournamentScriptIndex];
         if (!actors.Contains(next.Player) || !next.Player.Creature.IsAlive)
         {
@@ -2872,12 +2896,12 @@ internal sealed partial class KernelCombatPlanner
             }
             // Verified wins keep their line. Losing ends get one bounded,
             // cached comparison against actual round settlement (2026-10-04).
-            if (tournamentScriptRecord is not { Verified: true, Victory: true }
+            if (!mixed && tournamentScriptRecord is not { Verified: true, Victory: true }
                 && CompareLosingEndTurn(combat, next.Player)) return false;
             ConfirmedEndTurn = next.Player;
             ConfirmedEndTurnChoices = next.TurnStartChoices;
             noActionStamp = "";
-            tournamentScriptIndex++;
+            PrepareTournamentSubmission();
             tournamentDriven++;
             ReportSearchLine($"tournament script: end-turn step {stepLabel}");
             return true;
@@ -2903,7 +2927,7 @@ internal sealed partial class KernelCombatPlanner
                 $"kernel-tournament-script:potion:{livePotion.Id.Entry},step:{stepLabel}", next.Choices)
                 { TurnStartChoices = next.TurnStartChoices };
             noActionStamp = "";
-            tournamentScriptIndex++;
+            PrepareTournamentSubmission();
             tournamentDriven++;
             ReportSearchLine($"tournament script: potion {livePotion.Id.Entry} step {stepLabel}");
             return true;
@@ -2917,7 +2941,9 @@ internal sealed partial class KernelCombatPlanner
         // P0-SIM-2: the step is only the VERIFIED step when the resolved card's live state
         // key still equals the planned one. `card-state-changed` names a card that is in
         // hand (same object) but was upgraded / re-costed / enchanted since verification.
-        var card = KernelSession.ResolvePlannedCard(next.Player, next.Card, next.CardStateKey, next.CardStateOccurrence, out var resolveRefusal);
+        string resolveRefusal;
+        var card = mixed ? ResolveMixedPhysicalCard(next, out resolveRefusal)
+            : KernelSession.ResolvePlannedCard(next.Player, next.Card, next.CardStateKey, next.CardStateOccurrence, out resolveRefusal);
         if (card is null)
         {
             ClearTournamentScript($"the planned card is no longer playable: reason={resolveRefusal} card={next.Card.Id.Entry} "
@@ -2934,13 +2960,14 @@ internal sealed partial class KernelCombatPlanner
                 + $"hand={string.Join(',', next.Player.PlayerCombatState?.Hand.Cards.Select(c => c.Id.Entry) ?? [])}");
             return false;
         }
-        tournamentScriptIndex++;
+        var emittedIndex = tournamentScriptIndex + 1;
         tournamentDriven++;
         decision = new TeamCombatPlanner.Decision(next.Player,
             new(card, target, 0.0,
-                $"kernel-tournament-script:step:{tournamentScriptIndex}/{script.Count}",
+                $"kernel-tournament-script:step:{emittedIndex}/{script.Count}",
                 next.Choices) { TurnStartChoices = next.TurnStartChoices },
-            script.Count - tournamentScriptIndex);
+            script.Count - emittedIndex);
+        PrepareTournamentSubmission(decision);
         ReportSearchLine($"tournament script: play {card.Id.Entry} step {stepLabel}");
         return true;
     }
@@ -2952,7 +2979,7 @@ internal sealed partial class KernelCombatPlanner
         {
             tournamentWatch ??= Stopwatch.StartNew();
             tournamentRequest ??= new KernelDecisionRequest(++tournamentRootGeneration,
-                checked(2 * DecisionPassBudget(combat, humansFinished)), DecisionConcurrency(combat, humansFinished));
+                MixedTable(combat) ? MixedRemainingDecisionBudget(combat) : checked(2 * DecisionPassBudget(combat, humansFinished)), DecisionConcurrency(combat, humansFinished));
             // C replans after every live action. rootSession belongs to the segmented
             // search and can describe an already-played hand or a previous combat.
             var root = KernelCombatCapture.Capture(combat);
@@ -2986,7 +3013,7 @@ internal sealed partial class KernelCombatPlanner
                 MaxDegreeOfParallelism: TournamentParallelism,
                 Objective: KernelPotionPolicy.Objective,
                 ContinuationActors: combat.Players.Where(p => actors.Contains(p) || AutoPilot.Drives(p.NetId)).ToArray(),
-                EnableJointSearch: true) { Request = tournamentRequest };
+                EnableJointSearch: true) { Request = tournamentRequest, MixedIncrementalOpenings = MixedTable(combat) };
             tournamentOptions = WithMixedFocusOptions(InteractiveOptions(tournamentOptions));
             tournamentPhase = TournamentPhase.NoPotions;
             // The DECISION starts here, before the first pass, so both passes land in one
@@ -3065,6 +3092,13 @@ internal sealed partial class KernelCombatPlanner
         decision = null;
         try
         {
+            if (UsesMixedExecution(combat) && HasTournamentScript)
+            {
+                if (TryEmitFromTournamentScript(combat, actors, humansFinished, out decision))
+                    return TournamentOutcome.Decided;
+                if (tournamentScript is not null) return TournamentOutcome.Pending;
+            }
+            if (MixedTable(combat) && mixedStoppedPoint == point) return TournamentOutcome.Pending;
             // The board moved, so anything in flight describes a position that no longer
             // exists. `point` is the same key the decline memo uses.
             if (tournamentPoint != point)
@@ -3076,7 +3110,7 @@ internal sealed partial class KernelCombatPlanner
                 // including potion rescue and cached-line reviews before the
                 // ordinary tournament passes. Capture/JIT remain atomic.
                 tournamentRequest = new(++tournamentRootGeneration,
-                    checked(2 * DecisionPassBudget(combat, humansFinished)), DecisionConcurrency(combat, humansFinished));
+                    MixedTable(combat) ? MixedRemainingDecisionBudget(combat) : checked(2 * DecisionPassBudget(combat, humansFinished)), DecisionConcurrency(combat, humansFinished));
             }
 
             // The existing boundary contract must renew or retire this
@@ -3146,6 +3180,17 @@ internal sealed partial class KernelCombatPlanner
                     Log.Info($"CoopBots potion comparison: replayed={tournamentPotionReplay.Completed} "
                         + $"compute={tournamentPotionReplay.ComputeMs:F0}ms preserved-reference=true");
                 }
+                if (tournamentRequest is { IsStopped: true } stopped && tournamentRun is null)
+                {
+                    Log.Info($"CoopBots tournament: stopped before new phase — {stopped.StopReason}");
+                    if (MixedTable(combat) && !stopped.IsCancelled)
+                    {
+                        if (tournamentFirstPass is { FirstAction: not null } completed)
+                            return InstallCompletedMixedResult(completed, combat, actors, humansFinished, out decision);
+                        return ParkStoppedMixedSearch(point, stopped.StopReason);
+                    }
+                    return FinishTournament(TournamentOutcome.Declined);
+                }
                 if (tournamentRun is null && !BeginTournamentPhase(combat, actors, humansFinished))
                 {
                     return FinishTournament(TournamentOutcome.Declined);
@@ -3186,7 +3231,8 @@ internal sealed partial class KernelCombatPlanner
                 {
                     tournamentBaselineComputeMs = tournamentRun?.ComputeMs ?? 0;
                     tournamentFirstPass = result;
-                    if (!tournamentInteractive && KernelPotionPolicy.WorthComparing(tournamentRoot!, tournamentActors!, tournamentParty!, result.Record))
+                    if ((!MixedTable(combat) || !currentRequest.IsStopped)
+                        && KernelPotionPolicy.WorthComparing(tournamentRoot!, tournamentActors!, tournamentParty!, result.Record))
                     {
                         // Losing or costly victory: compare the resource-adjusted ending.
                         tournamentRun = null;
@@ -3244,6 +3290,10 @@ internal sealed partial class KernelCombatPlanner
                 var next = result.FirstAction;
                 if (next is null)
                 {
+                    if (MixedTable(combat) && (currentRequest.DeadlineReached
+                        || result.StopReason.Contains("deadline", StringComparison.Ordinal)
+                        || result.StopReason.Contains("budget", StringComparison.Ordinal)))
+                        return ParkStoppedMixedSearch(point, result.StopReason);
                     // A stored line was already tried at the top of the loop, so there is
                     // nothing left to fall back to here.
                     Log.Info($"CoopBots tournament: declined — {result.StopReason}");
@@ -3260,11 +3310,17 @@ internal sealed partial class KernelCombatPlanner
                 // end-turn out of the candidate list while a human is acting, but a cached
                 // first pass or a stale decision must not reach the executor either — BotRuntime
                 // would refuse it and the same decision point would be recomputed every tick.
-                if (next.EndTurn && !TournamentCanEndTurn(combat, humansFinished))
+                if (!MixedTable(combat) && next.EndTurn && !TournamentCanEndTurn(combat, humansFinished))
                 {
                     Log.Info("CoopBots tournament: declined — an end-turn decision arrived while "
                         + "a human is still acting");
                     return FinishTournament(TournamentOutcome.Declined);
+                }
+                if (MixedTable(combat))
+                {
+                    // Retire the readable completed result before parking or emitting.
+                    // Its clock limits computation; it never limits this script's lifetime.
+                    return InstallCompletedMixedResult(result, combat, actors, humansFinished, out decision);
                 }
                 AdoptTournamentScript(result, combat);
                 if (next.EndTurn)
@@ -3272,7 +3328,7 @@ internal sealed partial class KernelCombatPlanner
                     // Route fresh and cached EndTurn through the same sliced
                     // comparison. Adoption normally assumes action zero played.
                     if (tournamentScript is not null)
-                    { tournamentScriptIndex = 0; return TournamentOutcome.Pending; }
+                    { tournamentScriptIndex = 0; return FinishTournament(TournamentOutcome.Pending); }
                     ConfirmedEndTurn = next.Player;
                     ConfirmedEndTurnChoices = next.TurnStartChoices;
                     tournamentDriven++;
@@ -3348,6 +3404,7 @@ internal sealed partial class KernelCombatPlanner
         // The B1 reading. `decision-ms` above is wall time and so cannot separate "the
         // search is expensive" from "the frame was stolen by a collection"; this line is
         // the one that can, and it is the ratio B1 is actually gated on.
+        if (tournamentRequest is { } accounted) AccountMixedForegroundRequest(accounted);
         ReportTournamentCost(outcome.ToString().ToLowerInvariant());
         ClearTournament();
         tournamentPoint = null;

@@ -56,7 +56,11 @@ public sealed class KernelScriptReplayRun
     {
         if (request?.IsStopped != true && StopRequested?.Invoke() != true) return false;
         Failure = request is { IsStopped: true } stopped ? stopped.StopReason : "phase-deadline";
-        if (actions.Count > 0 && state.HasTerminal) PublishSettledReplay();
+        // The final atomic action may cross the clock boundary. An already
+        // complete suffix is still a completed candidate, even when its ending
+        // is only an estimate. Never discard it or re-run it merely to publish.
+        if (actions.Count > 0 && (state.HasTerminal || actions.Count >= (candidate.Script?.Count ?? 0)))
+            PublishSettledReplay();
         else Done = true;
         return true;
     }

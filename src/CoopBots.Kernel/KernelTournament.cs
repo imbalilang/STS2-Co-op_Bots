@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -54,6 +54,12 @@ public sealed record TournamentOptions(
     bool EnableJointSearch = false)
 {
     public bool DiverseJointContinuations { get; init; } = true;
+    // Upstream enumerates openings before advancing a single-player search.
+    // We slice only mixed-table opening admission alongside the complete tournament,
+    // per the owner's 2026-10-24 V2 latency/unchanged-all-Bot requirements.
+    // Mixed tables fund native action prefixes while opening enumeration is
+    // sliced across frames. The all-Bot scheduler retains its existing path.
+    public bool MixedIncrementalOpenings { get; init; }
     public TournamentResult? ReferenceResult { get; init; }
     public KernelDecisionRequest? Request { get; init; }
     // Human intent is an opening preference. Native ending quality remains
@@ -300,6 +306,12 @@ public static class KernelTournament
                     withering && profitablePlay ? ActionRole.Other : ActionRole.Pass));
         }
 
+        return RankFirstActions(scored, topK, o);
+    }
+
+    private static List<KernelTeamSearch.Action> RankFirstActions(
+        List<(KernelTeamSearch.Action Action, double Score, ActionRole Role)> scored, int topK, TournamentOptions o)
+    {
         // COVERAGE BEFORE SCORE. When the deadline binds — 53% of the 2026-09-22 live
         // decisions did — only the first few candidates ever get a rollout. The old
         // `OrderByDescending(score)` made those few the biggest printed damage numbers, so a
@@ -350,6 +362,179 @@ public static class KernelTournament
             if (chosen.Count >= Math.Max(1, topK)) break;
             else TakeFirst(_ => true);
         return chosen.Take(Math.Max(1, topK)).Select(entry => entry.Action).ToList();
+    }
+
+    // This cursor is only selected by MixedIncrementalOpenings. A MoveNext
+    // completes one native target/menu/scoring unit, then yields at its settled
+    // boundary. Native transactions remain atomic and may exceed one frame.
+    internal sealed class OpeningRun
+    {
+        private readonly IEnumerator<(KernelTeamSearch.Action Action, double Score, ActionRole Role)?> enumerator;
+        private readonly List<(KernelTeamSearch.Action Action, double Score, ActionRole Role)> scored = [];
+        private readonly TournamentOptions options;
+        private readonly Func<bool> stopped;
+        internal bool Done { get; private set; }
+        internal List<KernelTeamSearch.Action> Result { get; private set; } = [];
+        internal int Units { get; private set; }
+        internal OpeningRun(KernelSession root, IReadOnlyList<Player> actors, TournamentOptions options, Func<bool> stopped)
+        {
+            this.options = options; this.stopped = stopped;
+            enumerator = EnumerateFirstActions(root, actors, options, stopped).GetEnumerator();
+        }
+        internal bool Advance(TimeSpan slice)
+        {
+            if (Done) return true;
+            var watch = Stopwatch.StartNew();
+            do
+            {
+                if (stopped()) return false;
+                if (!enumerator.MoveNext())
+                {
+                    Result = RankFirstActions(scored, options.TopK, options);
+                    enumerator.Dispose(); Done = true; return true;
+                }
+                Units++;
+                if (enumerator.Current is { } opening) scored.Add(opening);
+            } while (watch.Elapsed < slice);
+            return false;
+        }
+    }
+
+    private static IEnumerable<(KernelTeamSearch.Action Action, double Score, ActionRole Role)?> EnumerateFirstActions(
+        KernelSession root, IReadOnlyList<Player> actors, TournamentOptions o, Func<bool> stopRequested)
+    {
+        bool Stopped() => o.Request?.IsStopped == true || stopRequested();
+        var seenCardStates = new Dictionary<string, int>(StringComparer.Ordinal);
+        var party = root.Party.Count > 0 ? root.Party : actors;
+        IReadOnlyList<KernelTeamSearch.Action>? attritionSequence = null;
+        foreach (var player in actors)
+        {
+            if (Stopped()) break;
+            if (!root.CanAct(player)) continue;
+            // POTIONS ARE FIRST-CLASS CANDIDATES, exactly as they are for the search
+            // (KernelTeamSearch builds potion actions the same way). Leaving them out was why a
+            // tournament-driven build never drank: the tournament could not SEE a potion, so no
+            // amount of evaluating would ever choose one. A potion is a free action, so it is
+            // scored by what it enables rather than by damage — the roll-out decides, since the
+            // candidate list only has to contain it.
+            foreach (var potion in o.IncludePotions ? root.UsablePotions(player) : [])
+            {
+                if (Stopped()) break;
+                if (!KernelSession.CanModelPotion(potion)) continue;
+                if (!PotionHasImmediateValue(root, potion)) continue;
+                if (KernelSession.RequiresPotionChoiceContract(potion))
+                {
+                    // Native target x physical choice openings, funded by this
+                    // same request/TopK. A human-owned menu is not auto-planned.
+                    foreach (var target in root.PotionTargets(potion))
+                    {
+                        if (Stopped()) break;
+                        foreach (var branch in root.PotionBranches(potion, target, controlledActors: actors))
+                        {
+                            if (Stopped()) yield break;
+                            if (branch.Boundary.Length != 0) { yield return null; continue; }
+                            yield return (new KernelTeamSearch.Action(potion.Owner, null, target, potion,
+                                Choices: branch.Choices, ChoiceOrdinals: branch.ChoiceOrdinals), 1e8, ActionRole.Potion);
+                        }
+                    }
+                    continue;
+                }
+                var potionTarget = BestPotionTarget(root, potion);
+                // Above every card: a potion costs no energy, so it must not be crowded out of
+                // the top-K by a card that merely deals a little more damage. Whether it is
+                // actually worth spending is the ROLL-OUT's question, not this ranking's.
+                yield return (new KernelTeamSearch.Action(player, null, potionTarget, potion), 1e8,
+                    ActionRole.Potion);
+            }
+            if (o.PotionsOnly) continue;
+            var withering = root.HasWitheringPresence(player);
+            var profitablePlay = false;
+            var holdValue = withering ? KernelTacticalPolicy.Value(root,party,actors) : 0;
+            seenCardStates.Clear();
+            foreach (var card in root.Hand(player))
+            {
+                if (Stopped()) break;
+                var key = root.CardStateKey(card);
+                var occurrence = seenCardStates.GetValueOrDefault(key);
+                seenCardStates[key] = occurrence + 1;
+                if (!root.CanPlay(card)) { yield return null; continue; }
+                // Enumerate legal targets; complete rollouts decide whether a shielded
+                // low-HP enemy is preferable to a vulnerable attacker. Keep distinct
+                // card states, not four identical opening Strikes per seat.
+                if (occurrence > 0) { yield return null; continue; }
+                foreach (var target in root.Targets(card))
+                {
+                    if (Stopped()) break;
+                    if(withering && !profitablePlay)
+                    {
+                        var trial=root.CardBranches(card,target,1).FirstOrDefault(b=>b.Boundary.Length==0);
+                        profitablePlay=trial is not null && (trial.State.HasWon
+                            || KernelTacticalPolicy.ActionValue(root,trial.State,party,actors)>holdValue);
+                    }
+                    var (damage, lethal) = root.AttackHint(card, target);
+                    var block = root.UsefulBlockHint(card, target);
+                    var rider = KernelTemporaryBuffs.Timing(card) is not null
+                        ? RolloutRun.RelevantRemaining(root, party, player, card, target) * 1_000_000d
+                        : 0;
+                    var poisonReady = !CardPoisonEffects.RequiresPoison(card)
+                        || target is not null && root.Power<MegaCrit.Sts2.Core.Models.Powers.PoisonPower>(target) > 0;
+                    var poison = poisonReady ? CardPoisonEffects.TwoTicks(CardPoisonEffects.DirectAmount(card)) : -1e6;
+                    var teamSetup = KernelTeamCoordination.SetupPayoff(root, actors, card, target);
+                    // OUR scheduling preference, shared with the continuation. A
+                    // defensive one-shot into no pressure stays searchable, but
+                    // must not spend the first rollout merely because it has a
+                    // TeamDefence label (Knowledge Demon, 2026-10-03).
+                    var hold = !lethal && RolloutRun.ShouldHold(root, party, player, card);
+                    var role = lethal ? ActionRole.Lethal
+                        : hold ? ActionRole.Other
+                        : KernelActionCoverage.TeamDefence(card) ? ActionRole.TeamDefence
+                        : KernelActionCoverage.Cleanup(card) && KernelActionCoverage.HasHarmfulHand(root, party) ? ActionRole.Cleanup
+                        : teamSetup > 0 ? ActionRole.TeamSetup
+                        : damage + poison > 0 ? ActionRole.Damage
+                        : block > 0 ? ActionRole.Block
+                        : card.Type == CardType.Power ? ActionRole.Power
+                        : ActionRole.Other;
+                    yield return (new KernelTeamSearch.Action(player, card, target,
+                        CardStateKey: key, CardStateOccurrence: occurrence),
+                        (lethal ? 1e9 : 0) + damage + poison + rider
+                        + teamSetup * 1e6 - (hold ? 1e8 : 0)
+                        + (o.ManualFocusTargetCombatId.HasValue && target?.CombatId == o.ManualFocusTargetCombatId
+                            && card.Type == CardType.Attack ? 1e4 : 0), role);
+                }
+            }
+            // A costly first step can enable a profitable sequence. A one-step
+            // veto must not promote Pass ahead of every continuation under TopK.
+            if (Stopped()) yield break;
+            if (withering && !profitablePlay)
+            {
+                attritionSequence ??= RolloutRun.FindAttritionSequence(root, party, actors, o.Rollout ?? new());
+                profitablePlay = attritionSequence.Any(a => a.Player == player);
+            }
+            // NOT PLAYING IS A CANDIDATE, not an absence of one. Only added when a cheap
+            // hold rule actually fires, so a normal turn still offers every card and no
+            // pass; Wisp with a wasted energy gain and Piercing Wail into a 2-damage turn
+            // are exactly the cases where the tournament must be able to choose “end the
+            // turn and keep the card”. The roll-out then decides whether holding wins.
+            //
+            // A mixed table suppresses this while a human is still acting: see
+            // TournamentOptions.IncludeEndTurns.
+            if (o.IncludeEndTurns && (withering
+                || root.Hand(player).Any(card => RolloutRun.ShouldHold(root, party, player, card))
+                // Holding one exhaust/setup card does not mean passing the whole
+                // hand. Otherwise Pass ranks first and a tied losing rollout
+                // skips affordable Strikes while preserving a useless Wisp.
+                && !root.Hand(player).Any(card => root.CanPlay(card)
+                    && !RolloutRun.ShouldHold(root, party, player, card))))
+                // V14 live R5 ended seat one with 3 energy and useful defence:
+                // unconditional Pass coverage consumed the first rollout budget.
+                // Keep an optional pass searchable, but reserve early coverage
+                // for it only when neither a single play nor a sequence improves
+                // the current position after its native costs.
+                yield return (new KernelTeamSearch.Action(player, null, null, EndTurn: true),
+                    withering && profitablePlay ? -1e6 : 1e6,
+                    withering && profitablePlay ? ActionRole.Other : ActionRole.Pass);
+        }
+
     }
 
     /// <summary>
@@ -448,6 +633,9 @@ public sealed class TournamentRun : IDisposable
     private readonly RolloutOptions rolloutOptions;
     private readonly List<KernelTeamSearch.Action> candidates;
     private readonly RolloutPolicyKind[] policies;
+    private KernelTournament.OpeningRun? openingRun;
+    private bool openingsFinished;
+    private int mixedPreparationTurn;
     private string? cancelled;
     private readonly Stopwatch? phaseClock;
     private bool StopRequested => Volatile.Read(ref cancelled) is not null || o.Request?.IsStopped == true
@@ -626,6 +814,16 @@ public sealed class TournamentRun : IDisposable
             return;
         }
 
+        if (o.MixedIncrementalOpenings)
+        {
+            candidates = [];
+            policies = o.UsePolicyPortfolio
+                ? new[] { RolloutPolicyKind.Tactical, RolloutPolicyKind.Growth, rolloutOptions.Policy, RolloutPolicyKind.Kill, RolloutPolicyKind.Defend }.Distinct().ToArray()
+                : new[] { rolloutOptions.Policy };
+            openingRun = new(root, actors, o, () => StopRequested);
+            return;
+        }
+        openingsFinished = true;
         var watch = Stopwatch.StartNew();
         candidates = KernelTournament.FirstActions(root, actors, o.TopK, o, () => StopRequested);
         computeMs = watch.Elapsed.TotalMilliseconds;
@@ -703,6 +901,7 @@ public sealed class TournamentRun : IDisposable
         if (referenceRun is { } reference)
         {
             PreserveTerminalReference(reference, rememberCardReference: true);
+            if (o.MixedIncrementalOpenings) PreserveInterruptedPolicyPrefix(reference, RolloutPolicyKind.Kill);
             referenceStop = reference.Result!.StopReason;
             referenceSteps = reference.Result.Steps;
             referenceRun = null;
@@ -743,6 +942,26 @@ public sealed class TournamentRun : IDisposable
     }
 
     private bool AdvanceCurrent(TimeSpan slice)
+    {
+        if (o.MixedIncrementalOpenings && !openingsFinished)
+        {
+            // First fund a genuine policy action. Thereafter alternate opening
+            // units with the unchanged complete portfolio/joint pipeline. A
+            // cold enumeration cannot spend the entire request before any real
+            // action settles, and a first Kill prefix never ends the search.
+            if ((mixedPreparationTurn++ & 1) != 0)
+            {
+                var watch = Stopwatch.StartNew();
+                if (openingRun!.Advance(slice))
+                { candidates.AddRange(openingRun.Result); openingsFinished = true; }
+                computeMs += watch.Elapsed.TotalMilliseconds;
+                return false;
+            }
+        }
+        return AdvancePreparedCurrent(slice);
+    }
+
+    private bool AdvancePreparedCurrent(TimeSpan slice)
     {
         // OUR anytime reference: obtain a cheap, whole policy line before
         // spending the allowance on beam expansion or nested investment probes.
@@ -796,6 +1015,7 @@ public sealed class TournamentRun : IDisposable
             }
             return false;
         }
+        if (o.MixedIncrementalOpenings && !openingsFinished) return false;
         return dop <= 1 ? AdvanceSerial(slice) : AdvanceParallel(slice);
     }
 
@@ -874,7 +1094,9 @@ public sealed class TournamentRun : IDisposable
         referenceStop = result.StopReason;
         referenceSteps = result.Steps;
         RememberCompletedCardReference(result);
-        if (result.Actions.FirstOrDefault() is { } first && (!first.EndTurn || o.IncludeEndTurns))
+        if (o.MixedIncrementalOpenings && result.StopReason == "continuation-budget")
+            PreserveInterruptedPolicyPrefix(referenceRun, RolloutPolicyKind.Kill);
+        else if (result.Actions.FirstOrDefault() is { } first && (!first.EndTurn || o.IncludeEndTurns))
         {
             bestAction = first; bestRecord = result.Record;
             bestScript = result.Actions; bestScriptAliveStates = result.AliveStates;
@@ -1294,7 +1516,8 @@ public sealed class TournamentRun : IDisposable
     // An unfinished branch is never promoted to completed evidence here.
     private void PreserveTerminalOpening()
     {
-        if (branch is not { CanFork: true, HasTerminal: true } settled || currentAction is null) return;
+        if (branch is not { CanFork: true } settled || currentAction is null
+            || !settled.HasTerminal && !o.MixedIncrementalOpenings) return;
         var terminal = new RolloutRun(settled, party, o.ContinuationActors ?? actors, rolloutOptions);
         terminal.FinishAtBudget();
         Consume(terminal, currentAction);
@@ -1401,7 +1624,7 @@ public sealed class TournamentRun : IDisposable
                 + $"baselineSteps={referenceSteps?.ToString() ?? "unavailable"} policyReferences=[{string.Join(',', policyReferenceStops)}] "
                 + $"pausedReferences={pausedPolicyReferences.Count} resumedPolicySteps={resumedPolicyReferences} "
                 + $"settledPrefixPolicy={interruptedPolicyPrefixKind?.ToString() ?? "none"} settledPrefixSteps={interruptedPolicyPrefix?.Script?.Count ?? 0} "
-                + $"openings={EvaluatedOpenings} candidates={candidates.Count} repairs={potionReferences?.RepairedActions} resumes={potionReferences?.ResumedScripts} formal={potionReferences?.FormalActions} {potionReferences?.RepairDiagnostics}"
+                + $"openings={EvaluatedOpenings} candidates={candidates.Count} openingUnits={openingRun?.Units ?? 0} openingsComplete={openingsFinished} repairs={potionReferences?.RepairedActions} resumes={potionReferences?.ResumedScripts} formal={potionReferences?.FormalActions} {potionReferences?.RepairDiagnostics}"
                 + $" rolloutSteps={RolloutStepCount} rolloutStepMaxMs={RolloutStepMaxMs:F1}"
                 + $" rolloutStepDeadlineCrossings={RolloutStepsCrossingDeadline} rolloutStepDeadlineTailMs={RolloutStepDeadlineTailMs:F1}"
                 + $" cpu={Environment.ProcessorCount} configuredDop={o.MaxDegreeOfParallelism} effectiveDop={dop}",

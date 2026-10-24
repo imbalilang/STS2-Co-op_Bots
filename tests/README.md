@@ -1,4 +1,4 @@
-# CoopBots 测试入口
+﻿# CoopBots 测试入口
 
 本目录包含两条自动化测试线与一条本地调参线：
 
@@ -12,7 +12,17 @@
 
 ## 0. 前提
 
-真人混合桌回归新增五个聚焦入口（均也注册在无过滤完整入口）：`--mixed-room-handshake-only`（可用 `--mixed-room-handshake-case=map|handshake|human-input`）、`--mixed-room-sync-only`、`--mixed-responsiveness-only`（`--mixed-responsiveness-case=progress|proposal|status|control`）、`--mixed-replay-safety-only`、`--mixed-combat-aux-only`（`--mixed-combat-aux-case=focus|focus-change|focus-safety|potion-lease|card-lease`）。它们驱动生产选房屏障/原生自动握手与未来菜单、双端原生宝箱奖励RNG/重连快照/进入与退出清理/真人事件广播、真人连续原生付费出牌后Bot在EndTurn前取得行动、交回控制权、致死后缀与原生存活开局的比较，以及默认锦标赛集火与急救续招合同。Godot屏幕渲染和物理网络仍是headless边界，不把这些结果报成双客户端实机通过。
+V2混合局新增四个聚焦入口，也全部注册在无过滤完整入口：
+
+- `--mixed-cold-opening-only`，可加 `--mixed-cold-opening-case=constructor|units|prefix|cancel|portfolio|allbot`，检查构造不做全量开局、原子单位续枚举、真实已结算前缀截止发布、取消撤回、完整策略/联合工作继续，以及默认全Bot路径不变。
+- `--mixed-stable-script-only`，可加 `--mixed-stable-script-case=stable-prefix|reservation|recost|identity|unrelated-enemy|allbot-strict|expired-script|fresh-end|expired-card|expired-potion-baseline|no-candidate|control-rebind`。驱动真实多帧Poll、原生扣费动作与AfterFinished，检查真人穿插、四步后续打、准备不消费/结算单次消费、取消重试、物理身份、费用变化和已完成首步EndTurn退休。
+- `--mixed-runtime-pacing-only`，可加 `--mixed-runtime-pacing-case=team|finished|delay|invalid|pause|flash|enqueue|resume`。虚拟单调时钟驱动生产TickCombat与真实队列事件，检查跨席1500ms、真人结束立即收尾、慢动画不追赶、失败不改时钟、暂停/忙队列、Flash500ms和选择续租。夹具注入已选动作，搜索质量另由planner场景覆盖，不能把虚拟时钟结果报成实机帧耗时。
+- `--mixed-background-replan-only`，可加 `--mixed-background-replan-case=input-burst|full-options|stable-script|nonblocking|shared-budget|candidate|control|allbot|human-death|bot-death`。检查真人输入合并、前后相同完整配置、后台不阻塞前台、共享预算、实际原生候选严格改进/同根/准备槽保护，以及恢复全Bot未来优化。
+
+`--request-lifecycle-only --request-lifecycle-case=replay-completed-stop` 与 `--planning-state-only --planning-state-case=continuation-deadline` 区分计算截止、完整候选和有效执行剧本的寿命；`--turn-start-choice-only --turn-start-choice-case=transition-diagnostics` 用原生合同区分回合号、席位回合号和未消费选择三轴。历史日志中四次拒绝尚无足够细节确证具体轴，增加诊断不等于这些历史机制已经复现修好。
+
+
+真人混合桌回归新增五个聚焦入口（均也注册在无过滤完整入口）：`--mixed-room-handshake-only`（可用 `--mixed-room-handshake-case=map|handshake|human-input`）、`--mixed-room-sync-only`、`--mixed-responsiveness-only`（`--mixed-responsiveness-case=progress|proposal|status|control`）、`--mixed-replay-safety-only`、`--mixed-combat-aux-only`（`--mixed-combat-aux-case=focus|focus-change|focus-safety|potion-lease|card-lease`）。它们驱动生产选房屏障/原生自动握手与未来菜单、双端原生宝箱奖励RNG/重连快照/进入与退出清理/真人事件广播、真人连续原生付费出牌后Bot在EndTurn前取得行动、交回控制权、合法历史后缀与可选原生存活开局的比较，以及默认锦标赛集火与急救续招合同。Godot屏幕渲染和物理网络仍是headless边界，不把这些结果报成双客户端实机通过。
 
 多人回合开始卡死回归：`--party-setup-pending-only`，可加 `--party-setup-pending-case=risk|pending|automatic|warm` 分别检查实际 `LiveEndTurnRisk` 未回答菜单及时返回、保留可 fork/续演的原生帧及完整 Facts/history/RNG、自动选牌与严格合同重放、调用方已编译时观察器仍有效。观察点是实际 `ResumeExecutionContinuation`，避免较小包装方法被 JIT 内联后漏计。安全观察器触顶必须失败，不得当作成功。默认完整入口也执行这些场景。实际替换抽牌使后续预选菜单失效的正控制复用 `--szg-combat-only --szg-combat-case=chained-choice`，包含 1/2/4 席的原生 GamblingChip → ToastyMittens 对照。
 

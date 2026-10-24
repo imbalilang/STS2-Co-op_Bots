@@ -1,6 +1,6 @@
-# CoopBots 源码与发布包说明
+﻿# CoopBots 源码与发布包说明
 
-本次公开 **0.39.3 源码与安装包（2026-10-24）**，用于共同优化算法。GitHub Release与Steam工坊安装包使用同一版本；历史冻结v21的实机结果见 [docs/STATUS.md](docs/STATUS.md)，不作为本版新增实机或胜率证明。
+本次公开 **0.39.4 源码与安装包（2026-10-24）**，用于共同优化算法。GitHub Release与Steam工坊安装包使用同一版本；历史冻结v21的实机结果见 [docs/STATUS.md](docs/STATUS.md)，不作为本版新增实机或胜率证明。
 
 ## 包含
 
