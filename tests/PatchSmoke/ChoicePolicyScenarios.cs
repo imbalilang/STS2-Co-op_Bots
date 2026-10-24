@@ -1,4 +1,7 @@
-﻿using CoopBots;
+// V2 R2 2026-10-24: production build0/RED1 -> exact source restoration -> build0/GREEN0.
+// Receipt: work/v2-validation/r2/policy-label-pass/receipts.json
+// System.InvalidOperationException: ChoicePolicy: the default for a mixed table is the tournament, got 'no-decision/Pending'.
+using CoopBots;
 using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -16,8 +19,7 @@ using MegaCrit.Sts2.Core.Unlocks;
 //
 // The user's call: one decision algorithm for all-bot and mixed tables. The tournament (C)
 // takes the fight, not the segmented search (B). B answers an all-bot fight by searching for
-// three minutes (up to eight) BEFORE the first card; C replans from the live board on every
-// action. A mixed table uses the same path, with every non-driven human seat simulated as
+// three minutes (up to eight) BEFORE the first card; C selects and retains executable tournament scripts. A mixed table uses the same path, with every non-driven human seat simulated as
 // "end their turn" (KernelRollout) instead of being fed an invented action.
 //
 // What has to stay true, and is asserted here:
@@ -31,6 +33,10 @@ internal static class ChoicePolicyScenarios
     {
         if (!condition) throw new InvalidOperationException("ChoicePolicy: " + message);
     }
+
+    private static bool FromTournament(string reason)
+        => reason.StartsWith("tournament:", StringComparison.Ordinal)
+            || reason.StartsWith("kernel-tournament-script:", StringComparison.Ordinal);
 
     internal static void Run()
     {
@@ -57,25 +63,25 @@ internal static class ChoicePolicyScenarios
         var allBots = AllBots(seed: "CHOICEPOLICY-BOTS");
         var decision = Decide(allBots, overrideValue: null, out var reason);
         Check(decision is not null, $"an all-bot table must still produce a decision ({reason}).");
-        Check(reason.Contains("tournament:", StringComparison.Ordinal),
+        Check(FromTournament(reason),
             $"the default for an all-bot table is the tournament, got '{reason}'.");
 
         // 2. A human at the table is now decided by the same tournament. The human seat is not
         //    an actor: it is simulated as "end their turn" during the roll-out.
         var withHuman = AllBots(seed: "CHOICEPOLICY-HUMAN", humanSeat: true);
         Decide(withHuman, overrideValue: null, out var mixedReason);
-        Check(mixedReason.Contains("tournament:", StringComparison.Ordinal),
+        Check(FromTournament(mixedReason),
             $"the default for a mixed table is the tournament, got '{mixedReason}'.");
 
         // 3. The override still forces either policy, on both table shapes.
         Decide(allBots, overrideValue: false, out var forcedSearch);
-        Check(!forcedSearch.Contains("tournament:", StringComparison.Ordinal),
+        Check(!FromTournament(forcedSearch),
             $"forcing the segmented search must keep the tournament out, got '{forcedSearch}'.");
         Decide(allBots, overrideValue: true, out var forcedTournament);
-        Check(forcedTournament.Contains("tournament:", StringComparison.Ordinal),
+        Check(FromTournament(forcedTournament),
             $"forcing the tournament must make it decide, got '{forcedTournament}'.");
         Decide(withHuman, overrideValue: false, out var mixedForcedSearch);
-        Check(!mixedForcedSearch.Contains("tournament:", StringComparison.Ordinal),
+        Check(!FromTournament(mixedForcedSearch),
             $"forcing the segmented search must also keep the tournament out of a mixed table, "
             + $"got '{mixedForcedSearch}'.");
 

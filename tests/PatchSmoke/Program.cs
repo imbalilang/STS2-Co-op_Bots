@@ -74,6 +74,7 @@ if (args.Contains("--planning-facts-only"))
 {
     KernelPlanningFactsScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--planning-facts-case="))?.Split('=', 2)[1]); return;
 }
+if (args.Contains("--choice-policy-only")) { ChoicePolicyScenarios.Run(); return; }
 if (args.Contains("--mixed-cold-opening-only"))
 {
     MixedColdOpeningScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-cold-opening-case="))?.Split('=', 2)[1]); return;
