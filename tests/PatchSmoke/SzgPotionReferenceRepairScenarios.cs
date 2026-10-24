@@ -1,4 +1,4 @@
-using CoopBots.Kernel;
+﻿using CoopBots.Kernel;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -47,8 +47,11 @@ internal static class SzgPotionReferenceRepairScenarios
             prefix: new HarmonyMethod(typeof(SzgPotionReferenceRepairScenarios), nameof(ObserveFormal)));
         hooks.Patch(AccessTools.GetDeclaredConstructors(typeof(RolloutRun)).Single(c => c.GetParameters()[0].ParameterType == typeof(KernelSession)),
             prefix: new HarmonyMethod(typeof(SzgPotionReferenceRepairScenarios), nameof(ObserveTailStart)));
-        hooks.Patch(AccessTools.Method(typeof(KernelSession), nameof(KernelSession.ReplayPlanned),
-            [typeof(KernelTeamSearch.Action), typeof(int), typeof(string).MakeByRefType(), typeof(KernelTeamSearch.Action).MakeByRefType()]),
+        // ReplayPlanned is a one-line wrapper which warm callers can inline.
+        // Patch the real large causal transaction entry (contains isolation and
+        // try/finally), so prior native suites cannot bypass this fault control.
+        hooks.Patch(AccessTools.Method(typeof(KernelSession), "ApplyCausal",
+            [typeof(KernelTeamSearch.Action), typeof(int), typeof(bool), typeof(string).MakeByRefType(), typeof(KernelTeamSearch.Action).MakeByRefType()]),
             prefix: new HarmonyMethod(typeof(SzgPotionReferenceRepairScenarios), nameof(FailPartially)));
         try
         {
@@ -98,10 +101,15 @@ internal static class SzgPotionReferenceRepairScenarios
             ScriptAliveStates = new[] { party.Select(p => p.NetId).ToArray() }.Concat(tail.AliveStates).ToArray(),
             ScriptEnemyStates = new[] { root.Enemies.ToArray() }.Concat(tail.EnemyStates).ToArray(),
         };
+        if (name == "failed-transaction") WarmFaultControl(root, player, first);
         observedPlayer = player; attemptedFailures = formalAfterPotion = contaminatedFormals = tailStarts = contaminatedTailStarts = 0;
-        failAttempt = name == "failed-transaction";
+        // Candidate discovery may itself evaluate private potion forks. Arm
+        // the failure only after construction so it belongs to the retained
+        // reference's actual ReplayPlanned attempt inside Advance.
+        failAttempt = false;
         var run = new KernelPotionContinuationRun(root, party, party, baseline,
             name == "remaining-deadline" ? 0 : 2000);
+        failAttempt = name == "failed-transaction";
         while (!run.Advance(TimeSpan.FromMilliseconds(2))) { }
         Console.WriteLine($"PROBE potion-reference {name} completed={run.Completed} formal={formalAfterPotion} partialFailures={attemptedFailures} contaminated={contaminatedFormals} tailStarts={tailStarts} contaminatedStarts={contaminatedTailStarts} ms={run.ComputeMs:F1} baselineMenus={string.Join(',', first.Choices!.Select(c => c.Options!.Count))} replayMenus={string.Join(',', run.CompletedResults.SelectMany(c => c.Script!).Where(a => a.Card is Survivor).SelectMany(a => a.Choices!).Select(c => c.Options!.Count))}");
         if (name == "remaining-deadline")
@@ -140,6 +148,29 @@ internal static class SzgPotionReferenceRepairScenarios
         Console.WriteLine("PASS: potion-reference " + name);
     }
 
+    private static void WarmFaultControl(KernelSession root, Player owner, KernelTeamSearch.Action first)
+    {
+        // Exercise the public replay call once before arming the mutation. This
+        // is a positive control for the same warmed entry used by production,
+        // not a substitute for the actual failed-transaction run below.
+        observedPlayer = null; failAttempt = false;
+        var warm = root.ForkForReplay();
+        Check(warm.ReplayPlanned(first, 80, out var warmWhy),
+            "the warm replay fault-control fixture must execute its ordinary native card: " + warmWhy);
+        var partial = root.ForkForReplay();
+        var bottle = partial.UsablePotions(owner).Single();
+        Check(partial.UsePotion(bottle, partial.PotionTargets(bottle).FirstOrDefault(), out var potionWhy),
+            "the partial-effect fault control must actually consume and draw its native bottle: " + potionWhy);
+        observedPlayer = owner; attemptedFailures = 0; failAttempt = true;
+        Check(!partial.ReplayPlanned(first, 80, out var failure, out var resolved)
+            && failure == "partial-native-effect-control" && attemptedFailures == 1
+            && partial.Hp(owner.Creature) == 17 && ReferenceEquals(resolved, first)
+            && root.Hp(owner.Creature) == 1 && root.UsablePotions(owner).Count == 1,
+            "a warmed public replay call must hit exactly one real causal-entry fault, change only its private HP to 17 and return false");
+        Console.WriteLine("FAULT-CONTROL potion-reference warmed causal entry injected=1 partialHp=17 rootHp=1");
+        observedPlayer = null; failAttempt = false;
+    }
+
     private static void ObserveFormal(KernelSession root)
     {
         if (observedPlayer is not { } owner || root.UsablePotions(owner).Count > 0) return;
@@ -154,10 +185,11 @@ internal static class SzgPotionReferenceRepairScenarios
     }
 
     private static bool FailPartially(KernelSession __instance, KernelTeamSearch.Action action,
-        ref string boundary, ref KernelTeamSearch.Action resolvedAction, ref bool __result)
+        bool exactTurnStartContract, ref string boundary, ref KernelTeamSearch.Action resolvedAction, ref bool __result)
     {
-        if (!failAttempt || attemptedFailures > 0 || action.Card is not Survivor
-            || observedPlayer is not { } owner || __instance.UsablePotions(owner).Count > 0) return true;
+        if (!exactTurnStartContract || !failAttempt || attemptedFailures > 0 || action.Card is not Survivor
+            || observedPlayer is not { } owner || !ReferenceEquals(action.Player, owner)
+            || __instance.UsablePotions(owner).Count > 0) return true;
         // Supply the engine's failure-after-partial-effects contract. The actual
         // native card/menu and subsequent continuation remain unmodified.
         attemptedFailures++; __instance.Simulator.State.GetCreature(owner.Creature).CurrentHp = 17;
@@ -166,3 +198,7 @@ internal static class SzgPotionReferenceRepairScenarios
     private static bool Format(ref string __result) { __result = ""; return false; }
     private static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
 }
+
+// R2 production mutation: KernelPotionContinuationRun var attempt = replay.Fork() -> replay.
+// RED (build 0, test 1): System.Exception: a failed native attempt must resume from the pre-action state, without its partial side effects
+// Restored exact production bytes; build 0, focused failed-transaction GREEN 0.
