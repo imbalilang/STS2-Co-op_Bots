@@ -55,6 +55,10 @@ internal sealed partial class KernelCombatPlanner
         if (tournamentScript is null) return false;
         var control = ControlKey(combat);
         var mixedNow = MixedTable(combat);
+        // Pure all-Bot lines belong to the existing strict/refinement path.
+        // A missing mixed cache is not a human ownership transition.
+        if (!mixedNow && !mixedCapturedLivingHuman && mixedContinuation is null
+            && !ReferenceEquals(mixedHistoricalScript, tournamentScript)) return false;
         var modeChanged = mixedCapturedLivingHuman != mixedNow;
         var livingDomain = string.Join(',', LivingSeats(combat));
         var livingChanged = (mixedCapturedLivingHuman || mixedNow) && mixedLivingDomain != livingDomain;

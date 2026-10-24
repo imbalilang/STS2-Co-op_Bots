@@ -1,3 +1,7 @@
+// V2 R2 ownership guards: build0/RED1 -> exact restore -> build0/GREEN0.
+// Receipt: work/v2-validation/r2/ownership-pass/receipts.json
+// System.InvalidOperationException: Mixed background: a pure all-Bot script must ignore unowned mixed caches instead of demoting quality, rebuilding its array or restarting refinement
+// System.InvalidOperationException: Mixed background: a new combat must not inherit the old fight's human/control/living execution ownership
 // V2 R2 actual 2026-10-24: production build0 -> named runtime RED1 -> exact source restore -> build0/GREEN0.
 // Private receipts: work/v2-validation/r2/{receipts,second-pass/receipts,final-pass/receipts}.json.
 // These are fault controls, not distinct gameplay bug or live-performance counts.
@@ -52,7 +56,7 @@ internal static class MixedBackgroundReplanScenarios
                 ("input-burst", InputBurst), ("full-options", FullOptions),
                 ("stable-script", StableScript), ("nonblocking", Nonblocking),
                 ("shared-budget", SharedBudget), ("candidate", Candidate),
-                ("control", Control), ("allbot", AllBot), ("human-death", HumanDeath), ("bot-death", BotDeath) })
+                ("control", Control), ("allbot", AllBot), ("human-death", HumanDeath), ("bot-death", BotDeath), ("pure-allbot", PureAllBot), ("reset-domain", ResetDomain) })
                 if (selected is null || selected == test.Name)
                 { test.Body(); Console.WriteLine("PASS: mixed background " + test.Name); }
         }
@@ -313,6 +317,30 @@ internal static class MixedBackgroundReplanScenarios
                 "a Bot dying on a mixed table must retire only its own steps while preserving a surviving seat's proposal");
         }
         finally { AutoPilot.Set(survivor.NetId, false); }
+    }
+
+    private static void PureAllBot()
+    {
+        using var b = new Board(); AutoPilot.Set(b.Human.NetId, true);
+        var root = KernelCombatCapture.Capture(b.Combat);
+        Invoke(b.Planner, "CaptureMixedContinuation", root, b.Combat, b.Script, 0);
+        Set(b.Planner, "mixedControl", "stale-unowned-cache");
+        var record = Get(b.Planner, "tournamentScriptRecord");
+        Check(!(bool)Invoke(b.Planner, "ReviewMixedInput", b.Combat)!
+            && ReferenceEquals(Get(b.Planner, "tournamentScript"), b.Script)
+            && ReferenceEquals(Get(b.Planner, "tournamentScriptRecord"), record)
+            && Get(b.Planner, "refinement") is null && !(bool)Get(b.Planner, "mixedReplanDirty")!,
+            "a pure all-Bot script must ignore unowned mixed caches instead of demoting quality, rebuilding its array or restarting refinement");
+    }
+
+    private static void ResetDomain()
+    {
+        using var b = new Board();
+        Check((bool)Get(b.Planner, "mixedCapturedLivingHuman")!, "fixture must own a real mixed-domain cache");
+        b.Planner.Reset(newCombat: true);
+        Check(!(bool)Get(b.Planner, "mixedCapturedLivingHuman")! && (string)Get(b.Planner, "mixedControl")! == ""
+            && (string)Get(b.Planner, "mixedLivingDomain")! == "" && Get(b.Planner, "mixedHistoricalScript") is null,
+            "a new combat must not inherit the old fight's human/control/living execution ownership");
     }
 
     private static object? GetStatic(Type type, string name) => AccessTools.Field(type, name).GetValue(null);

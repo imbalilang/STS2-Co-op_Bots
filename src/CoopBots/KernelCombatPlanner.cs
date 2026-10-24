@@ -959,6 +959,8 @@ internal sealed partial class KernelCombatPlanner
             AbandonPreparedSubmission("new combat");
             mixedPhysicalCards.Clear();
             mixedStoppedPoint = null;
+            mixedControl = ""; mixedLivingDomain = ""; mixedCapturedLivingHuman = false;
+            mixedHistoricalScript = null; mixedInputRevision = 0; mixedCheckedCursor = -1;
             mixedProposal = null; mixedProposalReplay = null; mixedProposalClock = null;
             openingSearch = true;
             planCommitted = false;

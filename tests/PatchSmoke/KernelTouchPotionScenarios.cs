@@ -414,9 +414,13 @@ internal static class TouchRuntimeFixtureSnippet
         // It supplies presentation only, never replaces the planned-menu matcher.
         var selector = new Selector(b.Bash);
         using (CardSelectCmd.PushSelector(selector)) action.Execute().GetAwaiter().GetResult();
+        var menuReceipt = $"completed={action.CompletionTask.IsCompleted} exception={action.Exception?.ToString() ?? "none"} "
+            + $"choiceIndex={scope.Index} diverged={scope.Diverged} cacheIntact={scope.CacheIntact} selectorCalls={selector.Calls} "
+            + $"scriptCursor={scope.ScriptCursor} prepared={scope.Prepared} slot={action.PotionIndex}";
+        Console.WriteLine("DIAG: Touch native paid choice " + menuReceipt);
         Check(action.CompletionTask.IsCompleted && action.Exception is null && scope.Index == 1
             && !scope.Diverged && scope.CacheIntact && selector.Calls == 0,
-            "real UsePotionAction must consume the transported recipient choice through the production prefix");
+            "real UsePotionAction must consume the transported recipient choice through the production prefix: " + menuReceipt);
         Check(!b.Owner.Potions.Contains(b.Potion) && b.Owner.PlayerCombatState!.Hand.Cards.Count == 0
             && predicted.PlanningState([b.Owner.NetId, b.Recipient.NetId]).Matches(
                 KernelSession.Capture(b.Combat).PlanningState([b.Owner.NetId, b.Recipient.NetId])),
@@ -641,6 +645,7 @@ internal static class TouchRuntimeFixtureSnippet
         private readonly IDisposable native;
         private readonly Dictionary<PropertyInfo, object?> managerSaved;
         private readonly Dictionary<FieldInfo, object?> syncSaved, plannerSaved;
+        private readonly CardModel[] physicalCardsSaved;
         private readonly HashSet<ulong> waiting = (HashSet<ulong>)GetStatic("waiting")!;
         private readonly ulong[] waitingSaved;
         private readonly KernelCombatPlanner planner = (KernelCombatPlanner)AccessTools.Field(typeof(BotRuntime), "KernelPlanner").GetValue(null)!;
@@ -651,12 +656,15 @@ internal static class TouchRuntimeFixtureSnippet
         internal int Index => (int)GetStatic("index")!;
         internal bool Diverged => (bool)GetStatic("choiceDiverged")!;
         internal bool CacheIntact => ReferenceEquals(AccessTools.Field(typeof(KernelCombatPlanner), "tournamentScript").GetValue(planner), script);
+        internal int ScriptCursor => (int)AccessTools.Field(typeof(KernelCombatPlanner), "tournamentScriptIndex").GetValue(planner)!;
+        internal bool Prepared => planner.HasPreparedSubmission;
         internal Scope(BoardState b, ulong? peer = null)
         {
             board = b; identity = AccessTools.Field(typeof(BotRuntime), "_combatIdentity").GetValue(null);
             syncSaved = typeof(BotChoicePlanSync).GetFields(Static).Where(f => !f.IsInitOnly).ToDictionary(f => f, f => f.GetValue(null));
             waitingSaved = waiting.ToArray(); plannerSaved = typeof(KernelCombatPlanner).GetFields(Instance)
                 .Where(f => !f.IsInitOnly).ToDictionary(f => f, f => f.GetValue(planner));
+            physicalCardsSaved = ((HashSet<CardModel>)AccessTools.Field(typeof(KernelCombatPlanner), "mixedPhysicalCards").GetValue(planner)!).ToArray();
             ownerDelegated = AutoPilot.IsAutopiloted(b.Owner.NetId); recipientDelegated = AutoPilot.IsAutopiloted(b.Recipient.NetId);
             AutoPilot.Set(b.Owner.NetId, true); AutoPilot.Set(b.Recipient.NetId, false);
             native = (IDisposable)Activator.CreateInstance(AccessTools.Inner(typeof(KernelPlanningFactsScenarios), "NativeFactsState"), Instance, null, [b.Combat], null)!;
@@ -679,7 +687,12 @@ internal static class TouchRuntimeFixtureSnippet
             Seed();
         }
         internal UsePotionAction Enqueue(PotionModel potion, Creature target)
-        { var action = new UsePotionAction(potion, target, true); Queues.EnqueueWithoutSynchronizing(action); Running(action); return action; }
+        {
+            var action = new UsePotionAction(potion, target, true);
+            // Match Runtime's actual reservation-to-native-queue handshake.
+            planner.ConfirmActionQueued(action);
+            Queues.EnqueueWithoutSynchronizing(action); Running(action); return action;
+        }
         internal KernelCombatPlanner.PotionPlan EmitPotion(KernelTeamSearch.Action planned, bool verifyPhysicalBottle = true)
         {
             Seed(); script = [planned];
@@ -687,6 +700,13 @@ internal static class TouchRuntimeFixtureSnippet
             Set(planner, "tournamentScriptRound", board.Combat.RoundNumber);
             Set(planner, "tournamentScriptAliveStates", new ulong[][] { board.Combat.Players.Select(p => p.NetId).ToArray() });
             Set(planner, "tournamentScriptEnemyStates", new Creature[][] { [board.Enemy] });
+            // This fixture replaces AdoptTournamentScript with a concrete
+            // transported potion step. It must establish the same control,
+            // life-domain and physical-card metadata as real adoption before
+            // invoking the emitter; an old singleton domain can legitimately
+            // rebase an otherwise good script into a different array.
+            AccessTools.Method(typeof(KernelCombatPlanner), "CaptureMixedContinuation")
+                .Invoke(planner, [KernelSession.Capture(board.Combat), board.Combat, script, 0]);
             object?[] arguments = [board.Combat, board.Combat.Players.ToArray(), true, null];
             Check((bool)AccessTools.Method(typeof(KernelCombatPlanner), "TryEmitFromTournamentScript")
                 .Invoke(planner, arguments)! && arguments[3] is null && planner.ConfirmedPotion is { } plan
@@ -706,13 +726,24 @@ internal static class TouchRuntimeFixtureSnippet
             AccessTools.Field(typeof(BotChoicePlanSync), "choiceDiverged").SetValue(null, false);
         }
         private void Seed()
-        { planner.Reset(); script = [new(board.Recipient, board.Strike, board.Enemy), new(board.Recipient, board.Bash, board.Enemy)];
-            Set(planner, "tournamentScript", script); Set(planner, "tournamentScriptCombat", board.Combat); Set(planner, "rootCombat", board.Combat); }
+        {
+            planner.Reset();
+            planner.AbandonPreparedSubmission("new native Touch fixture step");
+            script = [new(board.Recipient, board.Strike, board.Enemy), new(board.Recipient, board.Bash, board.Enemy)];
+            Set(planner, "tournamentScript", script); Set(planner, "tournamentScriptCombat", board.Combat); Set(planner, "rootCombat", board.Combat);
+            AccessTools.Method(typeof(KernelCombatPlanner), "CaptureMixedContinuation")
+                .Invoke(planner, [KernelSession.Capture(board.Combat), board.Combat, script, 0]);
+        }
         private static bool NoTransport() => false; // Transport only; Prepare, ACK handler and Resume stay production code.
         private static bool Format(ref string __result) { __result = ""; return false; }
         public void Dispose()
         {
+            planner.AbandonPreparedSubmission("native Touch fixture finished");
             planner.Reset(); foreach (var item in plannerSaved) item.Key.SetValue(planner, item.Value);
+            // CaptureMixedContinuation mutates this readonly registry in place;
+            // restoring only field references would leak our physical cards.
+            var physicalCards = (HashSet<CardModel>)AccessTools.Field(typeof(KernelCombatPlanner), "mixedPhysicalCards").GetValue(planner)!;
+            physicalCards.Clear(); physicalCards.UnionWith(physicalCardsSaved);
             foreach (var item in syncSaved) item.Key.SetValue(null, item.Value); waiting.Clear(); waiting.UnionWith(waitingSaved);
             foreach (var item in managerSaved) item.Key.SetValue(RunManager.Instance, item.Value);
             AccessTools.Field(typeof(BotRuntime), "_combatIdentity").SetValue(null, identity);
