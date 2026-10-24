@@ -1,4 +1,5 @@
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
@@ -57,7 +58,12 @@ internal static class RoomWork
              || manager.EventSynchronizer.Events.Any(e => e.Id != eventRoom.CanonicalEvent.Id)
              || driven.Any(p => !manager.EventSynchronizer.GetEventForPlayer(p).IsFinished)
              || ((IEnumerable<Task>)EventTasks.GetValue(manager.EventSynchronizer)!).Any(t => !t.IsCompleted));
-        var rewards = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance?.Peek()
+        // Only the handed-over local seat uses the screen driver. A human's
+        // completed terminal reward overlay stays on the stack while the map
+        // hides it, and the driver will never visit that screen. Treating its
+        // unvisited screen as Bot work prevents every synthetic seat voting.
+        var rewards = LocalContext.NetId is { } localOwner && AutoPilot.IsAutopiloted(localOwner)
+            && MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance?.Peek()
             is MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen && !BotRewardsScreenDriver.Finished(state);
         return Reason(Pending(room), camp, shop, events, rewards);
     }

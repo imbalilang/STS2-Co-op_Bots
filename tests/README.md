@@ -12,6 +12,8 @@
 
 ## 0. 前提
 
+真人混合桌回归新增五个聚焦入口（均也注册在无过滤完整入口）：`--mixed-room-handshake-only`（可用 `--mixed-room-handshake-case=map|handshake|human-input`）、`--mixed-room-sync-only`、`--mixed-responsiveness-only`（`--mixed-responsiveness-case=progress|proposal|status|control`）、`--mixed-replay-safety-only`、`--mixed-combat-aux-only`（`--mixed-combat-aux-case=focus|focus-change|focus-safety|potion-lease|card-lease`）。它们驱动生产选房屏障/原生自动握手与未来菜单、双端原生宝箱奖励RNG/重连快照/进入与退出清理/真人事件广播、真人连续原生付费出牌后Bot在EndTurn前取得行动、交回控制权、致死后缀与原生存活开局的比较，以及默认锦标赛集火与急救续招合同。Godot屏幕渲染和物理网络仍是headless边界，不把这些结果报成双客户端实机通过。
+
 多人回合开始卡死回归：`--party-setup-pending-only`，可加 `--party-setup-pending-case=risk|pending|automatic|warm` 分别检查实际 `LiveEndTurnRisk` 未回答菜单及时返回、保留可 fork/续演的原生帧及完整 Facts/history/RNG、自动选牌与严格合同重放、调用方已编译时观察器仍有效。观察点是实际 `ResumeExecutionContinuation`，避免较小包装方法被 JIT 内联后漏计。安全观察器触顶必须失败，不得当作成功。默认完整入口也执行这些场景。实际替换抽牌使后续预选菜单失效的正控制复用 `--szg-combat-only --szg-combat-case=chained-choice`，包含 1/2/4 席的原生 GamblingChip → ToastyMittens 对照。
 
 - 游戏目录必须包含 `sts2.dll`，默认示例为

@@ -78,6 +78,26 @@ if (args.Contains("--mixed-input-only"))
 {
     MixedInputLifecycleScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-input-case="))?.Split('=', 2)[1]); return;
 }
+if (args.Contains("--mixed-responsiveness-only"))
+{
+    MixedResponsivenessScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-responsiveness-case="))?.Split('=', 2)[1]); return;
+}
+if (args.Contains("--mixed-replay-safety-only"))
+{
+    MixedReplaySafetyScenarios.Run(); return;
+}
+if (args.Contains("--mixed-room-handshake-only"))
+{
+    MixedRoomAndHandshakeScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-room-handshake-case="))?.Split('=', 2)[1]); return;
+}
+if (args.Contains("--mixed-room-sync-only"))
+{
+    MixedRoomSyncScenarios.Run(); return;
+}
+if (args.Contains("--mixed-combat-aux-only"))
+{
+    MixedCombatAuxiliaryScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-combat-aux-case="))?.Split('=', 2)[1]); return;
+}
 if (args.Contains("--planner-request-only"))
 {
     KernelPlannerRequestScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--planner-request-case="))?.Split('=', 2)[1]); return;
@@ -750,6 +770,11 @@ ChoiceSeatScenarios.Run();
 // terminal reward screen); pressing either early skips work that room still owed the run.
 RoomProceedScenarios.Run();
 RoomWorkScenarios.Run();
+MixedRoomAndHandshakeScenarios.Run();
+MixedRoomSyncScenarios.Run();
+MixedResponsivenessScenarios.Run();
+MixedReplaySafetyScenarios.Run();
+MixedCombatAuxiliaryScenarios.Run();
 TransformEventScenarios.Run(); NightDecisionScenarios.Building();
 CooperativeScenarios.Run();
 // Runs before the build-value scenarios: it publishes this build's card ids for

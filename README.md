@@ -4,12 +4,16 @@
 
 Configurable AI teammates for Slay the Spire 2's official multiplayer lobbies. Contributions from developers and coding agents are welcome; start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## 最新更新 / Latest：0.39.2（2026-10-23）
+## 最新更新 / Latest：0.39.3（2026-10-24）
 
-- 集成此前开发快照中的四席联合规划、执行合同、临时属性与多人开局等待修复，并合入 `key-card-acquisition-20261022` 的构筑、队伍协同及复制牌规划增量。
-- 首张优先实际对应战士的**势不可当（JUGGERNAUT）**及多人局的夹击、击倒；**主宰（DOMINATE）**仍按易伤层数获得力量，两张牌不混用。
-- 构筑增加格挡事件触发伤害及低血风险，选牌、删除、升级纳入联合队伍边际收益；恢复 Nightmare 普通获取评分并扩大复制续演。
-- 本版提供对应源码与安装包，完成离线构建、独立类型加载和完整内核回归；尚未开展新的 Steam 实机或整塔胜率测试。来源、范围与保留的模型限制见 [合入说明](docs/COMMUNITY_PACKAGE_20261022.md)，完整变更见 [CHANGELOG.md](CHANGELOG.md)。
+- 修复真人奖励界面导致 Bot 不跟随选房，以及自动回合握手误清选牌计划的问题。
+- 真人仍在行动时采用短预算比较，并从已结算盘面重新验证可用续招，减少反复完整重搜，让 Bot 能在真人结束回合前穿插出牌。
+- 补齐控制权交回、真人集火、卡牌/药水急救的计划更新，以及宝箱奖励和托管事件的多人同步。
+- 新增 17 个回归场景、31 项故障注入红绿验证；发布构建验证收据随 GitHub Release 附件提供。尚未完成两个真实游戏客户端的混合局验收，未对实机响应时间或胜率作结论。
+
+Fixes mixed human/Bot room voting and automatic turn-handshake invalidation. Short searches and replay from the settled board reduce repeated full searches, allowing Bot cards before humans end their turn. Also covers control handback, manual focus, rescue continuations, and treasure/event synchronization. Includes 17 new scenarios and 31 fault-injection checks; build and full-suite evidence accompanies the GitHub Release; two-client gameplay, latency, and win-rate results remain unverified.
+
+完整变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 上次公开快照：0.39.1（2026-10-13）
 
@@ -29,7 +33,7 @@ Configurable AI teammates for Slay the Spire 2's official multiplayer lobbies. C
 - 在官方多人大厅添加 Bot，可调整节奏和性能预算。
 - Flash、Pro、Cheated 共用算法；档位影响节奏、预算，Cheated 另有金币加成。
 - 支持全 Bot 和真人/Bot 混合桌。混合桌中的真人输入会使依赖旧盘面的计划失效，效果需单独测试。
-- Bot 可处理奖励、商店、事件、营地及路线建议。当前优化基线保持路线设置和既有搜索预算，知识恶魔统一选择瓦解。
+- Bot 可处理奖励、商店、事件、营地及路线建议。全 Bot 保留现有路线设置与搜索预算；真人行动时采用有界短比较，知识恶魔统一选择瓦解。
 
 构建后将 `CoopBots.dll`、`CoopBots.Kernel.dll` 和 `mod_manifest.json` 放入游戏的 `mods/CoopBots/`，并安装匹配的 RitsuLib。构建脚本的输出与依赖路径见测试指南。
 

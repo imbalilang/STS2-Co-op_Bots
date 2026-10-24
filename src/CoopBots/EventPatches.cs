@@ -23,6 +23,7 @@ public static class BotEventDriver
         "ChooseOptionForEvent",
         new[] { typeof(Player), typeof(int) });
     private static readonly FieldInfo PageIndex = AccessTools.Field(typeof(EventSynchronizer), "_pageIndex");
+    private static readonly FieldInfo LocalPlayerId = AccessTools.Field(typeof(EventSynchronizer), "_localPlayerId");
     private static readonly HashSet<EventOption> ChosenOptions = new(ReferenceEqualityComparer.Instance);
 
     private static readonly Dictionary<ulong, ConstructionPoll<(int Index, string Explanation)>> planning = new();
@@ -120,9 +121,20 @@ public static class BotEventDriver
                     continue;
                 ChosenOptions.Add(option);
                 LogChoice(player, eventModel, optionIndex, explanation);
-                ChooseSolo.Invoke(synchronizer, new object[] { player, optionIndex });
+                ChooseNonSharedOption(synchronizer, player, optionIndex);
             }
         }
+    }
+
+    // Native ChooseLocalOption both runs the local event and broadcasts its
+    // choice. Synthetic replicas still run the private body on each peer:
+    // the native message identifies its player from the physical sender ID.
+    internal static void ChooseNonSharedOption(EventSynchronizer synchronizer, Player player, int index)
+    {
+        if (!BotRegistry.IsBot(player.NetId) && player.NetId == (ulong)LocalPlayerId.GetValue(synchronizer)!)
+            synchronizer.ChooseLocalOption(index);
+        else
+            ChooseSolo.Invoke(synchronizer, new object[] { player, index });
     }
 
     // Choosing is fire-and-forget: the page stays visible while the chosen

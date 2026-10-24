@@ -41,13 +41,20 @@ internal sealed partial class KernelCombatPlanner
         // A handover can turn a mixed table into all-Bot between ticks. The
         // existing mixed lease still belongs to the previous control domain.
         if (tournamentScript is null || !MixedTable(combat) && mixedContinuation is null) return false;
-        var changed = mixedInputRevision != KernelInputObserver.Revision || mixedControl != ControlKey(combat);
+        var controlChanged = mixedControl != ControlKey(combat);
+        var changed = mixedInputRevision != KernelInputObserver.Revision || controlChanged;
+        if (controlChanged)
+        {
+            // In-flight evidence belongs to the old control domain. Retire it
+            // before forming any new proposal from currently controlled seats.
+            mixedProposal = null; mixedProposalReplay = null; mixedProposalClock = null; mixedReadyProposal = null;
+        }
         // Inspect at most once per four deployed actions without new input.
         // This keeps a short execution commitment while retaining the searched
         // suffix as a candidate. No action is simulated on the human's behalf.
         if (!changed && mixedContinuation is not null
             && (tournamentScriptIndex % 4 != 0 || mixedCheckedCursor == tournamentScriptIndex)) return false;
-        if (mixedContinuation is not null
+        if (!controlChanged && mixedContinuation is not null
             && !mixedContinuation.AdvanceTo(tournamentScriptIndex, TimeSpan.FromMilliseconds(TournamentSliceMs), tournamentRequest)) return true;
         var actual = KernelCombatCapture.Capture(combat);
         var controlled = ControlledSeats(combat);
@@ -66,7 +73,11 @@ internal sealed partial class KernelCombatPlanner
         }
 
         var suffix = tournamentScript.Skip(tournamentScriptIndex).ToArray();
-        if (suffix.Length > 0 && suffix.All(a => a.Potion is null) && tournamentScriptRecord is { } old)
+        // Renew a suffix owned entirely by the current control domain. Adding
+        // a delegated seat need not discard other Bots' legal proposals; giving
+        // a seat back excludes every suffix containing that human's actions.
+        if (suffix.Length > 0 && suffix.All(a => a.Potion is null && AutoPilot.Drives(a.Player.NetId))
+            && tournamentScriptRecord is { } old)
             mixedProposal = new(suffix[0], old with { Victory = false, Kind = EvidenceKind.EstimatedCutoff,
                 CutoffReason = "external-input-awaiting-native-replay" }, [], 0, 0, "mixed-proposal") { Script = suffix };
         var cause = changed ? "settled external input or control change" : "committed action window requires a new root";
@@ -90,8 +101,27 @@ internal sealed partial class KernelCombatPlanner
         mixedProposalReplay.Advance(TimeSpan.FromMilliseconds(TournamentSliceMs));
         if (!mixedProposalReplay.Done && mixedProposalClock.Elapsed.TotalMilliseconds < 120
             && tournamentRequest?.IsStopped != true) return true;
-        if (mixedProposalReplay.Result is { Record.Verified: true } verified)
-            tournamentOptions = tournamentOptions! with { ReferenceResult = verified };
+        if (mixedProposalReplay.Result is { FirstAction: { EndTurn: false }, Record: not null } replayed
+            && tournamentRequest is { IsCancelled: false } request && replayed.IsFor(request)
+            && tournamentActors!.Contains(replayed.FirstAction.Player)
+            && replayed.Script!.All(a => AutoPilot.Drives(a.Player.NetId)))
+        {
+            var losesLivingSeat = tournamentParty!.Select((p, i) =>
+                tournamentRoot!.Hp(p.Creature) > 0 && replayed.Record.PostCombatHp[i] <= 0).Any(dead => dead);
+            if (tournamentInteractive && !losesLivingSeat)
+            {
+                // This suffix was executed against the actual new root, with
+                // fresh provenance and fresh alive/enemy predictions. It can
+                // supply a first action now instead of paying for another full
+                // portfolio while the human is likely to change the root again.
+                mixedReadyProposal = replayed;
+            }
+            else if (replayed.Record.Verified || tournamentInteractive)
+                // A replay which proves a death still participates. Compare it
+                // with current-root alternatives instead of immediately adopting
+                // the first legal old action; legal losing lines remain allowed.
+                tournamentOptions = tournamentOptions! with { ReferenceResult = replayed };
+        }
         Log.Info($"CoopBots mixed proposal: replayed={mixedProposalReplay.Result?.Record?.Verified == true} "
             + $"stop={mixedProposalReplay.Failure} wall={mixedProposalClock.Elapsed.TotalMilliseconds:F1}ms "
             + $"generation={tournamentRequest?.RootGeneration}");

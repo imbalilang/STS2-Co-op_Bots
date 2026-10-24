@@ -1,5 +1,16 @@
 # 版本变更记录 / Changelog
 
+## 0.39.3（2026-10-24）
+
+- 修复真人奖励界面被误判为未完成 Bot 任务而阻止跟随选房；本机托管真人的未完成奖励仍正常等待。
+- 自动回合握手不再清除未来选牌菜单与剧本；真实真人输入仍按已结算盘面更新计划。
+- 混合桌改用短预算比较，并从当前实盘重新验证受控席位的可用后缀，减少重复完整重搜；Bot 普通出牌可穿插在真人结束回合前，Bot 结束回合仍等待真人。
+- 控制权变化清理旧席位动作；新根重放证明致死的后缀先参与比较。默认搜索读取真人集火，目标变化更新计划；卡牌及药水急救保留正确的续招合同。
+- 合成席位宝箱奖励增加授权、前后态核对及幂等确认，覆盖重试、重连与退出清理；本机托管真人的非共享事件恢复原生选择广播。所有真人须使用相同版本。
+- 新增17个功能回归场景和31项故障注入红绿验证；发布构建验证见 GitHub Release 附件。尚未做双客户端实机混合局验收，不代表实机延迟、整塔胜率或通关目标已获验证。
+
+Mixed human/Bot fixes: unblock room voting, preserve plans across automatic turn handshakes, and reduce repeated full searches through short comparisons and continuation replay from the settled board. Bots can play cards before humans end their turn. Control handback, manual focus, rescue continuations, and treasure/event synchronization are also covered. Includes 17 new scenarios and 31 fault-injection checks. Release-build validation accompanies the GitHub Release. Two-client gameplay, latency, and win-rate improvements remain unverified.
+
 ## 0.39.2（2026-10-23）
 
 - 发布此前开发快照中的四席规划、执行合同、临时属性和多人开局等待修复，并集成10月22日社区贡献包的构筑与规划改动。

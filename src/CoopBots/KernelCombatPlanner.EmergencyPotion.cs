@@ -26,6 +26,7 @@ internal sealed partial class KernelCombatPlanner
     private int emergencyPotionActions;
     private double emergencyPotionComputeMs;
     private KernelDecisionRequest? emergencyPotionRequest;
+    private KernelSession? emergencyPotionRoot;
 
     private sealed record EmergencyLine(KernelSession State,
         IReadOnlyList<KernelTeamSearch.Action> Actions,
@@ -103,6 +104,7 @@ internal sealed partial class KernelCombatPlanner
             emergencyPotionRequest = tournamentRequest;
             emergencyPotionRescue = null; emergencyPotionRepair = null; emergencyPotionComputeMs = 0;
             var root = KernelCombatCapture.Capture(combat); emergencyPotionCaptures++;
+            emergencyPotionRoot = root;
             if (!root.CanFork) { emergencyPotionPending = false; emergencyPotionTrials = null; return false; }
             emergencyPotionTrials = EmergencyPotionComparisons(root, actors, plan).GetEnumerator();
             emergencyPotionPending = true;
@@ -144,6 +146,11 @@ internal sealed partial class KernelCombatPlanner
         tournamentScriptRecord = TerminalRecord.Capture(rescue.State, combat.Players, rescue.State.HasTerminal,
             "emergency-side-boundary");
         tournamentReplanNextRound = !rescue.State.HasWon;
+        // The witness's ending has already consumed its cards and potion. A
+        // mixed-table lease must replay from the actual pre-rescue capture;
+        // otherwise its next review immediately discards this surviving line.
+        // A bottle opening is emitted below; a card-only repair is still at 0.
+        CaptureMixedContinuation(emergencyPotionRoot, combat, rescue.Actions, cursor: tournamentScriptIndex);
         if (opening is null)
         {
             emergencyPotionRepaired = true;

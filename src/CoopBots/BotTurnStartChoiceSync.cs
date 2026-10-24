@@ -224,7 +224,8 @@ internal static class BotTurnStartChoiceSync
             action.AfterFinished += AfterFinished;
             return;
         }
-        if (!AutoPilot.Drives(action.OwnerId)) ExternalInput("human action enqueued before planned turn-start choices");
+        if (ExternalCombatInput.IsHumanAction(action))
+            ExternalInput("human action enqueued before planned turn-start choices");
     }
 
     private static string ActionKey(GameAction action) => action switch {

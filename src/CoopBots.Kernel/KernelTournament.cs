@@ -56,6 +56,25 @@ public sealed record TournamentOptions(
     public bool DiverseJointContinuations { get; init; } = true;
     public TournamentResult? ReferenceResult { get; init; }
     public KernelDecisionRequest? Request { get; init; }
+    // Human intent is an opening preference. Native ending quality remains
+    // authoritative: a preferred target cannot displace a safer or winning line.
+    public uint? ManualFocusTargetCombatId { get; init; }
+
+    internal bool FollowsManualFocus(KernelTeamSearch.Action? action)
+        => ManualFocusTargetCombatId is { } target && action?.Card?.Type == CardType.Attack
+            && action.Target?.CombatId == target;
+
+    internal int Compare(TerminalRecord candidate, KernelTeamSearch.Action? action,
+        TerminalRecord current, KernelTeamSearch.Action? currentAction)
+    {
+        var quality = TerminalComparer.Compare(candidate, current, Objective);
+        if (quality != 0) return quality;
+        // Equal team totals can hide trading a living human for another seat.
+        // An expressed target never licenses that survival trade.
+        if (!candidate.PostCombatHp.Select(hp => hp > 0)
+            .SequenceEqual(current.PostCombatHp.Select(hp => hp > 0))) return 0;
+        return FollowsManualFocus(action).CompareTo(FollowsManualFocus(currentAction));
+    }
 }
 
 /// <summary>
@@ -244,7 +263,9 @@ public static class KernelTournament
                     scored.Add((new KernelTeamSearch.Action(player, card, target,
                         CardStateKey: key, CardStateOccurrence: occurrence),
                         (lethal ? 1e9 : 0) + damage + poison + rider
-                        + teamSetup * 1e6 - (hold ? 1e8 : 0), role));
+                        + teamSetup * 1e6 - (hold ? 1e8 : 0)
+                        + (o.ManualFocusTargetCombatId.HasValue && target?.CombatId == o.ManualFocusTargetCombatId
+                            && card.Type == CardType.Attack ? 1e4 : 0), role));
                 }
             }
             // A costly first step can enable a profitable sequence. A one-step
@@ -482,6 +503,10 @@ public sealed class TournamentRun : IDisposable
     private bool jointFinished;
     private bool jointSelected;
     private RolloutRun? referenceRun;
+    private RolloutRun? manualFocusRun;
+    private KernelTeamSearch.Action? manualFocusAction;
+    private bool manualFocusFinished;
+    private double manualFocusStartedMs;
     // Only this tournament's own completed Kill reference may seed joint work.
     // bestScript can already describe a bottle or a different policy, and an
     // external ReferenceResult does not prove the same physical search root.
@@ -682,6 +707,13 @@ public sealed class TournamentRun : IDisposable
             referenceSteps = reference.Result.Steps;
             referenceRun = null;
         }
+        if (manualFocusRun is { } focused)
+        {
+            focused.FinishAtBudget();
+            if (focused.Result is { Terminal: true } && manualFocusAction is { } opening)
+                Consume(focused, opening);
+            manualFocusRun = null;
+        }
         if (policyReferenceRun is { } policyReference)
         {
             PreserveTerminalReference(policyReference, rememberCardReference: false);
@@ -717,6 +749,11 @@ public sealed class TournamentRun : IDisposable
         // It chooses its own opening, so root enumeration cannot bypass holds.
         if (!referenceFinished && o.EnableJointSearch && !o.PotionsOnly && bestRecord is null)
             return AdvanceReference(slice);
+        // Fund one actual focused opening before optional beam work can spend
+        // the remainder. Retargeting a live card without replaying its ending
+        // would silently discard the defense and emergency guarantees.
+        if (!manualFocusFinished && o.EnableJointSearch && !o.PotionsOnly && o.ManualFocusTargetCombatId.HasValue)
+            return AdvanceManualFocus(slice);
         // A complete card line is also a cheap replay proposal for a bottle
         // opening. Fund that real different opening before another whole card
         // policy repeats the reference's first move under the same deadline.
@@ -748,7 +785,7 @@ public sealed class TournamentRun : IDisposable
             if (!complete) return false;
             jointFinished = true;
             if (joint.Result is { FirstAction: not null, Record: not null } found
-                && (bestRecord is null || TerminalComparer.Compare(found.Record, bestRecord, o.Objective) > 0))
+                && (bestRecord is null || o.Compare(found.Record, found.FirstAction, bestRecord, bestAction) > 0))
             {
                 bestAction = found.FirstAction; bestRecord = found.Record;
                 bestScript = found.Script; bestScriptAliveStates = found.ScriptAliveStates;
@@ -760,6 +797,45 @@ public sealed class TournamentRun : IDisposable
             return false;
         }
         return dop <= 1 ? AdvanceSerial(slice) : AdvanceParallel(slice);
+    }
+
+    private bool AdvanceManualFocus(TimeSpan slice)
+    {
+        var watch = Stopwatch.StartNew();
+        try
+        {
+            if (manualFocusRun is null)
+            {
+                var action = candidates.FirstOrDefault(o.FollowsManualFocus);
+                if (action?.Card is null || o.FollowsManualFocus(bestAction)
+                    || BudgetElapsed() + o.ReserveMs >= budgetMs)
+                { manualFocusFinished = true; return false; }
+                manualFocusStartedMs = BudgetElapsed();
+                var opened = root.CardBranches(action.Card, action.Target, maximumBranches: 1)
+                    .FirstOrDefault(b => b.Boundary.Length == 0);
+                if (opened is null) { manualFocusFinished = true; return false; }
+                manualFocusAction = action with { Choices = opened.Choices,
+                    ChoiceOrdinals = opened.ChoiceOrdinals, TurnStartChoices = opened.TurnStartChoices };
+                manualFocusRun = new RolloutRun(opened.State, party, o.ContinuationActors ?? actors,
+                    rolloutOptions with { Policy = RolloutPolicyKind.Kill,
+                        InvestmentLookahead = false, SequenceLookahead = true,
+                        SequenceHandLookahead = false, CaptureActionCheckpoints = true })
+                    { StopRequested = () => StopRequested };
+            }
+            do
+            {
+                if (StopRequested) return false;
+                StepRollout(manualFocusRun);
+                if (!manualFocusRun.Done && (BudgetElapsed(watch) + o.ReserveMs >= budgetMs
+                    || BudgetElapsed(watch) - manualFocusStartedMs >= Math.Max(1, (budgetMs - o.ReserveMs) / 3d)))
+                    manualFocusRun.FinishAtBudget();
+            } while (!manualFocusRun.Done && watch.Elapsed < slice);
+            if (!manualFocusRun.Done) return false;
+            Consume(manualFocusRun, manualFocusAction!);
+            manualFocusRun = null; manualFocusFinished = true;
+            return false;
+        }
+        finally { computeMs += watch.Elapsed.TotalMilliseconds; }
     }
 
     private bool AdvanceReference(TimeSpan slice)
@@ -840,7 +916,7 @@ public sealed class TournamentRun : IDisposable
         considered.Add(outcome.Record); rollouts++;
         evaluatedOpenings.Add((first.Player, first.CardStateKey, first.CardStateOccurrence,
             first.Target, first.Potion, first.EndTurn));
-        if (bestRecord is null || TerminalComparer.Compare(outcome.Record, bestRecord, o.Objective) > 0)
+        if (bestRecord is null || o.Compare(outcome.Record, first, bestRecord, bestAction) > 0)
         {
             bestAction = first; bestRecord = outcome.Record;
             bestScript = outcome.Actions; bestScriptAliveStates = outcome.AliveStates;
@@ -866,7 +942,7 @@ public sealed class TournamentRun : IDisposable
             considered.Add(record); rollouts++;
             evaluatedOpenings.Add((first.Player, first.CardStateKey, first.CardStateOccurrence,
                 first.Target, first.Potion, first.EndTurn));
-            if (bestRecord is null || TerminalComparer.Compare(record, bestRecord, o.Objective) > 0)
+            if (bestRecord is null || o.Compare(record, first, bestRecord, bestAction) > 0)
             {
                 bestAction = first; bestRecord = record; bestScript = candidate.Script;
                 bestScriptAliveStates = candidate.ScriptAliveStates; bestScriptEnemyStates = candidate.ScriptEnemyStates; bestScriptCheckpoints = candidate.ScriptCheckpoints;
@@ -932,7 +1008,7 @@ public sealed class TournamentRun : IDisposable
                 considered.Add(outcome.Record); rollouts++; if (outcome.Cutoff) cutoffs++;
                 evaluatedOpenings.Add((first.Player, first.CardStateKey, first.CardStateOccurrence,
                     first.Target, first.Potion, first.EndTurn));
-                if (bestRecord is null || TerminalComparer.Compare(outcome.Record, bestRecord, o.Objective) > 0)
+                if (bestRecord is null || o.Compare(outcome.Record, first, bestRecord, bestAction) > 0)
                 {
                     bestAction = first; bestRecord = outcome.Record;
                     bestScript = outcome.Actions; bestScriptAliveStates = outcome.AliveStates;
@@ -978,7 +1054,7 @@ public sealed class TournamentRun : IDisposable
                     considered.Add(outcome.Record); rollouts++; if (outcome.Cutoff) cutoffs++;
                     evaluatedOpenings.Add((first.Player, first.CardStateKey, first.CardStateOccurrence,
                         first.Target, first.Potion, first.EndTurn));
-                    if (bestRecord is null || TerminalComparer.Compare(outcome.Record, bestRecord, o.Objective) > 0)
+                    if (bestRecord is null || o.Compare(outcome.Record, first, bestRecord, bestAction) > 0)
                     {
                         bestAction = first; bestRecord = outcome.Record;
                         bestScript = outcome.Actions; bestScriptAliveStates = outcome.AliveStates;
@@ -1240,7 +1316,7 @@ public sealed class TournamentRun : IDisposable
         if (outcome.StopReason == "continuation-budget" && bestRecord is not null) return;
         if (bestRecord is null || bestRecord.CutoffReason == "continuation-budget"
             && outcome.StopReason != "continuation-budget"
-            || TerminalComparer.Compare(record, bestRecord, o.Objective) > 0)
+            || o.Compare(record, action, bestRecord, bestAction) > 0)
         {
             jointSelected = false;
             bestRecord = record;
@@ -1275,7 +1351,7 @@ public sealed class TournamentRun : IDisposable
             || checkpoints.Count != outcome.Actions.Count
             || !checkpoints[0].SameBoundary(root.ActionCheckpoint())) return;
         if (interruptedPolicyPrefix is { Record: { } prior }
-            && TerminalComparer.Compare(outcome.Record, prior, o.Objective) <= 0) return;
+            && o.Compare(outcome.Record, first, prior, interruptedPolicyPrefix.FirstAction) <= 0) return;
         interruptedPolicyPrefixKind = policy;
         interruptedPolicyPrefix = new(first, outcome.Record, [], 0, 1, "settled-policy-prefix")
         {

@@ -562,6 +562,8 @@ plan boundary drift (logged, not refused)             plan sentinel missing
 
 | 偏离 | 理由 | 来源 |
 |---|---|---|
+| 真人仍行动时，混合桌每趟原生一回合比较 200ms、共享请求 400ms；实际新根重放通过的无药水后缀可直接提供首步，已证明活人死亡的后缀先与新候选比较；控制域改变清除旧候选。真人结束后及全托管桌保留原预算/整战比较，截断仍是估计。 | 上游没有多人真人连续输入调度；避免每次输入取消后必须完成高预算整战锦标赛才能首动，提交仍受当前请求、席位归属、牌/目标和完整状态合同约束。 | 用户2026-10-24明确要求修复混合桌反复重搜并使真人未结束时Bot及时穿插；KernelCombatPlanner.Responsiveness/Mixed与生产Poll回归。 |
+| 合成席位宝箱使用显式房主授权、房间/幕及原生前后状态绑定的跨端执行和幂等ACK；房主先执行原生奖励再广播，重连载入后态直接ACK；退出注销消息并隔离旧异步回调。本机托管真人非共享事件走原生本地广播；自动Ready握手不视为主动真人输入。 | 原生消息从真实发送者推导玩家，合成Bot没有客户端；所有端必须推进同一奖励RNG/金币且不能重复支付；原生前后态使未携带内存回执的重连快照也能去重。 | 用户2026-10-24混合桌修复授权；BotTreasureRewardSession、BotEventDriver、ExternalCombatInput；双端原生/选择合同回归，物理双客户端验收另记。 |
 | 贡献包首张关键牌获取优先：战士 JUGGERNAUT（势不可当），多人 FLANKING/KNOCKDOWN；奖励和永久加牌允许越过普通负收益门槛，商店在可负担删诅咒之后购买最低价首张关键牌。NIGHTMARE 恢复普通估值。 | 忠实合入贡献包实际 ID 与政策；DOMINATE（主宰）和 JUGGERNAUT 分开，原包中文误称不扩展到另一张牌。 | 用户2026-10-23明确要求合入 key-card-acquisition-20261022 包；KeyCardAcquisition、BuildValue、BotShopPlanner；来源及限制见 docs/COMMUNITY_PACKAGE_20261022.md。 |
 | 构筑推演增加格挡事件触发伤害与当前血量风险，Add/Remove/Upgrade 加有符号联合队伍边际，房间入口刷新队友快照；保留六回合压力、三回合投资及有限风险成本近似。 | 贡献包的通用构筑增量影响全部永久决策；沿用候选模型，不将有限血量惩罚宣称为完整生存模拟，不扩展原生规则覆盖。 | 用户2026-10-23合入授权；ConstructionHand、SurvivalValue、TeamSynergyEvaluator、TeamSynergyMath/Native；CommunityPackageScenarios。 |
 | 复制类技能参与投资与同步受控队伍续演，复制选择允许 step-cap 残值；共享铺垫和未来减益收益扩大，回合末比较固定 root 机会窗口；已完成无完整路线时直接部署现有结果。 | 合入贡献包规划策略，沿用既有共享停止/预算及原生选牌合同；一般搜索仍可 CONTINUING，不增加网络或真人代选范围。 | 用户2026-10-23；KernelChoiceContinuation/KernelInvestmentProbe、KernelTeamCoordination、KernelEndTurnRun、KernelCombatPlanner；验证以本次新收据为准。 |

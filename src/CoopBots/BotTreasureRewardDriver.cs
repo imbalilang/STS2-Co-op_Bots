@@ -1,115 +1,72 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
-using System.Threading.Tasks;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Players;
-using MegaCrit.Sts2.Core.Logging;
+using MegaCrit.Sts2.Core.Multiplayer;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
-using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 
 namespace CoopBots;
 
-/// <summary>
-/// Gives synthetic bot seats the treasure room's NORMAL rewards.
-///
-/// The game's treasure room is per-player and click-driven:
-///
-///   NTreasureRoom.OnChestButtonReleased -> OpenChest()
-///     -> TreasureRoom.DoNormalRewards()
-///       -> OneOffSynchronizer.DoLocalTreasureRoomRewards()
-///            -> DoTreasureRoomRewards(LocalPlayer)
-///
-/// <see cref="BotTreasureChestDriver"/> handles the handed-over LOCAL seat by
-/// clicking its chest. Synthetic bots have no client and no chest node, so unless
-/// the host calls the reward body for them they get nothing from the chest — while
-/// the RELIC vote still succeeds for every seat. The live 2026-09-22 run showed the
-/// asymmetry: only the handed-over seat converted SPOILS_MAP, and the three
-/// synthetic bots still carried the unplayable Quest card in build[final].
-///
-/// This driver runs only on the submitting peer (the one that owns the run) and
-/// grants each synthetic bot the same body the game runs for a remote human opener.
-/// It is latched per treasure room so a frame loop can never pay twice.
-/// </summary>
+// Native DoLocalTreasureRoomRewards broadcasts first, then executes the same
+// private reward body on every peer. Its message takes the player from sender
+// ID, so a synthetic seat needs an explicit host-authorized player ID instead.
 internal static class BotTreasureRewardDriver
 {
-    private static readonly MethodInfo? DoTreasureRoomRewards = AccessTools.Method(
+    private static readonly MethodInfo RewardBody = AccessTools.Method(
         typeof(OneOffSynchronizer), "DoTreasureRoomRewards", new[] { typeof(Player) });
-    private static readonly HashSet<(RunState Run, string Key)> Granted = new();
-    private static Task? pending;
+    private static RunManager? manager;
+    private static RunLocationTargetedMessageBuffer? buffer;
+    private static BotTreasureRewardSession? session;
 
-    /// <summary>
-    /// The synthetic seats this driver owes a chest to. Deliberately IsBot, not
-    /// Drives: a handed-over HUMAN seat already has a local chest and already gets
-    /// its reward through <see cref="BotTreasureChestDriver"/>.
-    /// </summary>
     internal static IReadOnlyList<Player> SyntheticBots(RunState state)
-        => state.Players
-            .Where(player => BotRegistry.IsBot(player.NetId)
-                && AutoPilot.Drives(player.NetId)
-                && player.Creature.IsAlive)
-            .ToArray();
+        => state.Players.Where(p => BotRegistry.IsBot(p.NetId)
+            && AutoPilot.Drives(p.NetId) && p.Creature.IsAlive).ToArray();
 
-    /// <summary>
-    /// Start (or finish) this room's synthetic-bot chest rewards.
-    /// Returns true while work is still in flight; the caller must not proceed the
-    /// room until it returns false, or the gold/Quest effects can race the exit.
-    /// </summary>
-    internal static bool TryGrant(RunManager manager, RunState state)
+    internal static void Initialize(RunManager instance)
     {
-        if (state.CurrentRoom is not { RoomType: RoomType.Treasure }) return false;
-        if (pending is { } running)
-        {
-            if (!running.IsCompleted) return true;
-            pending = null;
-        }
-        if (!RunAuthority.IsSubmittingPeer(manager)) return false;
-        var bots = SyntheticBots(state);
-        if (bots.Count == 0) return false;
-        if (DoTreasureRoomRewards is null)
-        {
-            Log.Warn("CoopBots treasure: OneOffSynchronizer.DoTreasureRoomRewards "
-                + "was not found; synthetic bots will not receive the room's chest rewards.");
-            return false;
-        }
-
-        var key = state.CurrentMapCoord?.ToString()
-            ?? state.CurrentRoom.GetHashCode().ToString();
-        if (!Granted.Add((state, key))) return false;
-
-        pending = GrantAll(manager, bots);
-        return true;
+        buffer?.UnregisterMessageHandler<BotTreasureRewardMessage>(Receive);
+        session?.Dispose();
+        manager = instance;
+        session = new BotTreasureRewardSession(
+            () => instance.DebugOnlyGetState(),
+            () => instance.RunLocationTargetedBuffer.CurrentLocation,
+            () => RunAuthority.IsSubmittingPeer(instance),
+            () => (instance.NetService as NetClientGameService)?.HostNetId,
+            () => instance.NetService is NetHostGameService host
+                ? host.ConnectedPeers.Where(p => p.readyForBroadcasting).Select(p => p.peerId).ToArray() : [],
+            message => instance.NetService.SendMessage(message),
+            player => GrantNative(instance.OneOffSynchronizer, player));
+        buffer = instance.RunLocationTargetedBuffer;
+        buffer.RegisterMessageHandler<BotTreasureRewardMessage>(Receive);
     }
 
-    private static async Task GrantAll(RunManager manager, IReadOnlyList<Player> bots)
+    internal static void CleanUp(RunManager instance)
     {
-        foreach (var player in bots)
-        {
-            // Read this before the reward removes it, so the log can distinguish
-            // "no SPOILS_MAP" from "map converted silently".
-            var hadSpoilsMap = player.Deck.Cards.Any(card => card.Id.Entry == "SPOILS_MAP");
-            await GrantOne(manager, player, hadSpoilsMap);
-        }
+        if (manager != instance) return;
+        buffer?.UnregisterMessageHandler<BotTreasureRewardMessage>(Receive);
+        buffer = null; session?.Dispose(); session = null; manager = null;
     }
 
-    private static async Task GrantOne(RunManager manager, Player player, bool hadSpoilsMap)
+    private static void Receive(BotTreasureRewardMessage message, ulong sender) => session?.Receive(message, sender);
+
+    internal static Task<int> GrantNative(OneOffSynchronizer synchronizer, Player player)
+        => (Task<int>)RewardBody.Invoke(synchronizer, new object[] { player })!;
+
+    internal static bool TryGrant(RunManager instance, RunState state)
     {
-        try
-        {
-            var task = (Task<int>)DoTreasureRoomRewards!.Invoke(
-                manager.OneOffSynchronizer, new object[] { player })!;
-            var gold = await task;
-            Log.Info($"CoopBots treasure: cashed the chest for bot {player.NetId}"
-                + (hadSpoilsMap ? " (SPOILS_MAP converted)" : "")
-                + $" +{gold} gold");
-        }
-        catch (Exception error)
-        {
-            var inner = error.GetBaseException();
-            Log.Warn($"CoopBots treasure: bot {player.NetId} chest reward failed: "
-                + $"{inner.GetType().Name}: {inner.Message}");
-        }
+        if (manager != instance) Initialize(instance);
+        return session!.Tick();
     }
+}
+
+[HarmonyPatch(typeof(RunManager), "InitializeShared")]
+internal static class BotTreasureRewardInitializePatch
+{
+    private static void Postfix(RunManager __instance) => BotTreasureRewardDriver.Initialize(__instance);
+}
+
+[HarmonyPatch(typeof(RunManager), nameof(RunManager.CleanUp))]
+internal static class BotTreasureRewardCleanUpPatch
+{
+    private static void Prefix(RunManager __instance) => BotTreasureRewardDriver.CleanUp(__instance);
 }

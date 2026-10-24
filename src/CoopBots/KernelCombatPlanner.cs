@@ -35,7 +35,11 @@ internal sealed partial class KernelCombatPlanner
     internal NoActionKind LastNoAction { get; private set; }
     // True while a search is still expanding. The runtime must keep feeding it
     // frames rather than treating the inter-action interval as a reason to wait.
-    internal bool IsSearching => search is not null;
+    internal bool IsSearching => search is not null || tournamentRun is { Done: false }
+        || mixedProposalReplay is { Done: false } || emergencyPotionPending
+        || victoryReview is { Done: false } || shortVictory is { Done: false }
+        || endTurnComparison is { Done: false } || tournamentPotionReplay is { Done: false }
+        || tournamentPotionAudit is { Result: null };
     // True while a committed script still has an unemitted step: a card, a potion, or
     // one seat's EndTurn. The runtime's idle shortcut asks a narrower question — "does
     // any eligible bot hold a playable card or a usable potion" — and the answer is NO
@@ -67,11 +71,13 @@ internal sealed partial class KernelCombatPlanner
     // clock — so it keeps showing its own per-attempt budget.
     internal long SearchingElapsedMs => !IsSearching
         ? 0
+        : tournamentRequest is { } currentRequest ? (long)currentRequest.ElapsedMs
         : openingSearch && openingEpisodeStartMs != 0
             ? Environment.TickCount64 - openingEpisodeStartMs
             : Environment.TickCount64 - planningStartMs;
     internal int SearchingWallBudgetMs => !IsSearching
         ? 0
+        : tournamentRequest is { } currentRequest ? currentRequest.BudgetMs
         : openingSearch && openingEpisodeStartMs != 0
             ? OpeningSearchHardCapMs
             : wallBudgetMs;
@@ -1046,6 +1052,7 @@ internal sealed partial class KernelCombatPlanner
         if (actors.Count == 0) { Reset(); return Status.Ready; }
         if (TournamentDrives(combat, actors))
         {
+            UpdateManualFocus(combat, manualFocus);
             // NEVER LET A TOURNAMENT DECLINE FALL INTO THE OPENING LADDER.
             //
             // This flag is what hands the ordinary path 180 s, then five one-minute extensions.
@@ -1056,7 +1063,7 @@ internal sealed partial class KernelCombatPlanner
             // heartbeats at 45 s / 90 s / 135 s. Clearing it makes a decline cost one ordinary
             // search instead of a whole episode, which is what "fall back cheaply" has to mean.
             openingSearch = false;
-            var point = TournamentDecisionPoint(combat, actionVersion);
+            var point = TournamentDecisionPoint(combat, actionVersion) + $"/focus:{manualFocus}";
             if (point != tournamentDeclined)
             {
                 // PENDING IS NOT DECLINED. The tournament is sliced, so it answers across
@@ -2641,6 +2648,8 @@ internal sealed partial class KernelCombatPlanner
         tournamentOptions = null;
         tournamentWatch = null;
         tournamentOpeningReviewed = false;
+        tournamentInteractive = false;
+        mixedReadyProposal = null;
     }
 
     /// <summary>
@@ -2943,7 +2952,7 @@ internal sealed partial class KernelCombatPlanner
         {
             tournamentWatch ??= Stopwatch.StartNew();
             tournamentRequest ??= new KernelDecisionRequest(++tournamentRootGeneration,
-                checked(2 * TournamentBudget(combat)), TournamentParallelism);
+                checked(2 * DecisionPassBudget(combat, humansFinished)), DecisionConcurrency(combat, humansFinished));
             // C replans after every live action. rootSession belongs to the segmented
             // search and can describe an already-played hand or a previous combat.
             var root = KernelCombatCapture.Capture(combat);
@@ -2962,6 +2971,7 @@ internal sealed partial class KernelCombatPlanner
             tournamentRoot = root;
             tournamentActors = actors;
             tournamentParty = root.Party.Count > 0 ? root.Party : actors;
+            tournamentInteractive = InteractiveMixedTurn(combat, humansFinished);
             // Price bottles as cross-fight resources, but allow them to save HP in
             // a costly victory as well as rescue a losing line. Second-pass work is
             // skipped when there is no modeled bottle or no room to earn its price.
@@ -2977,6 +2987,7 @@ internal sealed partial class KernelCombatPlanner
                 Objective: KernelPotionPolicy.Objective,
                 ContinuationActors: combat.Players.Where(p => actors.Contains(p) || AutoPilot.Drives(p.NetId)).ToArray(),
                 EnableJointSearch: true) { Request = tournamentRequest };
+            tournamentOptions = WithMixedFocusOptions(InteractiveOptions(tournamentOptions));
             tournamentPhase = TournamentPhase.NoPotions;
             // The DECISION starts here, before the first pass, so both passes land in one
             // reading. The constructor below does real work too (`FirstActions` forks and
@@ -2984,6 +2995,7 @@ internal sealed partial class KernelCombatPlanner
             BeginTournamentTelemetry();
         }
         if (ReplayMixedProposal()) return true;
+        if (mixedReadyProposal is not null) return true;
         var options = tournamentPhase == TournamentPhase.NoPotions
             ? tournamentOptions!
             : tournamentOptions! with { IncludePotions = true, PotionsOnly = true,
@@ -2991,7 +3003,7 @@ internal sealed partial class KernelCombatPlanner
         // Both passes share one decision allowance. Cheap reference replays
         // replace repeated card searches and unused baseline time goes to the
         // actual potion comparison.
-        var passBudget = TournamentBudget(combat);
+        var passBudget = DecisionPassBudget(combat, humansFinished);
         var remainingBudget = tournamentPhase == TournamentPhase.NoPotions ? passBudget
             : Math.Max(1, (int)(2 * passBudget - tournamentBaselineComputeMs
                 - (tournamentPotionReplay?.ComputeMs ?? 0)));
@@ -3064,7 +3076,7 @@ internal sealed partial class KernelCombatPlanner
                 // including potion rescue and cached-line reviews before the
                 // ordinary tournament passes. Capture/JIT remain atomic.
                 tournamentRequest = new(++tournamentRootGeneration,
-                    checked(2 * TournamentBudget(combat)), TournamentParallelism);
+                    checked(2 * DecisionPassBudget(combat, humansFinished)), DecisionConcurrency(combat, humansFinished));
             }
 
             // The existing boundary contract must renew or retire this
@@ -3138,15 +3150,16 @@ internal sealed partial class KernelCombatPlanner
                 {
                     return FinishTournament(TournamentOutcome.Declined);
                 }
-                if (tournamentRun is null) return TournamentOutcome.Pending;
+                if (tournamentRun is null && mixedReadyProposal is null) return TournamentOutcome.Pending;
                 // ONE FRAME'S WORTH. This is the whole point of the slicing: return to the
                 // caller without the animation having missed a frame.
-                if (!tournamentRun!.Advance(TimeSpan.FromMilliseconds(TournamentSliceMs)))
+                if (mixedReadyProposal is null && !tournamentRun!.Advance(TimeSpan.FromMilliseconds(TournamentSliceMs)))
                 {
                     return TournamentOutcome.Pending;
                 }
 
-                var result = tournamentRun.Result!;
+                var result = mixedReadyProposal ?? tournamentRun!.Result!;
+                mixedReadyProposal = null;
                 // Request identity is evidence ownership, not a game-action
                 // refusal. An old root's result cannot be deployed by retagging
                 // its generation number after a human changes the actual board.
@@ -3165,15 +3178,15 @@ internal sealed partial class KernelCombatPlanner
                     if (tournamentPotionAudit.Removed)
                         Log.Info("CoopBots potion: removed redundant opening bottle after replaying the same card plan without it");
                 }
-                ObserveTournamentRun(tournamentRun);
+                if (tournamentRun is not null) ObserveTournamentRun(tournamentRun);
                 Log.Info($"CoopBots joint search: phase={tournamentPhase} nodes={result.JointNodes} "
                     + $"prefixes={result.JointPrefixes} maxActions={result.JointMaxActions} selected={result.JointSelected} {result.JointDiagnostics} "
                     + $"potions={result.Record?.ResourcesConsumed ?? 0}");
                 if (tournamentPhase == TournamentPhase.NoPotions)
                 {
-                    tournamentBaselineComputeMs = tournamentRun.ComputeMs;
+                    tournamentBaselineComputeMs = tournamentRun?.ComputeMs ?? 0;
                     tournamentFirstPass = result;
-                    if (KernelPotionPolicy.WorthComparing(tournamentRoot!, tournamentActors!, tournamentParty!, result.Record))
+                    if (!tournamentInteractive && KernelPotionPolicy.WorthComparing(tournamentRoot!, tournamentActors!, tournamentParty!, result.Record))
                     {
                         // Losing or costly victory: compare the resource-adjusted ending.
                         tournamentRun = null;
@@ -3234,6 +3247,12 @@ internal sealed partial class KernelCombatPlanner
                     // A stored line was already tried at the top of the loop, so there is
                     // nothing left to fall back to here.
                     Log.Info($"CoopBots tournament: declined — {result.StopReason}");
+                    return FinishTournament(TournamentOutcome.Declined);
+                }
+
+                if (!actors.Contains(next.Player))
+                {
+                    Log.Info("CoopBots tournament: declined — fresh result seat is no longer eligible");
                     return FinishTournament(TournamentOutcome.Declined);
                 }
 
