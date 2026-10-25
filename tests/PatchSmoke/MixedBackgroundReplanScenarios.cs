@@ -1,4 +1,4 @@
-// V2 R2 ownership guards: build0/RED1 -> exact restore -> build0/GREEN0.
+﻿// V2 R2 ownership guards: build0/RED1 -> exact restore -> build0/GREEN0.
 // Receipt: work/v2-validation/r2/ownership-pass/receipts.json
 // System.InvalidOperationException: Mixed background: a pure all-Bot script must ignore unowned mixed caches instead of demoting quality, rebuilding its array or restarting refinement
 // System.InvalidOperationException: Mixed background: a new combat must not inherit the old fight's human/control/living execution ownership
@@ -63,7 +63,7 @@ internal static class MixedBackgroundReplanScenarios
         finally { KernelCombatPlanner.TournamentOverride = previous; harmony.UnpatchAll(harmony.Id); }
     }
 
-    private sealed class Board : IDisposable
+    internal sealed class Board : IDisposable
     {
         internal readonly CombatState Combat;
         internal readonly Player Bot, Human;
@@ -106,7 +106,11 @@ internal static class MixedBackgroundReplanScenarios
         }
         public void Dispose()
         {
-            Planner.Reset(newCombat: true); KernelInputObserver.Observe(Queue, null);
+            Planner.Reset(newCombat: true);
+            var drained = System.Diagnostics.Stopwatch.StartNew();
+            while (!KernelBackgroundOperation.IsIdle && drained.ElapsedMilliseconds < 5000) Thread.Sleep(1);
+            Check(KernelBackgroundOperation.IsIdle, "cancelled frozen worker must drain before native fixture globals are restored");
+            KernelInputObserver.Observe(Queue, null);
             AutoPilot.Set(Bot.NetId, wasBot); AutoPilot.Set(Human.NetId, wasHuman); native.Dispose();
         }
     }
@@ -187,15 +191,15 @@ internal static class MixedBackgroundReplanScenarios
     private static void SharedBudget()
     {
         using var b = new Board();
-        var original = (int)Invoke(b.Planner, "MixedRemainingDecisionBudget", b.Combat)!;
-        // A stopped request is a conservative deterministic accounting witness;
-        // setting its spent ledger avoids timing/sleep assertions in this test.
+        var original = (int)Invoke(b.Planner, "MixedRemainingReplanBudget", b.Combat)!;
         Set(b.Planner, "mixedEpisodeSpentMs", (double)original - 1);
         for (var i = 0; i < 10; i++) b.Input();
         b.Planner.AdvanceMixedReplan(b.Combat, 1000);
-        Check((int)Invoke(b.Planner, "MixedRemainingDecisionBudget", b.Combat)! == 1
+        Check((int)Invoke(b.Planner, "MixedRemainingReplanBudget", b.Combat)! == 1
             && (int)Get(b.Planner, "mixedReplanStarts")! == 0,
-            "repeated human revisions must not replenish the round's shared allowance or consume execution repair reserve");
+            "repeated human revisions must not replenish optional round credit");
+        Check((int)Invoke(b.Planner, "MixedRemainingDecisionBudget", b.Combat)! == original,
+            "exhausted optional improvement must leave the full necessary repair request available");
     }
 
     private static void Control()
@@ -350,3 +354,6 @@ internal static class MixedBackgroundReplanScenarios
     private static void Check(bool condition, string text) { if (!condition) throw new InvalidOperationException("Mixed background: " + text); }
     private static bool Format(ref string __result) { __result = ""; return false; }
 }
+
+// 2026-10-25 coral local repair: actual production mutation build0/RED1 -> exact bytes restored -> build0/GREEN0.
+// coral-budget-isolation: System.InvalidOperationException: Mixed background: exhausted optional improvement must leave the full necessary repair request available

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using CoopBots.Kernel.Vendor.PowerSync;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
@@ -9,7 +9,7 @@ namespace CoopBots.Kernel;
 
 /// <summary>
 /// Team policy supplies a score; the imported engine owns all card effects.
-/// Advance must run on the capturing game thread while the live root is stable.
+/// Advance stays on the thread that constructed this search and owns its frozen root.
 /// A slice ends between actions: one native effect cannot be preempted.
 /// </summary>
 public sealed class KernelTeamSearch : IDisposable

@@ -38,10 +38,9 @@ public sealed record TournamentOptions(
     /// <summary>
     /// Whether “end this seat’s turn” is a candidate.
     ///
-    /// True is the all-bot/solo default. A mixed table must pass false while a human is still
-    /// acting: BotRuntime only submits a ConfirmedEndTurn once every human has finished, so an
-    /// end-turn answer produced earlier is a decision the executor must refuse — and the same
-    /// decision point would then be recomputed on every following tick.
+    /// This is a search-domain option, independent of permission to submit an
+    /// ending to the native executor. Mixed tables retain closing proposals
+    /// while a human acts and gate their submission on human readiness.
     /// </summary>
     bool IncludeEndTurns = true,
     ObjectiveConfig? Objective = null,
@@ -60,6 +59,7 @@ public sealed record TournamentOptions(
     // Mixed tables fund native action prefixes while opening enumeration is
     // sliced across frames. The all-Bot scheduler retains its existing path.
     public bool MixedIncrementalOpenings { get; init; }
+    public bool RunInBackground { get; init; }
     public TournamentResult? ReferenceResult { get; init; }
     public KernelDecisionRequest? Request { get; init; }
     // Human intent is an opening preference. Native ending quality remains
@@ -749,13 +749,40 @@ public sealed class TournamentRun : IDisposable
     public double RolloutStepDeadlineTailMs => Interlocked.Read(ref rolloutStepDeadlineTailTicks) * 1000d / Stopwatch.Frequency;
     public long RolloutStepsCrossingDeadline => Interlocked.Read(ref rolloutStepsCrossingDeadline);
 
+    // One native policy's longest settled prefix survives later cancellation.
+    // It is a proposal, never a victory proof or a substitute policy. Capture it
+    // before a later side boundary can become unresolved or alter root evidence.
+    private TournamentResult? latestSettledProposal;
+    private RolloutRun? settledProposalOwner;
+    private int settledProposalActions;
+    public TournamentResult? LatestSettledProposal => Volatile.Read(ref latestSettledProposal);
+    private void RememberSettledProposal(RolloutRun run)
+    {
+        if (!o.MixedIncrementalOpenings || settledProposalOwner is not null && !ReferenceEquals(settledProposalOwner, run)
+            || run.RecordedActionCount <= settledProposalActions || !run.HasAccountedProposalSteps
+            || !run.State.CanFork) return;
+        var prefix = run.SettledPrefix();
+        if (prefix.Actions.FirstOrDefault() is not { Potion: null } first
+            || first.EndTurn && !o.IncludeEndTurns || prefix.Checkpoints is not { Count: > 0 } points
+            || !run.SettledPrefixStartsAt(root.ActionCheckpoint())
+            || points.Count != prefix.Actions.Count || prefix.AliveStates.Count != prefix.Actions.Count
+            || prefix.EnemyStates.Count != prefix.Actions.Count) return;
+        var proposal = new TournamentResult(first, prefix.Record, [], 0, 1, "native-settled-prefix") {
+            RootGeneration = RootGeneration, RequestProvenance = o.Request,
+            Script = prefix.Actions.ToArray(), ScriptAliveStates = prefix.AliveStates.ToArray(),
+            ScriptEnemyStates = prefix.EnemyStates.ToArray(), ScriptCheckpoints = points.ToArray()
+        };
+        settledProposalOwner = run; settledProposalActions = prefix.Actions.Count;
+        Volatile.Write(ref latestSettledProposal, proposal);
+    }
+
     private void StepRollout(RolloutRun run)
     {
         var started = Stopwatch.GetTimestamp();
         var request = o.Request;
         var remainingBeforeMs = request is null ? double.PositiveInfinity : Math.Max(0, request.BudgetMs - request.ElapsedMs);
         var stoppedBefore = request?.IsStopped == true;
-        try { run.Step(); }
+        try { run.Step(); RememberSettledProposal(run); }
         finally
         {
             var elapsed = Stopwatch.GetTimestamp() - started;
@@ -860,7 +887,22 @@ public sealed class TournamentRun : IDisposable
     /// launching all N-2 lanes in one call was the measured animation stutter. The caller
     /// returns to the frame after the slice, then collects/completes on later ticks.
     /// </summary>
+    private KernelBackgroundOperation? background;
+    public int WorkerThreadId => background?.WorkerThreadId ?? 0;
+    public double ControllerWallMs => background?.WorkerMs ?? 0;
+    public long ControllerAllocatedBytes => background?.AllocatedBytes ?? 0;
     public bool Advance(TimeSpan slice)
+    {
+        if (!o.RunInBackground) return AdvanceOwned(slice);
+        // Construction of mixed openings is deferred. All forks, reference
+        // policies, Joint work and lane collection now belong to this worker.
+        background ??= new(() => {
+            while (!AdvanceOwned(TimeSpan.FromMilliseconds(4))) KernelBackgroundOperation.Yield();
+        }, o.Request);
+        return background.Poll();
+    }
+
+    private bool AdvanceOwned(TimeSpan slice)
     {
         using var budgetScope = KernelSearchBudgetScope.Enter(o.Request);
         if (Done)
@@ -1564,15 +1606,17 @@ public sealed class TournamentRun : IDisposable
         // The checkpoint checks the first action boundary; factory ownership
         // binds its full root state. CanFork excludes unresolved native choices.
         // No new action or replay is started after the deadline to fabricate it.
-        if (run.Result is not { Terminal: false, StopReason: "continuation-budget" } outcome
+        if (run.Result is not { Terminal: false, StopReason: "continuation-budget" }
             || !run.State.CanFork
-            || outcome.Actions.FirstOrDefault() is not { Potion: null } first
+            || !run.HasAccountedProposalSteps) return;
+        var outcome = run.Result! with { Checkpoints = run.SettledPrefix().Checkpoints };
+        if (outcome.Actions.FirstOrDefault() is not { Potion: null } first
             || first.EndTurn && !o.IncludeEndTurns
             || outcome.AliveStates.Count != outcome.Actions.Count
             || outcome.EnemyStates.Count != outcome.Actions.Count
             || outcome.Checkpoints is not { Count: > 0 } checkpoints
             || checkpoints.Count != outcome.Actions.Count
-            || !checkpoints[0].SameBoundary(root.ActionCheckpoint())) return;
+            || !run.SettledPrefixStartsAt(root.ActionCheckpoint())) return;
         if (interruptedPolicyPrefix is { Record: { } prior }
             && o.Compare(outcome.Record, first, prior, interruptedPolicyPrefix.FirstAction) <= 0) return;
         interruptedPolicyPrefixKind = policy;
@@ -1587,6 +1631,7 @@ public sealed class TournamentRun : IDisposable
     private void Finish()
     {
         if (Done) return;
+        interruptedPolicyPrefix ??= latestSettledProposal;
         Result = IsCancelled
             ? new TournamentResult(null, null, considered.ToArray(), rollouts, cutoffs, RequestStop) {
                 RootGeneration = RootGeneration,

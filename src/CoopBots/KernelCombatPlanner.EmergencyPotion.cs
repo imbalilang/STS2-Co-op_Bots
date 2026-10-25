@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
@@ -106,7 +106,22 @@ internal sealed partial class KernelCombatPlanner
             var root = KernelCombatCapture.Capture(combat); emergencyPotionCaptures++;
             emergencyPotionRoot = root;
             if (!root.CanFork) { emergencyPotionPending = false; emergencyPotionTrials = null; return false; }
-            emergencyPotionTrials = EmergencyPotionComparisons(root, actors, plan).GetEnumerator();
+            if (MixedTable(combat))
+            {
+                var owners = actors.ToArray(); var proposal = plan?.ToArray(); var request = emergencyPotionRequest;
+                mixedEmergencyWork = new(() => {
+                    // The iterator writes only to this private evaluator. A
+                    // cancelled runtime can retire its handle without disposing
+                    // or mutating an iterator currently owned by a worker.
+                    var evaluator = new KernelCombatPlanner { emergencyPotionRequest = request };
+                    var watch = Stopwatch.StartNew();
+                    using var trials = evaluator.EmergencyPotionComparisons(root, owners, proposal).GetEnumerator();
+                    while (request?.IsStopped != true && trials.MoveNext()) KernelBackgroundOperation.Yield();
+                    return (evaluator.emergencyPotionRescue, evaluator.emergencyPotionRepair, watch.Elapsed.TotalMilliseconds);
+                }, request);
+                emergencyPotionTrials = null;
+            }
+            else emergencyPotionTrials = EmergencyPotionComparisons(root, actors, plan).GetEnumerator();
             emergencyPotionPending = true;
         }
         return ResumeEmergencyPotion(combat);
@@ -114,25 +129,35 @@ internal sealed partial class KernelCombatPlanner
 
     private bool ResumeEmergencyPotion(CombatState combat)
     {
-        if (!emergencyPotionPending || emergencyPotionTrials is null) return false;
+        if (!emergencyPotionPending || emergencyPotionTrials is null && mixedEmergencyWork is null) return false;
         if (emergencyPotionRequest?.IsCancelled == true || !ReferenceEquals(emergencyPotionRequest, tournamentRequest)
             || !ReferenceEquals(emergencyPotionCombat, combat) || emergencyPotionActors is null
             || emergencyPotionStamp != EmergencyPotionStamp(combat, emergencyPotionActors) + emergencyPotionPlanKey)
         {
-            emergencyPotionTrials.Dispose(); emergencyPotionTrials = null;
+            emergencyPotionTrials?.Dispose(); emergencyPotionTrials = null; mixedEmergencyWork = null;
             emergencyPotionPending = false; emergencyPotionStamp = null;
             return false;
         }
-        var watch = Stopwatch.StartNew();
-        do
+        if (mixedEmergencyWork is { } work)
         {
-            if (emergencyPotionRequest?.IsStopped == true)
-            { emergencyPotionPending = false; break; }
-            if (!emergencyPotionTrials.MoveNext()) { emergencyPotionPending = false; break; }
-        } while (watch.ElapsedMilliseconds < TournamentSliceMs);
-        emergencyPotionComputeMs += watch.Elapsed.TotalMilliseconds;
+            if (!work.Poll()) return false;
+            (emergencyPotionRescue, emergencyPotionRepair, emergencyPotionComputeMs) = work.Value;
+            mixedEmergencyWork = null; emergencyPotionPending = false;
+        }
+        else
+        {
+            var watch = Stopwatch.StartNew();
+            do
+            {
+                if (emergencyPotionRequest?.IsStopped == true)
+                { emergencyPotionPending = false; break; }
+                if (!emergencyPotionTrials!.MoveNext()) { emergencyPotionPending = false; break; }
+            } while (watch.ElapsedMilliseconds < TournamentSliceMs);
+            emergencyPotionComputeMs += watch.Elapsed.TotalMilliseconds;
+
+        }
         if (emergencyPotionPending) return false;
-        emergencyPotionTrials.Dispose(); emergencyPotionTrials = null;
+        emergencyPotionTrials?.Dispose(); emergencyPotionTrials = null;
         if (emergencyPotionRequest?.IsCancelled == true) return false;
         var rescue = emergencyPotionRescue ?? emergencyPotionRepair;
         if (rescue is null) return false;
@@ -182,15 +207,15 @@ internal sealed partial class KernelCombatPlanner
         }
         if (RescuesWithoutTradingSeats(original.State, baseline.State, root.Party)) emergencyPotionRepair = baseline;
         if (root.Party.All(p => root.Hp(p.Creature) <= 0 || baseline.State.Hp(p.Creature) > 0)) yield break;
-        var bottles = actors.Where(p => root.CanAct(p) && p.CanUseOrRemovePotions)
+        var bottles = actors.Where(p => root.CanAct(p) && root.CanUsePotions(p))
             .SelectMany(root.UsablePotions).Where(KernelSession.CanModelPotion)
-            .OrderBy(q => KernelPotionPolicy.PreservationValue(q, root.Party));
+            .OrderBy(q => KernelPotionPolicy.PreservationValue(root, q, root.Party));
         foreach (var potion in bottles)
         foreach (var target in root.PotionTargets(potion)
             // Native Touch selects for the recipient. A human keeps the native
             // menu; this rescue witness can replay only delegated bot choices.
             .Where(t => !KernelSession.RequiresPotionChoiceContract(potion)
-                || t?.Player is { } recipient && actors.Contains(recipient) && AutoPilot.Drives(recipient.NetId))
+                || t?.Player is { } recipient && actors.Contains(recipient))
             .OrderBy(t => t?.Player is { } p && baseline.State.Hp(p.Creature) <= 0 ? 0 : 1))
         foreach (var plannedOpening in root.PotionActions(potion, target, controlledActors: actors))
         {

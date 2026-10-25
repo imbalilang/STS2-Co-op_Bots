@@ -1,5 +1,6 @@
 """Import authorized upstream source, excluding mod startup, UI and automation."""
 from pathlib import Path
+from kernel_attack_pair_adaptations import apply_attack_pair_adaptations
 from kernel_class_power_adaptations import apply_class_power_adaptations
 from kernel_relic_choice_adaptations import apply_relic_choice_adaptations
 from kernel_power_fork_adaptations import write_power_fork_support
@@ -663,6 +664,7 @@ for path in sorted(files):
     adapted = apply_history_capture_adaptations(relative.as_posix(), adapted)
     adapted = apply_power_origin_adaptations(relative.as_posix(), adapted)
     adapted = apply_the_ball_growth(relative.as_posix(), adapted)
+    adapted = apply_attack_pair_adaptations(relative.as_posix(), adapted)
     target=dest/relative; target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(adapted,encoding='utf-8')
     manifest.append({'path':relative.as_posix(),'upstream_sha256':hashlib.sha256(path.read_bytes()).hexdigest()})

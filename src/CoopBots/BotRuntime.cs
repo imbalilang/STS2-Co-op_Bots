@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using CoopBots.Kernel;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
@@ -17,7 +17,12 @@ namespace CoopBots;
 
 public static class BotRuntime
 {
-    internal static void ExternalInputSettled() => KernelPlanner.NoteMixedInput();
+    internal static void ExternalInputSettled()
+    {
+        if (_preparedCard is { } pending && pending.Decision.Move.TurnStartChoices is not null)
+            AbandonPreparedCard("settled human input retired the unsubmitted card's choice dependencies");
+        KernelPlanner.NoteMixedInput();
+    }
     private static readonly MethodInfo EnqueueAs = AccessTools.Method(
         typeof(ActionQueueSynchronizer),
         "EnqueueAction",
@@ -308,12 +313,12 @@ public static class BotRuntime
             // the cadence window the same prepared slot remains executable.
             if (!Pacing.IsDue(ClockMs, humansFinished, BotCooperation.Gate.Paused, teamDifficulty.CardIntervalMs())
                 && combat.Players.Any(p => p.Creature.IsAlive && !AutoPilot.Drives(p.NetId)))
-                KernelPlanner.AdvanceMixedReplan(combat, ClockMs);
+                KernelPlanner.AdvanceMixedReplan(combat, ClockMs, humansFinished);
             TrySubmitPreparedCard(manager, combat, humansFinished, teamDifficulty);
             return;
         }
         if (combat.Players.Any(p => p.Creature.IsAlive && !AutoPilot.Drives(p.NetId)))
-            KernelPlanner.AdvanceMixedReplan(combat, ClockMs);
+            KernelPlanner.AdvanceMixedReplan(combat, ClockMs, humansFinished);
 
         // Drives, not IsBot: a seat handed over from the room panel is planned
         // and submitted exactly like a synthetic bot. Only the host reaches
@@ -1101,7 +1106,14 @@ public static class BotRuntime
 [HarmonyPatch(typeof(NRun), nameof(NRun._Process))]
 internal static class RunProcessPatch
 {
-    private static void Postfix() => BotRuntime.Tick();
+    private static void Postfix(double delta)
+    {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        var allocated = GC.GetAllocatedBytesForCurrentThread();
+        BotRuntime.Tick();
+        BotFrameTelemetry.Frame(delta, System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+            GC.GetAllocatedBytesForCurrentThread() - allocated);
+    }
 }
 
 

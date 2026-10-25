@@ -1,4 +1,4 @@
-# Vendor/ 的有意偏离
+﻿# Vendor/ 的有意偏离
 
 > **这是两张偏离表里的"源码层"那一张。** 另一张是 [`AGENT.md`](../../AGENT.md) §6
 > 「偏离登记表」，登记的是**运行期行为**偏离。二分标准与关键区别写在那里，登记前先读。
@@ -9,6 +9,12 @@
 `Vendor/**` 是从 CombatSolver 导入的上游源码。**当前来源是 0.41.0**(`UPSTREAM.json` 记录来源),
 由 `scripts/import-combatsolver-kernel-41.py` 从 `work/combatsolver-sync-latest/src`
 (该目录是 CombatSolver 仓库 `0e6cc2d release: prepare 0.41.0` 的检出) 生成。
+
+## 2026-10-25：攻击者反伤死亡后的成对状态清理
+
+上游AfterAttack从当前监听者集合清理成对BeforeAttack状态；攻击者在本次攻击中被Thorns杀死后，其Vigor/Gigantification已退出该集合，残留command导致后续Fork抛异常。现在只保留攻击开始时参与的两类成对监听者，并在原生History/AfterAttack顺序完成或中止后于finally清理；不补发普通Hook，不解除未结算事务的Fork守卫。用户来源：2026-10-25混合局卡顿诊断后的修复授权。`MixedSearchThreadingScenarios:vigor-death`用实际预测Strike与Thorns死亡复现旧异常，实际故障注入/精确恢复通过。
+
+`scripts/kernel_attack_pair_adaptations.py`与`kernel-attack-pair-adaptations-41.json`校验0.41适配前整文件、接缝及输出SHA，已接入当前0.41导入入口；历史0.33入口未混入0.41专用接缝。独立适配输出与生产文本一致，坏前驱被拒，证据`work/stutter-import-proof.json`；本轮未执行完整上游重导入，不宣称全Vendor复建已验。
 
 ## 2026-10-09：山铜原生触发标志的捕获、生命周期与搜索指纹
 

@@ -1,0 +1,110 @@
+{
+  "Engine/InCombat/Simulation/CombatPredictionSimulator.Attack.cs": {
+    "base_sha256": "56db78e9fd724c1989b0d4b4db0fc8e808b684d97ecdb29cf53d8d09055cf3ce",
+    "target_sha256": "2e1acbdeeddb4ef391509fa653367ba3cac9e93318ffeaae8529744884456502",
+    "changes": [
+      {
+        "start": 211,
+        "end": 211,
+        "old": "",
+        "new": ";\nusing MegaCrit.Sts2.Core.Models.Powers;\nusing CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks.Attack"
+      },
+      {
+        "start": 830,
+        "end": 830,
+        "old": "",
+        "new": "// Upstream completes paired powers from the current listener list. A\n    // multiplayer actor can die to thorns during its own attack and disappear\n    // from that list. Retain only the paired start listeners until completion\n    // (owner stutter/Vigor repair, 2026-10-25), never across a settled fork.\n    private Dictionary<AttackCommand, AbstractModel[]>? pairedAttackListeners;\n    "
+      },
+      {
+        "start": 1019,
+        "end": 1019,
+        "old": "",
+        "new": ";\n        var paired = State.IterateHookListeners().Where(p => p is VigorPower or GigantificationPower).ToArray();\n        if (paired.Length > 0) (pairedAttackListeners ??= new())[command] = paired"
+      },
+      {
+        "start": 2044,
+        "end": 2055,
+        "old": "if (!comple",
+        "new": ""
+      },
+      {
+        "start": 2056,
+        "end": 2059,
+        "old": "ed)",
+        "new": "ry"
+      },
+      {
+        "start": 2081,
+        "end": 2081,
+        "old": "",
+        "new": " if (!completed) {"
+      },
+      {
+        "start": 2127,
+        "end": 2139,
+        "old": "\n           ",
+        "new": ""
+      },
+      {
+        "start": 2147,
+        "end": 2147,
+        "old": "",
+        "new": " }"
+      },
+      {
+        "start": 2152,
+        "end": 2159,
+        "old": "    }\n\n",
+        "new": ""
+      },
+      {
+        "start": 2210,
+        "end": 2210,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 2311,
+        "end": 2311,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 2336,
+        "end": 2349,
+        "old": "\n            ",
+        "new": ""
+      },
+      {
+        "start": 2358,
+        "end": 2370,
+        "old": "\n           ",
+        "new": ""
+      },
+      {
+        "start": 2409,
+        "end": 2409,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 2496,
+        "end": 2496,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 2540,
+        "end": 2540,
+        "old": "",
+        "new": "    "
+      },
+      {
+        "start": 2593,
+        "end": 2593,
+        "old": "",
+        "new": "\n        }\n        finally\n        {\n            if (pairedAttackListeners?.Remove(attackContext, out var paired) == true)\n            {\n                var context = new AfterAttackMirrorContext { Simulator = this, Command = attackContext };\n                foreach (var listener in paired)\n                    AfterAttackMirrors.CompleteOrAbortPairedState(listener, context, completed);\n            }\n        }"
+      }
+    ]
+  }
+}

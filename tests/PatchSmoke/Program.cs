@@ -79,6 +79,18 @@ if (args.Contains("--potion-reference-repair-only"))
     SzgPotionReferenceRepairScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--potion-reference-repair-case="))?.Split('=', 2)[1]); return;
 }
 if (args.Contains("--choice-policy-only")) { ChoicePolicyScenarios.Run(); return; }
+if (args.Contains("--frozen-potion-search-only"))
+{
+    FrozenPotionSearchScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--frozen-potion-search-case="))?.Split('=', 2)[1]); return;
+}
+if (args.Contains("--mixed-potion-result-consumption-only"))
+{
+    MixedPotionResultConsumptionScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-potion-result-consumption-case="))?.Split('=', 2)[1]); return;
+}
+if (args.Contains("--mixed-search-threading-only"))
+{
+    MixedSearchThreadingScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-search-threading-case="))?.Split('=', 2)[1]); return;
+}
 if (args.Contains("--mixed-cold-opening-only"))
 {
     MixedColdOpeningScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-cold-opening-case="))?.Split('=', 2)[1]); return;
@@ -86,6 +98,18 @@ if (args.Contains("--mixed-cold-opening-only"))
 if (args.Contains("--mixed-stable-script-only"))
 {
     MixedStableScriptScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-stable-script-case="))?.Split('=', 2)[1]); return;
+}
+if (args.Contains("--mixed-readiness-closing-only"))
+{
+    MixedReadinessClosingScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-readiness-closing-case="))?.Split('=', 2)[1]); return;
+}
+if (args.Contains("--mixed-choice-lease-retention-only"))
+{
+    MixedChoiceLeaseRetentionScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-choice-lease-retention-case="))?.Split('=', 2)[1]); return;
+}
+if (args.Contains("--mixed-native-revival-only"))
+{
+    MixedNativeRevivalScenarios.Run(args.FirstOrDefault(a => a.StartsWith("--mixed-native-revival-case="))?.Split('=', 2)[1]); return;
 }
 if (args.Contains("--mixed-background-replan-only"))
 {
@@ -824,8 +848,14 @@ MixedRoomAndHandshakeScenarios.Run();
 MixedRoomSyncScenarios.Run();
 MixedResponsivenessScenarios.Run();
 MixedStableScriptScenarios.Run();
+MixedReadinessClosingScenarios.Run();
+MixedChoiceLeaseRetentionScenarios.Run();
+MixedNativeRevivalScenarios.Run();
 MixedColdOpeningScenarios.Run();
 MixedBackgroundReplanScenarios.Run();
+MixedSearchThreadingScenarios.Run();
+FrozenPotionSearchScenarios.Run();
+MixedPotionResultConsumptionScenarios.Run();
 MixedRuntimePacingScenarios.Run();
 MixedReplaySafetyScenarios.Run();
 MixedCombatAuxiliaryScenarios.Run();

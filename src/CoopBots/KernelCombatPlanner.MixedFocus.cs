@@ -1,4 +1,4 @@
-using CoopBots.Kernel;
+﻿using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.Combat;
 
 namespace CoopBots;
@@ -17,6 +17,7 @@ internal sealed partial class KernelCombatPlanner
         focus = manualFocus;
         mixedProposal = null; mixedProposalReplay = null; mixedProposalClock = null;
         mixedReadyProposal = null;
+        mixedAvailableBaseline = null; mixedInterruptedBaseline = null;
         // The no-action memo was priced under a different expressed intent.
         noActionStamp = "";
     }

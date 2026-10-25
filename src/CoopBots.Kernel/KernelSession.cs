@@ -303,6 +303,15 @@ public sealed partial class KernelSession
     // to an older frozen root because neither lookup reads the live belt again.
     private IReadOnlyDictionary<PotionModel, (int Slot, PotionModel Captured)> capturedPotions
         = new Dictionary<PotionModel, (int, PotionModel)>();
+    private sealed record PotionInventory(int Capacity, bool CanUse, PotionModel[] Originals,
+        HashSet<PotionModel> Usable);
+    // Native usability can invoke run hooks. Evaluate it on Capture's game
+    // thread, once; a frozen worker must never enumerate a changing live belt.
+    private IReadOnlyDictionary<Player, PotionInventory> potionInventories = new Dictionary<Player, PotionInventory>();
+    private IReadOnlyDictionary<PotionModel, IReadOnlyDictionary<string, decimal>> potionValues
+        = new Dictionary<PotionModel, IReadOnlyDictionary<string, decimal>>();
+    private IReadOnlyDictionary<PotionModel, IReadOnlyDictionary<Creature, bool>> potionTargetRules
+        = new Dictionary<PotionModel, IReadOnlyDictionary<Creature, bool>>();
     private PotionModel? FindCapturedPotion(PotionModel original)
         => capturedPotions.TryGetValue(original, out var entry)
             && ReferenceEquals(Combat.GetPotionAtSlot(original.Owner, entry.Slot), entry.Captured)
@@ -342,6 +351,16 @@ public sealed partial class KernelSession
             .Select(slot => (Original: player.GetPotionAtSlotIndex(slot)!, Slot: slot,
                 Captured: session.Combat.GetPotionAtSlot(player, slot)!)))
             .ToDictionary(row => row.Original, row => (row.Slot, row.Captured));
+        session.potionInventories = live.Players.ToDictionary(player => player, player => {
+            var originals = player.Potions.ToArray();
+            return new PotionInventory(player.MaxPotionCount, player.CanUseOrRemovePotions, originals,
+                originals.Where(p => !p.IsQueued && !p.HasBeenRemovedFromState && p.PassesCustomUsabilityCheck
+                    && p.Usage is PotionUsage.CombatOnly or PotionUsage.AnyTime).ToHashSet());
+        });
+        session.potionValues = session.capturedPotions.Keys.ToDictionary(p => p,
+            p => (IReadOnlyDictionary<string, decimal>)p.DynamicVars.Values.ToDictionary(v => v.Name, v => v.BaseValue));
+        session.potionTargetRules = session.capturedPotions.Keys.ToDictionary(p => p,
+            p => (IReadOnlyDictionary<Creature, bool>)live.Creatures.ToDictionary(c => c, p.IsValidTarget));
         session.VerifyProjection(live);
         return session;
     }
@@ -397,6 +416,9 @@ public sealed partial class KernelSession
         using var isolation = SimulationNotificationIsolation.Enter();
         return new(simulator.Fork(), new(processedDeaths), liveRoot, rootTurnNumber) { ready = new(ready), extraTurnParticipants = new(extraTurnParticipants),
             capturedPotions = capturedPotions,
+            potionInventories = potionInventories,
+            potionValues = potionValues,
+            potionTargetRules = potionTargetRules,
             synchronousChoicePlayers = new(synchronousChoicePlayers),
             EnemyPhaseCompleted = EnemyPhaseCompleted, HorizonClosed = HorizonClosed,
             LastActionHadEnvironmentalRisk = LastActionHadEnvironmentalRisk,
@@ -554,13 +576,18 @@ public sealed partial class KernelSession
     public IReadOnlyList<CardModel> DrawPile(Player player) => simulator.State.GetPlayerCombatState(player).DrawPile.Cards.Select(c => c.Original).ToArray();
     public int OrbCount(Player player) => simulator.State.GetPlayerCombatState(player).OrbQueue.Orbs.Count;
     public bool HasOsty(Player player) => Combat.GetOsty(player) is not null;
-    public int HeldPotionCount(Player player) => Enumerable.Range(0, player.MaxPotionCount)
+    public int PotionCapacity(Player player) => potionInventories.TryGetValue(player, out var inventory) ? inventory.Capacity : 0;
+    public bool CanUsePotions(Player player) => potionInventories.TryGetValue(player, out var inventory) && inventory.CanUse;
+    internal IReadOnlyList<PotionModel> CapturedPotions(Player player)
+        => potionInventories.TryGetValue(player, out var inventory) ? inventory.Originals : [];
+    internal decimal PotionValue(PotionModel potion, string variable)
+        => potionValues.TryGetValue(potion, out var values) && values.TryGetValue(variable, out var value) ? value : 0;
+    public int HeldPotionCount(Player player) => Enumerable.Range(0, PotionCapacity(player))
         .Count(slot => Combat.GetPotionAtSlot(player, slot) is not null);
     public bool HoldsPotion(PotionModel potion) => FindCapturedPotion(potion) is not null;
-    public IReadOnlyList<PotionModel> UsablePotions(Player player) => player.Potions
-        .Where(p => FindCapturedPotion(p) is not null && !p.IsQueued && !p.HasBeenRemovedFromState && p.PassesCustomUsabilityCheck
-            && p.Usage is PotionUsage.CombatOnly or PotionUsage.AnyTime)
-        .ToArray();
+    public IReadOnlyList<PotionModel> UsablePotions(Player player)
+        => potionInventories.TryGetValue(player, out var inventory)
+            ? inventory.Originals.Where(p => inventory.Usable.Contains(p) && FindCapturedPotion(p) is not null).ToArray() : [];
     /// <summary>
     /// Whether the kernel can simulate this potion COMPLETELY. A potion with no mirrored
     /// OnUse is rejected by every branch, so the search can never pick it; the planner
@@ -621,14 +648,23 @@ public sealed partial class KernelSession
     }
     public IReadOnlyList<Creature?> PotionTargets(PotionModel potion)
     {
+        bool Allowed(Creature target)
+        {
+            // Native target rules may read IsAlive. Freeze their answers for
+            // native identities on Capture's thread; later summons are private
+            // simulated creatures and can still use the native rule directly.
+            if (potionTargetRules.TryGetValue(potion, out var targets) && targets.TryGetValue(target, out var allowed))
+                return allowed;
+            return potion.IsValidTarget(target);
+        }
         switch (potion.TargetType)
         {
             case TargetType.AllEnemies:
                 return [null];
             case TargetType.AnyEnemy:
-                return Enemies.Where(e => potion.IsValidTarget(e)).Cast<Creature?>().ToArray();
+                return Enemies.Where(Allowed).Cast<Creature?>().ToArray();
             case TargetType.AnyPlayer:
-                return Combat.Players.Where(p => Hp(p.Creature) > 0 && potion.IsValidTarget(p.Creature))
+                return Combat.Players.Where(p => Hp(p.Creature) > 0 && Allowed(p.Creature))
                     .Select(p => (Creature?)p.Creature).ToArray();
             case TargetType.Self:
                 return Hp(potion.Owner.Creature) > 0 ? [potion.Owner.Creature] : [];

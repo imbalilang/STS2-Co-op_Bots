@@ -14,8 +14,15 @@ internal static class KernelInputObserver
     private static ActionQueueSet? observedQueue;
     private static ICombatState? observedBattle;
     private static long revision;
+    private static long materialVersion;
     private static readonly Dictionary<GameAction, Action<GameAction>> pending = new();
     internal static long Revision => Interlocked.Read(ref revision);
+    // Unlike the native action id, this does not change when a human only
+    // marks the current turn ready. It still distinguishes settled Bot cards,
+    // bottles and unknown actions at an otherwise unchanged decision point.
+    internal static long MaterialVersion => Interlocked.Read(ref materialVersion);
+    internal static bool IsReadinessOnly(GameAction action)
+        => action.GetType() == typeof(EndPlayerTurnAction);
 
     internal static void Observe(ActionQueueSet queue, ICombatState? battle)
     {
@@ -29,6 +36,7 @@ internal static class KernelInputObserver
         pending.Clear();
         observedQueue = queue; observedBattle = battle;
         Interlocked.Exchange(ref revision, 0);
+        Interlocked.Exchange(ref materialVersion, 0);
         if (battle is not null) queue.ActionEnqueued += Enqueued;
     }
 
@@ -38,7 +46,7 @@ internal static class KernelInputObserver
         // a protocol acknowledgement, excluded by the shared classifier; it
         // neither invalidates a script nor starts an optional comparison.
         var battle = observedBattle;
-        if (!ExternalCombatInput.IsHumanAction(action) || battle is not CombatState combat
+        if (action.GetType() == typeof(ReadyToBeginEnemyTurnAction) || battle is not CombatState combat
             || !combat.Players.Any(player => player.NetId == action.OwnerId)) return;
         if (pending.ContainsKey(action)) return;
         pending.Add(action, Finished);
@@ -52,6 +60,17 @@ internal static class KernelInputObserver
             // notifications must not manufacture multiple dirty revisions.
             if (!pending.Remove(settled)) return;
             if (!ReferenceEquals(observedBattle, battle)) return;
+            // Native EndPlayerTurnAction is a readiness signal; the native
+            // side transition is a separate phase/round boundary. Keep an
+            // already running full comparison and an executable closing tail.
+            // Unknown derived/mod actions remain material input.
+            if (IsReadinessOnly(settled))
+            {
+                Log.Info($"CoopBots external input: readiness owner={settled.OwnerId} action={settled.GetType().Name} id={settled.Id} revision={Revision} material={MaterialVersion}");
+                return;
+            }
+            Interlocked.Increment(ref materialVersion);
+            if (!ExternalCombatInput.IsHumanAction(settled)) return;
             var next = Interlocked.Increment(ref revision);
             BotRuntime.ExternalInputSettled();
             Log.Info($"CoopBots external input: settled owner={settled.OwnerId} action={settled.GetType().Name} id={settled.Id} revision={next}");

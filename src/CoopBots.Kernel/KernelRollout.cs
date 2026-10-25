@@ -1,4 +1,4 @@
-using MegaCrit.Sts2.Core.Entities.Cards;
+﻿using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
@@ -141,8 +141,9 @@ public static class KernelRollout
 /// 2026-09-22: `[ActionExecutor] Completed execution of action` immediately followed by
 /// `decision-ms=1003.1`, with the visual tail of that card still playing).
 ///
-/// One Step is one card play or one end-turn, well under a millisecond, so the caller can
-/// spend a slice of each frame on it and let the frame finish. The fight is simulated by
+/// One Step settles a card play or end-turn and may include expensive nested
+/// choice/order probes. A caller slice cannot preempt it; interactive mixed
+/// searches therefore own these steps on a background controller. The fight is simulated by
 /// exactly the same code in exactly the same order, so a sliced run reaches the same ending
 /// as <see cref="KernelRollout.Run"/> — the caller controls WHEN the work happens, never WHAT.
 /// </summary>
@@ -158,6 +159,10 @@ public sealed class RolloutRun
     private readonly List<ulong[]> aliveStates = new();
     private readonly List<KernelActionCheckpoint>? actionCheckpoints;
     private IReadOnlyList<KernelActionCheckpoint>? AlignedCheckpoints => steps == actions.Count ? actionCheckpoints : null;
+    private int passiveReadinessSteps;
+    private readonly HashSet<ulong> passiveReadinessOwners = new();
+    private bool unrecordedTransition;
+    private bool HasOnlyAccountedSteps => !unrecordedTransition && steps == actions.Count + passiveReadinessSteps;
     // Index-aligned with aliveStates, and for the same reason: a script whose line assumed
     // an enemy would be dead by step N must not keep replaying as if it were.
     private readonly List<Creature[]> enemyStates = new();
@@ -267,10 +272,18 @@ public sealed class RolloutRun
                 // "player does nothing" stress scenario (§08): end the seat's turn
                 // rather than inventing an action on a human's behalf. A real causal
                 // player model replaces this, and that is P4, not P1.
+                var beforeReadiness = session.ActionCheckpoint();
                 if (ResolveEndTurn(p, out _, out var unownedEnd))
                 {
+                    var readinessOnly = ReadinessOnly(beforeReadiness, session.ActionCheckpoint(), p.NetId);
+                    if (!readinessOnly) unrecordedTransition = true;
                     if (unownedEnd.TurnStartChoices is { OwnersTurnNumbers.Count: > 0 })
                     { Result = Cutoff("unowned-turn-start-transition"); return; }
+                    // A passive human ready is not an executable Bot action.
+                    // Account for that gap only when native state proves it
+                    // did not advance a side, turn, choice or resource counter.
+                    if (readinessOnly)
+                    { passiveReadinessSteps++; passiveReadinessOwners.Add(p.NetId); }
                     steps++; acted = true;
                 }
                 else stuck = "undelegated-seat-cannot-end";
@@ -475,8 +488,37 @@ public sealed class RolloutRun
 
     // A genuinely resolved native prefix remains a cutoff until its replay or
     // continuation reaches a terminal. Never publish this as a completed lane.
-    internal RolloutOutcome SettledPrefix() => Cutoff("potion-round-repair-prefix");
+    internal RolloutOutcome SettledPrefix() => Cutoff("potion-round-repair-prefix") with {
+        // These are historical physical proposals, not a replay proof: a
+        // passive readiness gap may be absent from their executable actions.
+        Checkpoints = HasOnlyAccountedSteps ? actionCheckpoints : null };
     internal int CommittedSteps => steps;
+    internal int RecordedActionCount => actions.Count;
+    internal bool HasAccountedProposalSteps => HasOnlyAccountedSteps;
+    internal bool SettledPrefixStartsAt(KernelActionCheckpoint root)
+        => actionCheckpoints is { Count: > 0 } points
+            && (points[0].SameBoundary(root)
+                || ReadinessOnly(root, points[0], passiveReadinessOwners));
+
+    private static bool ReadinessOnly(KernelActionCheckpoint before, KernelActionCheckpoint after, ulong owner)
+        => ReadinessOnly(before, after, new HashSet<ulong> { owner });
+
+    private static bool ReadinessOnly(KernelActionCheckpoint before, KernelActionCheckpoint after,
+        IReadOnlySet<ulong> owners)
+    {
+        if (before.NativeRound != after.NativeRound || before.SideSegments != after.SideSegments
+            || before.ExtraTurn != after.ExtraTurn || before.Seats.Count != after.Seats.Count) return false;
+        var changed = false;
+        for (var i = 0; i < before.Seats.Count; i++)
+        {
+            var a = before.Seats[i]; var b = after.Seats[i];
+            if (a == b) continue;
+            if (!owners.Contains(a.Player) || a.Ready || !b.Ready || !a.Acting || b.Acting
+                || (a with { Ready = b.Ready, Acting = b.Acting }) != b) return false;
+            changed = true;
+        }
+        return changed;
+    }
 
     internal void FinishAtBudget()
     {

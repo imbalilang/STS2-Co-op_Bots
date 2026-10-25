@@ -1,4 +1,4 @@
-// V2 R2 actual 2026-10-24: production build0 -> named runtime RED1 -> exact source restore -> build0/GREEN0.
+﻿// V2 R2 actual 2026-10-24: production build0 -> named runtime RED1 -> exact source restore -> build0/GREEN0.
 // Private receipts: work/v2-validation/r2/{receipts,second-pass/receipts,final-pass/receipts}.json.
 // These are fault controls, not distinct gameplay bug or live-performance counts.
 // cursor-only-after-finished: System.InvalidOperationException: Mixed stable script: only the replacement real action receipt may advance to the second physical card
@@ -99,11 +99,16 @@ internal static class MixedStableScriptScenarios
                 ("stable-prefix", StablePrefix), ("reservation", ReservationAndCancellation),
                 ("recost", SamePhysicalRecost), ("identity", MissingPhysicalCard),
                 ("unrelated-enemy", UnrelatedEnemyChange), ("allbot-strict", AllBotStateKeyStaysStrict),
+                ("dead-target", DeadTargetRepair), ("live-target", LiveTargetPreserved),
+                ("dead-target-choices", DeadTargetChoicesRetired), ("allbot-dead-target", AllBotDeadTargetStrict),
                 ("expired-script", ExpiredSearchKeepsScript),
                 ("fresh-end", FreshEndSingleConsumption),
                 ("expired-card", ExpiredCardSingleConsumption),
                 ("expired-potion-baseline", ExpiredPotionBaseline),
                 ("no-candidate", NoCandidateStopsOnce),
+                ("prefix-repair", PrefixRepair), ("winning-baseline", WinningBaseline),
+                ("interrupted-baseline", InterruptedBaseline), ("interrupted-identity", InterruptedIdentity),
+                ("interrupted-focus", InterruptedFocus), ("interrupted-round", InterruptedRound),
                 ("control-rebind", ControlRebindNativeReceipt) })
                 if (selected is null || selected == test.Name)
                 { test.Body(); Console.WriteLine("PASS: mixed stable script " + test.Name); }
@@ -276,7 +281,7 @@ internal static class MixedStableScriptScenarios
         using var b = new Board(2); var unrelated = b.AddEnemy("unrelated"); var script = b.Seed();
         unrelated.SetCurrentHpInternal(0); b.Planner.NoteMixedInput();
         Check(b.Poll(out var decision) == KernelCombatPlanner.Status.Ready
-            && ReferenceEquals(decision?.Move.Card, script[0].Card) && decision.Move.Target == b.Enemy,
+            && ReferenceEquals(decision?.Move.Card, script[0].Card) && decision!.Move.Target == b.Enemy,
             "a human kill outside this card's target cannot turn old whole-enemy predictions into an execution gate");
         b.Commit(decision!);
         Check(b.Enemy.CurrentHp == 194 && (int)Get(b.Planner, "tournamentPasses")! == 0,
@@ -301,6 +306,61 @@ internal static class MixedStableScriptScenarios
         }
         finally { stopSearch.UnpatchAll(stopSearch.Id); }
     }
+
+    private static void DeadTargetRepair()
+    {
+        using var b = new Board(2); var replacement = b.AddEnemy("replacement"); var script = b.Seed();
+        b.Enemy.SetCurrentHpInternal(0); b.Planner.NoteMixedInput();
+        Check(b.Poll(out var decision) == KernelCombatPlanner.Status.Ready
+            && ReferenceEquals(decision?.Move.Card, script[0].Card) && decision!.Move.Target == replacement,
+            "a dead historical enemy must rebind the same physical card to a live native legal target without a fresh search");
+        b.Commit(decision!);
+        Check(replacement.CurrentHp == 194 && (int)Get(b.Planner, "tournamentScriptIndex")! == 1
+            && (int)Get(b.Planner, "tournamentPasses")! == 0
+            && Get(b.Planner, "tournamentScriptRecord") is TerminalRecord { Victory: false, Verified: false },
+            "the repaired target must receive native damage once while preserving the suffix and withdrawing old-root victory");
+    }
+
+    private static void LiveTargetPreserved()
+    {
+        using var b = new Board(1); var weaker = b.AddEnemy("weaker"); weaker.SetCurrentHpInternal(1); b.Seed();
+        b.Planner.NoteMixedInput();
+        Check(b.Poll(out var decision) == KernelCombatPlanner.Status.Ready && decision?.Move.Target == b.Enemy,
+            "a still-legal tournament target must not be replaced by the cheaper dead-target repair ordering");
+        b.Commit(decision!);
+        Check(b.Enemy.CurrentHp == 194 && weaker.CurrentHp == 1,
+            "a live cached tournament target must retain its native damage despite a lower-health alternative");
+    }
+
+    private static void DeadTargetChoicesRetired()
+    {
+        using var b = new Board(1); b.AddEnemy("replacement"); var original = b.Seed();
+        var choice = new KernelChoice(b.Bot.NetId, "old-target", "test", PileType.Hand, "old-target", 0, 0, []);
+        var script = new[] { original[0] with { Choices = new[] { choice }, ChoiceOrdinals = new[] { 0 },
+            TurnStartChoices = new(1, 2, new Dictionary<ulong, int> { [b.Bot.NetId] = 2 }, true, []) } };
+        Set(b.Planner, "tournamentScript", script); b.Enemy.SetCurrentHpInternal(0);
+        Check(b.Poll(out var decision) == KernelCombatPlanner.Status.Ready && decision is not null
+            && decision!.Move.Choices is null && decision.Move.TurnStartChoices is null,
+            "retargeting must retire choices priced against the old target before preparing the physical card");
+        b.Commit(decision!);
+    }
+
+    private static void AllBotDeadTargetStrict()
+    {
+        using var b = new Board(1); AutoPilot.Set(b.Human.NetId, true); b.AddEnemy("replacement"); b.Seed();
+        b.Enemy.SetCurrentHpInternal(0);
+        var stopSearch = new Harmony("coopbots.mixed-stable-script.allbot-dead-target");
+        stopSearch.Patch(AccessTools.Method(typeof(KernelCombatPlanner), "BeginTournamentPhase"),
+            prefix: new HarmonyMethod(typeof(MixedStableScriptScenarios), nameof(RejectSearch)));
+        try
+        {
+            b.Poll(out var decision, humansFinished: true);
+            Check(decision is null && Get(b.Planner, "tournamentScript") is null,
+                "a dead enemy must still invalidate an all-Bot verified script instead of using mixed physical-target repair");
+        }
+        finally { stopSearch.UnpatchAll(stopSearch.Id); }
+    }
+
 
     private static void ExpiredSearchKeepsScript()
     {
@@ -362,10 +422,10 @@ internal static class MixedStableScriptScenarios
             "one native EndTurn AfterFinished consumes the first step once and cannot revive the old completed run");
     }
 
-    private static (KernelSession Root, TournamentResult Result) CompletedCards(Board b)
+    private static (KernelSession Root, TournamentResult Result) CompletedCards(Board b, int count = int.MaxValue)
     {
         var root = KernelCombatCapture.Capture(b.Combat);
-        var actions = b.Bot.PlayerCombatState!.Hand.Cards.Select(card =>
+        var actions = b.Bot.PlayerCombatState!.Hand.Cards.Take(count).Select(card =>
             new KernelTeamSearch.Action(b.Bot, card, b.Enemy, CardStateKey: root.CardStateKey(card))).ToArray();
         var replay = new KernelScriptReplayRun(root, b.Combat.Players.ToArray(),
             new TournamentResult(actions[0], null, [], 0, 0, "native-completed-fixture") { Script = actions }, 80);
@@ -454,33 +514,156 @@ internal static class MixedStableScriptScenarios
         finally { observer.UnpatchAll(observer.Id); }
     }
 
+    private static TeamCombatPlanner.Decision WaitForCard(Board b, bool humansFinished)
+    {
+        var clock = Stopwatch.StartNew();
+        while (clock.ElapsedMilliseconds < 12000)
+        {
+            var state = b.Poll(out var decision, humansFinished);
+            Check(state != KernelCombatPlanner.Status.Fallback,
+                "necessary mixed repair must use the complete tournament, never legacy");
+            if (state == KernelCombatPlanner.Status.Ready && decision is not null) return decision;
+            Thread.Sleep(1);
+        }
+        throw new InvalidOperationException("Mixed stable script: a payable physical card must eventually leave Pending after bounded repair admission");
+    }
+
     private static void NoCandidateStopsOnce()
     {
         using var b = new Board(2);
-        Invoke(b.Planner, "EnsureMixedBudget", b.Combat);
-        var allowance = (int)Invoke(b.Planner, "MixedRemainingDecisionBudget", b.Combat)!;
-        Set(b.Planner, "mixedEpisodeSpentMs", (double)allowance);
+        b.Enemy.SetCurrentHpInternal(6);
+        var optional = (int)Invoke(b.Planner, "MixedRemainingReplanBudget", b.Combat)!;
+        Set(b.Planner, "mixedEpisodeSpentMs", (double)optional);
         var point = KernelCombatPlanner.TournamentDecisionPoint(b.Combat, b.Queue.NextActionId) + "/focus:";
         Set(b.Planner, "tournamentPoint", point);
         Set(b.Planner, "tournamentOpeningReviewed", true);
         Set(b.Planner, "tournamentRequest", new KernelDecisionRequest(18646, 0));
         var generation = Get(b.Planner, "tournamentRootGeneration");
         for (var tick = 0; tick < 20; tick++)
-        {
-            Check(b.Poll(out var none, humansFinished: tick >= 10) == KernelCombatPlanner.Status.Pending
-                && none is null && !b.Planner.HasPreparedSubmission
+            Check(b.Poll(out var none) == KernelCombatPlanner.Status.Pending && none is null
                 && Get(b.Planner, "tournamentRun") is null && Get(b.Planner, "tournamentRequest") is null
-                && (int)Get(b.Planner, "tournamentPasses")! == 0
                 && Equals(Get(b.Planner, "tournamentRootGeneration"), generation)
-                && (string?)Get(b.Planner, "mixedStoppedPoint") == point
-                && (int)Invoke(b.Planner, "MixedRemainingDecisionBudget", b.Combat)! == 0,
-                "a mixed deadline with no completed candidate must park its point once, without legacy, worker polling or a renewed allowance");
-        }
+                && (string?)Get(b.Planner, "mixedStoppedPoint") == point,
+                "an unchanged stopped root must retire once and respect repair backoff without per-frame searches");
+        Check((int)Invoke(b.Planner, "MixedRemainingReplanBudget", b.Combat)! == 0
+            && (int)Invoke(b.Planner, "MixedRemainingDecisionBudget", b.Combat)! == optional,
+            "optional exhaustion must not erase the necessary foreground request");
+        // Advance only the admission clock, not the game's root or action state.
+        Set(b.Planner, "mixedStoppedUntil", 0L);
+        var card = WaitForCard(b, false);
+        b.Commit(card);
+        Check(b.Enemy.CurrentHp == 0 && b.Bot.PlayerCombatState!.Energy == 9
+            && (long)Get(b.Planner, "tournamentRootGeneration")! == (long)generation! + 1,
+            "the same root must recover through one real tournament and native paid card after backoff");
+    }
+
+    private static void PrefixRepair()
+    {
+        using var b = new Board(3);
+        b.Enemy.SetCurrentHpInternal(18);
+        var (root, prefix) = CompletedCards(b, 1);
+        using var completed = InjectCompleted(b, root, prefix, new KernelDecisionRequest(18648, 0));
+        Check(b.Poll(out var first) == KernelCombatPlanner.Status.Ready && first is not null,
+            "a real completed single-action prefix must submit before necessary repair");
+        b.Commit(first!);
+        var optional = (int)Invoke(b.Planner, "MixedRemainingReplanBudget", b.Combat)!;
+        Set(b.Planner, "mixedEpisodeSpentMs", (double)optional);
         b.HumanCard();
-        Check(b.Poll(out var stillNone) == KernelCombatPlanner.Status.Pending && stillNone is null
-            && Get(b.Planner, "tournamentRun") is null && (int)Get(b.Planner, "tournamentPasses")! == 0
-            && (int)Invoke(b.Planner, "MixedRemainingDecisionBudget", b.Combat)! == 0,
-            "a changed human root in the same exhausted round/control episode cannot grant a fresh search budget");
+        var end = new EndPlayerTurnAction(b.Human, 1);
+        executing = end;
+        try { b.Queue.EnqueueWithoutSynchronizing(end); end.Execute().GetAwaiter().GetResult(); }
+        finally { executing = null; }
+        b.Planner.NoteMixedInput();
+        var repair = WaitForCard(b, true);
+        b.Commit(repair);
+        Check(b.Enemy.CurrentHp == 0 && b.Bot.PlayerCombatState!.Energy == 8
+            && (int)Invoke(b.Planner, "MixedRemainingReplanBudget", b.Combat)! == 0,
+            "after a short prefix and native human EndTurn, payable cards must finish despite exhausted optional credit");
+    }
+
+    private static void WinningBaseline()
+    {
+        using var b = new Board(2);
+        b.Bot.Creature.SetCurrentHpInternal(20); b.Enemy.SetCurrentHpInternal(12);
+        var bottle = ModelDb.Potion<FirePotion>().ToMutable(); b.Bot.AddPotionInternal(bottle, silent: true);
+        var (root, result) = CompletedCards(b);
+        Check(result.Record is { Verified: true, Victory: true }
+            && KernelPotionPolicy.WorthComparing(root, [b.Bot], b.Combat.Players.ToArray(), result.Record),
+            "the native winning baseline must expose a normally funded costly-victory potion comparison");
+        using var completed = InjectCompleted(b, root, result, new KernelDecisionRequest(18649, 10000));
+        var observer = new Harmony("coopbots.mixed-stable-script.winning-baseline");
+        observer.Patch(AccessTools.Method(typeof(KernelPotionContinuationRun), nameof(KernelPotionContinuationRun.Advance)),
+            prefix: new HarmonyMethod(typeof(MixedStableScriptScenarios), nameof(ObservePotionReplay)));
+        observedPotionReplays = 0;
+        try
+        {
+            Check(b.Poll(out var card) == KernelCombatPlanner.Status.Ready && card is not null
+                && observedPotionReplays == 0 && Get(b.Planner, "tournamentRequest") is null,
+                "a completed mixed no-potion victory must deploy before optional potion work");
+            b.Commit(card!);
+            Check(b.Enemy.CurrentHp == 6 && b.Bot.PlayerCombatState!.Energy == 9 && b.Bot.Potions.Contains(bottle),
+                "early winning-baseline deployment must pay its real card and leave the bottle unspent");
+        }
+        finally { observer.UnpatchAll(observer.Id); }
+    }
+
+    private static bool HoldPotionReplay(ref bool __result)
+    { __result = false; return false; }
+
+    private static void InterruptedBaseline() => InterruptedBaselineCore(false);
+    private static void InterruptedIdentity() => InterruptedBaselineCore(true);
+    private static void InterruptedFocus() => InterruptedBaselineCore(false, focusChanged: true);
+    private static void InterruptedRound() => InterruptedBaselineCore(false, roundChanged: true);
+    private static void InterruptedBaselineCore(bool replaceCard, bool focusChanged = false, bool roundChanged = false)
+    {
+        using var b = new Board(2);
+        b.Bot.AddPotionInternal(ModelDb.Potion<FirePotion>().ToMutable(), silent: true);
+        var (root, result) = CompletedCards(b);
+        var physical = result.Script![0].Card!;
+        using var completed = InjectCompleted(b, root, result, new KernelDecisionRequest(18650, 10000));
+        var observer = new Harmony("coopbots.mixed-stable-script.interrupted-baseline");
+        observer.Patch(AccessTools.Method(typeof(KernelPotionContinuationRun), nameof(KernelPotionContinuationRun.Advance)),
+            prefix: new HarmonyMethod(typeof(MixedStableScriptScenarios), nameof(HoldPotionReplay)));
+        try
+        {
+            Check(b.Poll(out _) == KernelCombatPlanner.Status.Pending
+                && Get(b.Planner, "mixedAvailableBaseline") is not null,
+                "a completed no-potion baseline must be retained while the real potion stage is pending");
+            b.HumanCard();
+            var generation = (long)Get(b.Planner, "tournamentRootGeneration")!;
+            if (focusChanged || roundChanged)
+            {
+                if (roundChanged) b.Combat.RoundNumber++;
+                if (focusChanged)
+                {
+                    b.Planner.NotifyManualFocusChanged(b.Combat, b.Enemy.CombatId);
+                    b.Planner.Poll(b.Combat, [b.Bot], b.Queue.NextActionId, b.Enemy.CombatId,
+                        false, BotDifficulty.Pro, out _);
+                }
+                else b.Poll(out _);
+                Check((long)Get(b.Planner, "tournamentRootGeneration")! > generation,
+                    "a changed focus or round must retire interrupted proposals before a fresh current-root request");
+                return;
+            }
+            if (replaceCard)
+            {
+                b.Bot.PlayerCombatState!.Hand.RemoveInternal(physical);
+                b.Bot.PlayerCombatState.Hand.AddInternal(b.Combat.CreateCard<StrikeIronclad>(b.Bot));
+                b.Poll(out _);
+                Check((long)Get(b.Planner, "tournamentRootGeneration")! > generation,
+                    "a replacement same-name card must require fresh repair instead of impersonating an interrupted physical proposal");
+                return;
+            }
+            Check(b.Poll(out var card) == KernelCombatPlanner.Status.Ready && ReferenceEquals(card?.Move.Card, physical)
+                && (long)Get(b.Planner, "tournamentRootGeneration")! == generation
+                && Get(b.Planner, "tournamentScriptRecord") is TerminalRecord { Verified: false, Victory: false }
+                && Get(b.Planner, "tournamentRequest") is null,
+                "settled human input must retain completed physical proposals while withdrawing old-root quality, without a fresh search");
+            b.Commit(card!);
+            Check(b.Enemy.CurrentHp == 188 && b.Bot.PlayerCombatState!.Energy == 9,
+                "the interrupted baseline must settle one real native payment and damage after the human action");
+        }
+        finally { observer.UnpatchAll(observer.Id); }
     }
 
     private static void ControlRebindNativeReceipt()
@@ -516,7 +699,7 @@ internal static class MixedStableScriptScenarios
         Check(b.Poll(out var next) == KernelCombatPlanner.Status.Ready && ReferenceEquals(next?.Move.Card, original[1].Card),
             "after a rebound native receipt Poll must propose the next physical card rather than repeat the first card");
         b.Commit(next!);
-        Check((int)Get(b.Planner, "tournamentScriptIndex")! == 2 && b.Bot.PlayerCombatState.Energy == 8 && b.Enemy.CurrentHp == 188,
+        Check((int)Get(b.Planner, "tournamentScriptIndex")! == 2 && b.Bot.PlayerCombatState!.Energy == 8 && b.Enemy.CurrentHp == 188,
             "two rebound-suffix cards must land exactly once after a control-domain array replacement");
     }
 
@@ -529,3 +712,29 @@ internal static class MixedStableScriptScenarios
     private static void Check(bool okay, string reason)
     { if (!okay) throw new InvalidOperationException("Mixed stable script: " + reason); }
 }
+
+// 2026-10-25 coral local repair: actual production mutation build0/RED1 -> exact bytes restored -> build0/GREEN0.
+// coral-no-frame-retry: System.InvalidOperationException: Mixed stable script: an unchanged stopped root must retire once and respect repair backoff without per-frame searches
+// coral-repair-admission: System.InvalidOperationException: Mixed stable script: a payable physical card must eventually leave Pending after bounded repair admission
+// coral-review-before-repair: System.InvalidOperationException: Mixed stable script: necessary mixed repair must use the complete tournament, never legacy
+// coral-prompt-victory: System.InvalidOperationException: Mixed stable script: a completed mixed no-potion victory must deploy before optional potion work
+// coral-retain-interruption: System.InvalidOperationException: Mixed stable script: settled human input must retain completed physical proposals while withdrawing old-root quality, without a fresh search
+// coral-interrupted-identity: System.InvalidOperationException: Mixed stable script: a replacement same-name card must require fresh repair instead of impersonating an interrupted physical proposal
+// coral-interrupted-round: System.InvalidOperationException: Mixed stable script: a changed focus or round must retire interrupted proposals before a fresh current-root request
+// coral-interrupted-focus: System.InvalidOperationException: Mixed stable script: a changed focus or round must retire interrupted proposals before a fresh current-root request
+
+// R2 actual 2026-10-25: dead-target build0 / named RED1 / exact restore / build0 / GREEN0.
+// Private receipt: work/mixed-quality-fix-20261025T083140Z/target-r2/receipts.json
+// System.InvalidOperationException: Mixed stable script: a dead historical enemy must rebind the same physical card to a live native legal target without a fresh search
+
+// R2 actual 2026-10-25: live-target build0 / named RED1 / exact restore / build0 / GREEN0.
+// Private receipt: work/mixed-quality-fix-20261025T083140Z/target-r2/receipts.json
+// System.InvalidOperationException: Mixed stable script: a still-legal tournament target must not be replaced by the cheaper dead-target repair ordering
+
+// R2 actual 2026-10-25: dead-target-choices build0 / named RED1 / exact restore / build0 / GREEN0.
+// Private receipt: work/mixed-quality-fix-20261025T083140Z/target-r2/receipts.json
+// System.InvalidOperationException: Mixed stable script: retargeting must retire choices priced against the old target before preparing the physical card
+
+// R2 actual 2026-10-25: allbot-dead-target build0 / named RED1 / exact restore / build0 / GREEN0.
+// Private receipt: work/mixed-quality-fix-20261025T083140Z/target-r2/receipts.json
+// System.InvalidOperationException: Mixed stable script: a dead enemy must still invalidate an all-Bot verified script instead of using mixed physical-target repair

@@ -1,4 +1,15 @@
-﻿# 版本变更记录 / Changelog
+# 版本变更记录 / Changelog
+
+## 0.40.0（2026-10-25）
+
+- 将混合局完整锦标赛、药水机会比较和实际根重放交给独立后台控制者，主线程保留实盘捕获、执行校验与原生提交。冻结药水库存、可用性和目标规则，避免后台读取变化中的游戏对象；取消后退休旧工作，不在主线程等待或销毁运行中的枚举器。
+- 真人原生结束准备与实际材料输入分开处理；结束回合不再取消已有搜索，提前保留收尾提案但等待真人结束后提交。原生被动准备具有明确前缀记账，实际回合切换与有副作用的输入仍更新根与合同。
+- 混合局目标死亡时保留同一实体牌并修复当前合法目标，仍严格检查牌身份、费用及选择；必须等到敌方回合才复活的阶段正常收尾。回合开始选择租约及时退休，普通真人输入撤销旧未来合同和质量证明，保留合法实体后缀及可在实际菜单验证的即时选择。
+- 分开必要搜索与可选后台预算，保留被打断搜索的已结算前缀；修复无候选定时重启、完成结果重复采纳和最终药水收益比较超时循环。修复荆棘反伤杀死攻击者时 Vigor / Gigantification 成对状态未清理的问题，并补充主线程、帧和捕获遥测。
+- 保持同一套完整锦标赛与团队节奏：真人行动时默认 Pro / Cheated 约 1.5 秒一张，Flash 0.5 秒；真人结束后取消人为间隔、优先续打现有剧本。全 Bot 严格执行与未来回合优化保持，混合局按真人输入进行可选后台比较。
+- 增加后台线程、冻结药水、结果单次消费、结束准备、合法目标修复、复活阶段及选择租约的原生回归和实际故障注入。已通过纯 Bot 局与人机混合局强度测试。发布门禁、双 DLL 和安装包身份见 GitHub Release 附件；历史诊断与剩余搜索兑现限制见 docs/STATUS.md。
+
+Background mixed-table search addresses rendering and card-drag stalls. Human EndTurn retains active search and computed cleanup; legal script suffixes survive dead-target repair and completed choice leases. Necessary and optional search budgets are separated, settled prefixes are retained, and repeated result adoption and deadline loops are fixed. Team pacing and all-Bot future optimization remain. Both all-Bot and mixed-table strength tests have passed. Release validation accompanies the GitHub Release.
 
 ## 0.39.4（2026-10-24）
 

@@ -10,14 +10,22 @@
 
 日常完整验证运行 `scripts/verify-project.ps1`：每次新建 `work/verification/<运行标识>/`，顺序执行生产构建、独立类型加载和**一次无参数 `EnableKernelTests=true` 完整入口**，保存实际命令、日志、退出码及 `summary.json`，不打包或覆盖发行物。独立普通进程改为 `-IncludeOrdinary` 显式诊断；原四门历史证据保持原样。以下单项命令用于定位问题。开发中运行本次改动对应的具名用例与必要 RED/GREEN；同一批候选改动完成、准备部署时才运行一次默认完整验证，聚焦结果不能替代交付完整验证。
 
+混合局线程修复入口 `--mixed-search-threading-only`（可加 `--mixed-search-threading-case=<name>`）已注册在无过滤完整入口。具名场景为 `native-worker`、`cursor-progress`、`obsolete-cancel`、`production-options`、`settled-prefix`、`longest-prefix`、`failure-memo`、`failure-before-phase`、`vigor-death`、`finished-priority`、`input-prefix`、`potion-worker`。真实rollout步骤上的受控屏障检查主线程轮询不等待；其他场景检查同revision单次任务、真人结束退场、原生前缀保留、无候选失败记忆与反伤死亡后的Fork边界。屏障只暂停执行，不替换原生卡牌效果。性能输出 `THREAD-PERF` 只表示该离线轮询夹具的耗时，不是游戏FPS或胜率证据。
+
+冻结药水搜索入口 `--frozen-potion-search-only`（可加 `--frozen-potion-search-case=inventory|usability|targets`）也注册在无过滤完整入口。真实库存移除/替换、权限与目标存活变化后，旧根保留捕获时的药水顺序、可用性和目标规则，新捕获反映实盘变化；模拟消费只影响分支的槽位，不消费真人后来获得的替代药水。
+
+`--frozen-potion-search-case=warm-usability` 是预热后安装观测钩子的聚焦隔离诊断。权限与排队状态直接改变原生字段，自定义可用性使用真实FoulPotion条件变化，避免依赖被JIT内联后无法替换的getter；同一组断言仍在完整入口执行。
+
+药水结果消费入口 `--mixed-potion-result-consumption-only`（可加 `--mixed-potion-result-consumption-case=no-rescue-once|reset-consumption|final-benefit-worker|benefit-deadline`）也注册在无过滤完整入口。真实原生重放生成完成候选，满腰带与低HP触发生产药水/急救评估，受控屏障让“无急救方案”跨帧返回；检查同一候选仅比较一次并及时部署，以及新请求不会继承旧消费状态。最终药水收益比较也以真实候选和原生重放屏障检查后台所有权、主线程不等待及请求截止后不再开始原生重放。夹具隔离完成结果的调度，不替代锦标赛搜索质量验证。
+
 ## 0. 前提
 
-V2混合局新增四个聚焦入口，也全部注册在无过滤完整入口：
+V2混合局新增四个聚焦入口，也全部注册在无过滤完整入口。2026-10-25本地候选补充预算耗尽后的活性：`no-candidate`检查不变根退避后通过真实搜索和原生付费出牌恢复；`prefix-repair`检查单步剧本耗尽及真人结束；`winning-baseline`检查无药胜利及时部署；`interrupted-*`检查真人输入中断后的物理提案、身份、集火及回合隔离。仅证明离线机制，不能代替历史战斗重放或实机延迟验收。入口：
 
 - `--mixed-cold-opening-only`，可加 `--mixed-cold-opening-case=constructor|units|prefix|cancel|portfolio|allbot`，检查构造不做全量开局、原子单位续枚举、真实已结算前缀截止发布、取消撤回、完整策略/联合工作继续，以及默认全Bot路径不变。
-- `--mixed-stable-script-only`，可加 `--mixed-stable-script-case=stable-prefix|reservation|recost|identity|unrelated-enemy|allbot-strict|expired-script|fresh-end|expired-card|expired-potion-baseline|no-candidate|control-rebind`。驱动真实多帧Poll、原生扣费动作与AfterFinished，检查真人穿插、四步后续打、准备不消费/结算单次消费、取消重试、物理身份、费用变化和已完成首步EndTurn退休。
+- `--mixed-stable-script-only`，可加 `--mixed-stable-script-case=stable-prefix|reservation|recost|identity|unrelated-enemy|allbot-strict|expired-script|fresh-end|expired-card|expired-potion-baseline|no-candidate|prefix-repair|winning-baseline|interrupted-baseline|interrupted-identity|interrupted-focus|interrupted-round|control-rebind`。驱动真实多帧Poll、原生扣费动作与AfterFinished，检查真人穿插、四步后续打、准备不消费/结算单次消费、取消重试、物理身份、费用变化和已完成首步EndTurn退休。
 - `--mixed-runtime-pacing-only`，可加 `--mixed-runtime-pacing-case=team|finished|delay|invalid|pause|flash|enqueue|resume|focus`。虚拟单调时钟驱动生产TickCombat与真实队列事件，检查跨席1500ms、真人结束立即收尾、慢动画不追赶、失败不改时钟、暂停/忙队列、Flash500ms和选择续租。夹具注入已选动作，搜索质量另由planner场景覆盖，不能把虚拟时钟结果报成实机帧耗时。
-- `--mixed-background-replan-only`，可加 `--mixed-background-replan-case=input-burst|full-options|stable-script|nonblocking|shared-budget|candidate|control|allbot|human-death|bot-death|pure-allbot|reset-domain`。检查真人输入合并、前后相同完整配置、后台不阻塞前台、共享预算、实际原生候选严格改进/同根/准备槽保护，以及恢复全Bot未来优化。
+- `--mixed-background-replan-only`，可加 `--mixed-background-replan-case=input-burst|full-options|stable-script|nonblocking|shared-budget|candidate|control|allbot|human-death|bot-death|pure-allbot|reset-domain`。检查真人输入合并、前后相同完整配置、后台不阻塞前台、可选额度与必要修复隔离、实际原生候选严格改进/同根/准备槽保护，以及恢复全Bot未来优化。
 
 `--request-lifecycle-only --request-lifecycle-case=replay-completed-stop` 与 `--planning-state-only --planning-state-case=continuation-deadline` 区分计算截止、完整候选和有效执行剧本的寿命；`--turn-start-choice-only --turn-start-choice-case=transition-diagnostics` 用原生合同区分回合号、席位回合号和未消费选择三轴。历史日志中四次拒绝尚无足够细节确证具体轴，增加诊断不等于这些历史机制已经复现修好。
 
@@ -166,6 +174,8 @@ DraftSim 默认不参与回归，只在显式传参时运行（`tests/PatchSmoke
 这些必须通过两名真人 + Bot 的实机验收（同步、重连、选牌/用药、Boss 结束回合、协作提示）并保留日志来验证；接手检查同样明确"以上不替代多客户端同步、断线重连、UI 显示和整局胜率的实机验收"（[`../TAKEOVER_REVIEW.md`](../TAKEOVER_REVIEW.md) 的"本次验证"一节）。
 
 ## 6. 常见失败
+
+混合桌收尾回归可用 `--mixed-readiness-closing-only` 和 `--mixed-choice-lease-retention-only` 聚焦，分别加 `--mixed-readiness-closing-case=<name>`、`--mixed-choice-lease-retention-case=<name>` 定位。前者覆盖准备信号与材料输入版本、原生被动准备间隙的前缀记账、结束动作提前计算及提交等待；后者覆盖回合开始菜单租约完成与未完成、真人输入后的实体后缀保留及真正选择分歧的严格清理。`--mixed-stable-script-only` 的 `dead-target`、`live-target`、`dead-target-choices`、`allbot-dead-target` 通过原生牌体检验目标修复与全 Bot 隔离；`--mixed-native-revival-only` 验证真实实验体死亡与敌方回合复活之间正常返回结束提案，不能无限等待新目标。`--mixed-runtime-pacing-case=material-choices` 配合该组聚焦入口检验未来合同退休后重新准备卡牌不重置团队时钟。计时/收据注入只验证调度合同，不能代替多客户端实机或棋力对照。
 
 - `STS2DataDir` 未指向含 `sts2.dll` 的目录 → 构建/运行报错。
 - 缺少 `STS2-RitsuLib.Runtime.dll` → 说明 RitsuLib 不是 0.6.x 的 `compat/<版本>` 目录，用 `-p:RitsuLibDir=...` 指到正确目录（`KernelDependencies.props:15-18`）。

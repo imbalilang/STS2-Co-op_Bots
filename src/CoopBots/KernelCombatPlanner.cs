@@ -10,8 +10,9 @@ using MegaCrit.Sts2.Core.Models;
 
 namespace CoopBots;
 
-// Host game-thread scheduler. No live objects are read by a background worker.
-// Only one first action is returned; all subsequent actions are replanned.
+// Host game-thread capture/submission scheduler. Frozen mixed-table searches
+// run on a background owner; legal physical proposals continue without per-card
+// searches. Only the native executor can commit a selected action.
 internal sealed partial class KernelCombatPlanner
 {
     internal enum Status { Pending, Ready, Fallback }
@@ -39,7 +40,10 @@ internal sealed partial class KernelCombatPlanner
         || mixedProposalReplay is { Done: false } || emergencyPotionPending
         || victoryReview is { Done: false } || shortVictory is { Done: false }
         || endTurnComparison is { Done: false } || tournamentPotionReplay is { Done: false }
-        || tournamentPotionAudit is { Result: null };
+        || tournamentPotionAudit is { Result: null } || mixedOpportunityPending
+        || mixedPotionReplayWork is not null && tournamentPotionReplay is null
+        || mixedPotionAuditWork is not null && tournamentPotionAudit is null
+        || mixedPotionBenefitWork is not null && !mixedPotionBenefitWork.Operation.IsCompleted;
     // True while a committed script still has an unemitted step: a card, a potion, or
     // one seat's EndTurn. The runtime's idle shortcut asks a narrower question — "does
     // any eligible bot hold a playable card or a usable potion" — and the answer is NO
@@ -958,7 +962,8 @@ internal sealed partial class KernelCombatPlanner
             ClearMixedReplan("new combat", newCombat: true);
             AbandonPreparedSubmission("new combat");
             mixedPhysicalCards.Clear();
-            mixedStoppedPoint = null;
+            mixedStoppedPoint = null; mixedStoppedUntil = 0;
+            mixedAvailableBaseline = null; mixedInterruptedBaseline = null;
             mixedControl = ""; mixedLivingDomain = ""; mixedCapturedLivingHuman = false;
             mixedHistoricalScript = null; mixedInputRevision = 0; mixedCheckedCursor = -1;
             mixedProposal = null; mixedProposalReplay = null; mixedProposalClock = null;
@@ -2573,7 +2578,14 @@ internal sealed partial class KernelCombatPlanner
     private bool tournamentOpeningReviewed;
 
     internal static string TournamentDecisionPoint(CombatState combat, uint actionVersion)
-        => $"{combat.GetHashCode()}/{combat.RoundNumber}/{actionVersion}/{ControlKey(combat)}/{KernelInputObserver.Revision}";
+    {
+        // Extra turns can reopen Play in the same native round. Readiness is
+        // deliberately absent, but actual side/seat turn domains are not.
+        var version = MixedTable(combat)
+            ? $"{KernelInputObserver.MaterialVersion}/{combat.CurrentSide}/{string.Join(',', combat.Players.Select(p => $"{p.NetId}:{p.PlayerCombatState?.TurnNumber}"))}"
+            : actionVersion.ToString();
+        return $"{combat.GetHashCode()}/{combat.RoundNumber}/{version}/{ControlKey(combat)}/{KernelInputObserver.Revision}";
+    }
 
     // ---- B1 telemetry: what ONE tournament decision actually costs -------------------
     //
@@ -2593,6 +2605,9 @@ internal sealed partial class KernelCombatPlanner
     // same denominator `search-complete` uses; taking a stopwatch around the caller
     // instead would fold every frame between slices into the ratio and make it
     // uncomparable with the existing numbers (KernelTournament.ComputeMs says why).
+    private TournamentRun? observedTournamentRun;
+    private double tournamentControllerWallMs;
+    private long tournamentControllerAllocatedBytes;
     private long tournamentStartedMs;
     private TimeSpan tournamentGcPauseAtStart;
     private long tournamentAllocatedAtStart;
@@ -2608,7 +2623,8 @@ internal sealed partial class KernelCombatPlanner
         tournamentStartedMs = Environment.TickCount64;
         tournamentGcPauseAtStart = GC.GetTotalPauseDuration();
         tournamentAllocatedAtStart = GC.GetTotalAllocatedBytes(precise: false);
-        tournamentScopes = 0;
+        tournamentScopes = 0; observedTournamentRun = null;
+        tournamentControllerWallMs = 0; tournamentControllerAllocatedBytes = 0;
         tournamentWallMs = 0;
         tournamentComputeMs = 0;
     }
@@ -2616,8 +2632,12 @@ internal sealed partial class KernelCombatPlanner
     /// <summary>Add one finished run to the scope. Called once per pass.</summary>
     private void ObserveTournamentRun(TournamentRun run)
     {
+        if (ReferenceEquals(observedTournamentRun, run)) return;
+        observedTournamentRun = run;
         tournamentScopes++;
         tournamentComputeMs += run.ComputeMs;
+        tournamentControllerWallMs += run.ControllerWallMs;
+        tournamentControllerAllocatedBytes += run.ControllerAllocatedBytes;
     }
 
     /// <summary>
@@ -2636,7 +2656,8 @@ internal sealed partial class KernelCombatPlanner
         Log.Info($"CoopBots tournament cost: {what}, passes={tournamentScopes}, "
             + $"wall={tournamentWallMs:F0}ms, compute={compute:F0}ms, "
             + $"gcPause={tournamentGcPause.TotalMilliseconds:F0}ms ({gcShare:F1}% of compute), "
-            + $"gen0={GC.CollectionCount(0)}, alloc={allocatedMb:F0}MB");
+            + $"gen0={GC.CollectionCount(0)}, alloc={allocatedMb:F0}MB, "
+            + $"controllerWallMs={tournamentControllerWallMs:F1} controllerAllocMB={tournamentControllerAllocatedBytes / 1048576d:F1}");
         var allocation = AllocationProbe.ReportAndReset();
         if (allocation.Length > 0) Log.Info("CoopBots alloc: " + allocation);
         tournamentScopes = 0;
@@ -2651,7 +2672,6 @@ internal sealed partial class KernelCombatPlanner
                 + $"budget={request.BudgetMs} wall={request.ElapsedMs:F1}ms remaining={request.RemainingMs}ms "
                 + $"stop={request.StopReason} active={request.ActiveJobs} queued={request.QueuedJobs} "
                 + $"peakActive={request.PeakActiveJobs} completedJobs={request.CompletedJobs}");
-        if (tournamentRequest is { } accounted) AccountMixedForegroundRequest(accounted);
         tournamentRequest?.Cancel(reason);
         tournamentRun?.Cancel(reason);
         if (emergencyPotionPending)
@@ -2664,8 +2684,13 @@ internal sealed partial class KernelCombatPlanner
         tournamentRun = null;
         tournamentPotionAudit = null;
         tournamentPotionReplay = null;
+        mixedPotionReplayWork = null; mixedPotionAuditWork = null; mixedPotionBenefitWork = null;
+        mixedOpportunityWork = null; mixedOpportunityPending = false; mixedEmergencyWork = null;
+        tournamentCompletedResult = null;
+        tournamentCompletedResultPrepared = tournamentCompletedOpportunityReviewed = false;
         tournamentBaselineComputeMs = 0;
         tournamentFirstPass = null;
+        mixedAvailableBaseline = null; mixedSearchOrigin = null;
         tournamentRoot = null;
         tournamentParty = null;
         tournamentActors = null;
@@ -2955,9 +2980,11 @@ internal sealed partial class KernelCombatPlanner
             return false;
         }
         var target = KernelSession.NormalizePlannedTarget(card.TargetType, KernelSession.ResolveCreature(next.Target, combat.Creatures));
+        if (mixed && TryRepairMixedDeadTarget(combat, next, card, ref target))
+            next = tournamentScript![tournamentScriptIndex];
         if (!card.CanPlayTargeting(target))
         {
-            ClearTournamentScript($"the planned card is no longer playable: card={next.Card.Id.Entry} "
+            ClearTournamentScript($"the planned card is no longer playable: card={card.Id.Entry} "
                 + $"energy={next.Player.PlayerCombatState?.Energy} target={next.Target?.CombatId} resolvedTarget={target?.CombatId} "
                 + $"type={card.TargetType} key={next.CardStateKey} occurrence={next.CardStateOccurrence} "
                 + $"hand={string.Join(',', next.Player.PlayerCombatState?.Hand.Cards.Select(c => c.Id.Entry) ?? [])}");
@@ -2999,6 +3026,7 @@ internal sealed partial class KernelCombatPlanner
             }
             rootSession = root;
             tournamentRoot = root;
+            if (MixedTable(combat)) RememberMixedSearchRoot(combat);
             tournamentActors = actors;
             tournamentParty = root.Party.Count > 0 ? root.Party : actors;
             tournamentInteractive = InteractiveMixedTurn(combat, humansFinished);
@@ -3008,15 +3036,14 @@ internal sealed partial class KernelCombatPlanner
             tournamentOptions = new TournamentOptions(TournamentDriveTopK,
                 Rollout: new RolloutOptions(RolloutPolicyKind.Kill, Seed: combat.RoundNumber),
                 IncludePotions: false,
-                // A mixed table must not offer end-turn while a human is still acting: the
-                // runtime will not submit it, and asking again every tick would burn a whole
-                // tournament per frame. All-bot tables are always allowed.
-                IncludeEndTurns: TournamentCanEndTurn(combat, humansFinished),
+                // Compute and retain the closing line before the human is ready.
+                // The emitter gates its native submission, not its comparison.
+                IncludeEndTurns: MixedTable(combat) || TournamentCanEndTurn(combat, humansFinished),
                 // The second pass is this with the potion switch flipped, so it inherits this too.
                 MaxDegreeOfParallelism: TournamentParallelism,
                 Objective: KernelPotionPolicy.Objective,
                 ContinuationActors: combat.Players.Where(p => actors.Contains(p) || AutoPilot.Drives(p.NetId)).ToArray(),
-                EnableJointSearch: true) { Request = tournamentRequest, MixedIncrementalOpenings = MixedTable(combat) };
+                EnableJointSearch: true) { Request = tournamentRequest, MixedIncrementalOpenings = MixedTable(combat), RunInBackground = MixedTable(combat) };
             tournamentOptions = WithMixedFocusOptions(InteractiveOptions(tournamentOptions));
             tournamentPhase = TournamentPhase.NoPotions;
             // The DECISION starts here, before the first pass, so both passes land in one
@@ -3074,9 +3101,27 @@ internal sealed partial class KernelCombatPlanner
         if (!bossOpening && !actors.Any(p => p.Potions.Any() && (KernelPotionOpportunity.HasFullBelt(p)
             || KernelPotionOpportunity.PredictedDeath(p, party, forecast))))
             return TryEmergencyPotion(combat, actors, forecast, plan);
-        var root = KernelCombatCapture.Capture(combat);
-        if (!root.CanFork) return false;
-        var choice = KernelPotionOpportunity.Choose(root, actors, party, forecast, plan, comparedPlan, bossOpening, tournamentRequest);
+        KernelPotionOpportunity.Choice? choice;
+        if (MixedTable(combat))
+        {
+            if (mixedOpportunityWork is null)
+            {
+                var root = KernelCombatCapture.Capture(combat);
+                if (!root.CanFork) return false;
+                var owners = actors.ToArray(); var proposal = plan?.ToArray(); var request = tournamentRequest;
+                mixedOpportunityWork = new(() => KernelPotionOpportunity.Choose(root, owners, party,
+                    forecast, proposal, comparedPlan, bossOpening, request), request);
+            }
+            mixedOpportunityPending = !mixedOpportunityWork.Poll();
+            if (mixedOpportunityPending) return false;
+            choice = mixedOpportunityWork.Value; mixedOpportunityWork = null;
+        }
+        else
+        {
+            var root = KernelCombatCapture.Capture(combat);
+            if (!root.CanFork) return false;
+            choice = KernelPotionOpportunity.Choose(root, actors, party, forecast, plan, comparedPlan, bossOpening, tournamentRequest);
+        }
         if (choice is null) return !bossOpening && TryEmergencyPotion(combat, actors, forecast, plan);
         emergencyPotionTrials?.Dispose(); emergencyPotionTrials = null; emergencyPotionPending = false;
         var potion = choice.Action.Potion!;
@@ -3095,13 +3140,23 @@ internal sealed partial class KernelCombatPlanner
         decision = null;
         try
         {
+            // Settle an old exhausted proposal's human revision before creating
+            // the repair request, so its notification cannot cancel this new root.
+            if (UsesMixedExecution(combat)) ReviewMixedInput(combat);
             if (UsesMixedExecution(combat) && HasTournamentScript)
             {
                 if (TryEmitFromTournamentScript(combat, actors, humansFinished, out decision))
                     return TournamentOutcome.Decided;
                 if (tournamentScript is not null) return TournamentOutcome.Pending;
             }
-            if (MixedTable(combat) && mixedStoppedPoint == point) return TournamentOutcome.Pending;
+            if (MixedTable(combat))
+            {
+                if (RestoreInterruptedMixedBaseline(combat, actors, humansFinished, out var restored, out decision))
+                    return restored;
+                if (mixedStoppedPoint == point && mixedStoppedHumansFinished == humansFinished
+                    && Environment.TickCount64 < mixedStoppedUntil) return TournamentOutcome.Pending;
+                mixedStoppedPoint = null;
+            }
             // The board moved, so anything in flight describes a position that no longer
             // exists. `point` is the same key the decline memo uses.
             if (tournamentPoint != point)
@@ -3129,11 +3184,12 @@ internal sealed partial class KernelCombatPlanner
                 // plan's evidence before pricing bottles against that forecast.
                 // The review and any subsequent search spend this same request.
                 if (ReviewMixedInput(combat)) return TournamentOutcome.Pending;
-                tournamentOpeningReviewed = true;
                 if (TryPotionOpportunity(combat, actors,
                     ReferenceEquals(tournamentScriptCombat, combat) ? tournamentScriptRecord : null,
                     ReferenceEquals(tournamentScriptCombat, combat) ? tournamentScript?.Skip(tournamentScriptIndex).ToArray() : null))
                     return FinishTournament(TournamentOutcome.Decided);
+                if (mixedOpportunityPending) return TournamentOutcome.Pending;
+                tournamentOpeningReviewed = true;
                 if (emergencyPotionPending) return TournamentOutcome.Pending;
             }
 
@@ -3173,8 +3229,9 @@ internal sealed partial class KernelCombatPlanner
                     }
                     // The step was refused and the script cleared. Fall through and re-search.
                 }
-                if (tournamentPhase == TournamentPhase.Potions && tournamentRun is null)
+                if (tournamentPhase == TournamentPhase.Potions && tournamentRun is null && tournamentCompletedResult is null)
                 {
+                    if (MixedTable(combat) && !AdvanceMixedPotionReplay()) return TournamentOutcome.Pending;
                     tournamentPotionReplay ??= new KernelPotionContinuationRun(tournamentRoot!, tournamentParty!,
                         tournamentActors!, tournamentFirstPass!, Math.Max(50, TournamentBudget(combat) / 4), request: tournamentRequest);
                     if (!tournamentPotionReplay.Advance(TimeSpan.FromMilliseconds(TournamentSliceMs)))
@@ -3183,30 +3240,31 @@ internal sealed partial class KernelCombatPlanner
                     Log.Info($"CoopBots potion comparison: replayed={tournamentPotionReplay.Completed} "
                         + $"compute={tournamentPotionReplay.ComputeMs:F0}ms preserved-reference=true");
                 }
-                if (tournamentRequest is { IsStopped: true } stopped && tournamentRun is null)
+                if (tournamentRequest is { IsStopped: true } stopped && tournamentRun is null && tournamentCompletedResult is null)
                 {
                     Log.Info($"CoopBots tournament: stopped before new phase — {stopped.StopReason}");
                     if (MixedTable(combat) && !stopped.IsCancelled)
                     {
                         if (tournamentFirstPass is { FirstAction: not null } completed)
                             return InstallCompletedMixedResult(completed, combat, actors, humansFinished, out decision);
-                        return ParkStoppedMixedSearch(point, stopped.StopReason);
+                        return ParkStoppedMixedSearch(point, stopped.StopReason, humansFinished);
                     }
                     return FinishTournament(TournamentOutcome.Declined);
                 }
-                if (tournamentRun is null && !BeginTournamentPhase(combat, actors, humansFinished))
+                if (tournamentRun is null && tournamentCompletedResult is null && !BeginTournamentPhase(combat, actors, humansFinished))
                 {
                     return FinishTournament(TournamentOutcome.Declined);
                 }
-                if (tournamentRun is null && mixedReadyProposal is null) return TournamentOutcome.Pending;
+                if (tournamentRun is null && mixedReadyProposal is null && tournamentCompletedResult is null) return TournamentOutcome.Pending;
                 // ONE FRAME'S WORTH. This is the whole point of the slicing: return to the
                 // caller without the animation having missed a frame.
-                if (mixedReadyProposal is null && !tournamentRun!.Advance(TimeSpan.FromMilliseconds(TournamentSliceMs)))
+                if (tournamentCompletedResult is null && mixedReadyProposal is null && !tournamentRun!.Advance(TimeSpan.FromMilliseconds(TournamentSliceMs)))
                 {
                     return TournamentOutcome.Pending;
                 }
 
-                var result = mixedReadyProposal ?? tournamentRun!.Result!;
+                var result = tournamentCompletedResult ?? mixedReadyProposal ?? tournamentRun!.Result!;
+                tournamentCompletedResult = result;
                 mixedReadyProposal = null;
                 // Request identity is evidence ownership, not a game-action
                 // refusal. An old root's result cannot be deployed by retagging
@@ -3218,76 +3276,106 @@ internal sealed partial class KernelCombatPlanner
                     ClearTournament("result request no longer current");
                     return TournamentOutcome.Pending;
                 }
-                if (tournamentPhase == TournamentPhase.Potions)
+                if (!tournamentCompletedResultPrepared)
                 {
-                    tournamentPotionAudit ??= new KernelPotionPlanAudit(tournamentRoot!, tournamentParty!, result, tournamentRequest);
-                    if (!tournamentPotionAudit.Advance(TimeSpan.FromMilliseconds(TournamentSliceMs))) return TournamentOutcome.Pending;
-                    result = tournamentPotionAudit.Result!;
-                    if (tournamentPotionAudit.Removed)
-                        Log.Info("CoopBots potion: removed redundant opening bottle after replaying the same card plan without it");
-                }
-                if (tournamentRun is not null) ObserveTournamentRun(tournamentRun);
-                Log.Info($"CoopBots joint search: phase={tournamentPhase} nodes={result.JointNodes} "
-                    + $"prefixes={result.JointPrefixes} maxActions={result.JointMaxActions} selected={result.JointSelected} {result.JointDiagnostics} "
-                    + $"potions={result.Record?.ResourcesConsumed ?? 0}");
-                if (tournamentPhase == TournamentPhase.NoPotions)
-                {
-                    tournamentBaselineComputeMs = tournamentRun?.ComputeMs ?? 0;
-                    tournamentFirstPass = result;
-                    if ((!MixedTable(combat) || !currentRequest.IsStopped)
-                        && KernelPotionPolicy.WorthComparing(tournamentRoot!, tournamentActors!, tournamentParty!, result.Record))
+                    if (tournamentPhase == TournamentPhase.Potions)
                     {
-                        // Losing or costly victory: compare the resource-adjusted ending.
-                        tournamentRun = null;
-                        tournamentPhase = TournamentPhase.Potions;
-                        continue;
+                        if (MixedTable(combat) && !AdvanceMixedPotionAudit(result)) return TournamentOutcome.Pending;
+                        tournamentPotionAudit ??= new KernelPotionPlanAudit(tournamentRoot!, tournamentParty!, result, tournamentRequest);
+                        if (!tournamentPotionAudit.Advance(TimeSpan.FromMilliseconds(TournamentSliceMs))) return TournamentOutcome.Pending;
+                        result = tournamentPotionAudit.Result!;
+                        if (tournamentPotionAudit.Removed)
+                            Log.Info("CoopBots potion: removed redundant opening bottle after replaying the same card plan without it");
                     }
-                }
-                else if (tournamentPhase == TournamentPhase.Potions)
-                {
-                    // Keep the potion line only if it is actually BETTER; a second run that
-                    // changes nothing must not be allowed to spend a potion on a tie.
-                    // CAPTURE THE FIRST PASS BEFORE OVERWRITING IT. `result` is reassigned
-                    // below, so reading it in the diagnostic afterwards printed the DRUGGED
-                    // ending under the `noPotion=` label — a diagnostic that reports the wrong
-                    // value is worse than none, and this one nearly shipped with exactly that bug.
-                    var firstPass = tournamentFirstPass!.Record;
-                    // When every route loses, try a bottle that improves combat
-                    // progress or has a useful resolved effect on an equal wipe.
-                    var immediateBenefit = firstPass is { Verified: true, Victory: false }
-                        ? KernelPotionPolicy.ImmediateBenefit(tournamentRoot!, tournamentParty!, result.FirstAction, result.Script)
-                        : 0;
-                    var better = KernelPotionPolicy.Improves(firstPass, result.Record, immediateBenefit);
-                    // SAY WHAT THE SECOND PASS DID. Without this the log shows "no potion was
-                    // used" and cannot distinguish "the potion pass did not run", "it ran and was
-                    // no better", and "it ran, won, and the planner failed to act on it" —
-                    // measured 2026-09-21, one run had two WIPE windows and zero potion uses, and
-                    // there was no way to tell which of the three had happened.
-                    Log.Info($"CoopBots tournament: potion pass — "
-                        + $"noPotion={Describe(firstPass)} withPotion={Describe(result.Record)} "
-                        + $"took={better} druggedFirst={result.FirstAction?.Potion?.Id.Entry ?? "none"} "
-                        // `hadPotions` must mean "a bottle the SEARCH could have picked", not
-                        // "some bottle exists". It used to count every usable potion, and under
-                        // the old gate it was possible for every bottle to be a CHOOSER potion
-                        // and still log `hadPotions=yes`. Live 2026-10-05 act-3 boss: three passes
-                        // logged `paths=0/N … druggedFirst=none hadPotions=yes`, and there was no
-                        // way to tell that the seats only held bottles `CanModelPotion` refuses.
-                        // `usableBottles` keeps the raw count beside it, so the two together say
-                        // "3 bottles, 0 the kernel can simulate".
-                        + $"hadPotions={(tournamentParty!.Any(p => tournamentRoot!.UsablePotions(p).Any(KernelSession.CanModelPotion)) ? "yes" : "no")} "
-                        + $"usableBottles={tournamentParty!.Sum(p => tournamentRoot!.UsablePotions(p).Count)} "
-                        + $"immediateBenefit={immediateBenefit:F1} "
-                        + $"enemyHp={firstPass?.RemainingEnemyHp}->{result.Record?.RemainingEnemyHp} "
-                        + $"survival={firstPass?.RoundsSurvived}->{result.Record?.RoundsSurvived}");
-                    if (!better) result = tournamentFirstPass!;
+                    if (tournamentRun is not null) ObserveTournamentRun(tournamentRun);
+                    Log.Info($"CoopBots joint search: phase={tournamentPhase} nodes={result.JointNodes} "
+                        + $"prefixes={result.JointPrefixes} maxActions={result.JointMaxActions} selected={result.JointSelected} {result.JointDiagnostics} "
+                        + $"potions={result.Record?.ResourcesConsumed ?? 0}");
+                    if (tournamentPhase == TournamentPhase.NoPotions)
+                    {
+                        tournamentBaselineComputeMs = tournamentRun?.ComputeMs ?? 0;
+                        tournamentFirstPass = result;
+                        if (MixedTable(combat))
+                        {
+                            RememberMixedBaseline(result, combat);
+                            // A complete no-potion victory can execute immediately,
+                            // as in 0.39.0. Losing lines still compare modeled bottles.
+                            if (result.Record is { Verified: true, Victory: true } && result.FirstAction is not null)
+                                return InstallCompletedMixedResult(result, combat, actors, humansFinished, out decision);
+                        }
+                        if ((!MixedTable(combat) || !currentRequest.IsStopped)
+                            && KernelPotionPolicy.WorthComparing(tournamentRoot!, tournamentActors!, tournamentParty!, result.Record))
+                        {
+                            // Losing or costly victory: compare the resource-adjusted ending.
+                            tournamentRun = null;
+                            tournamentCompletedResult = null;
+                            tournamentPhase = TournamentPhase.Potions;
+                            continue;
+                        }
+                    }
+                    else if (tournamentPhase == TournamentPhase.Potions)
+                    {
+                        // Keep the potion line only if it is actually BETTER; a second run that
+                        // changes nothing must not be allowed to spend a potion on a tie.
+                        // CAPTURE THE FIRST PASS BEFORE OVERWRITING IT. `result` is reassigned
+                        // below, so reading it in the diagnostic afterwards printed the DRUGGED
+                        // ending under the `noPotion=` label — a diagnostic that reports the wrong
+                        // value is worse than none, and this one nearly shipped with exactly that bug.
+                        var firstPass = tournamentFirstPass!.Record;
+                        // When every route loses, try a bottle that improves combat
+                        // progress or has a useful resolved effect on an equal wipe.
+                        var immediateBenefit = 0d;
+                        if (firstPass is { Verified: true, Victory: false })
+                        {
+                            if (MixedTable(combat))
+                            {
+                                if (!AdvanceMixedPotionBenefit(result, out immediateBenefit)) return TournamentOutcome.Pending;
+                            }
+                            else immediateBenefit = KernelPotionPolicy.ImmediateBenefit(tournamentRoot!, tournamentParty!, result.FirstAction, result.Script);
+                        }
+                        var better = KernelPotionPolicy.Improves(firstPass, result.Record, immediateBenefit);
+                        // SAY WHAT THE SECOND PASS DID. Without this the log shows "no potion was
+                        // used" and cannot distinguish "the potion pass did not run", "it ran and was
+                        // no better", and "it ran, won, and the planner failed to act on it" —
+                        // measured 2026-09-21, one run had two WIPE windows and zero potion uses, and
+                        // there was no way to tell which of the three had happened.
+                        Log.Info($"CoopBots tournament: potion pass — "
+                            + $"noPotion={Describe(firstPass)} withPotion={Describe(result.Record)} "
+                            + $"took={better} druggedFirst={result.FirstAction?.Potion?.Id.Entry ?? "none"} "
+                            // `hadPotions` must mean "a bottle the SEARCH could have picked", not
+                            // "some bottle exists". It used to count every usable potion, and under
+                            // the old gate it was possible for every bottle to be a CHOOSER potion
+                            // and still log `hadPotions=yes`. Live 2026-10-05 act-3 boss: three passes
+                            // logged `paths=0/N … druggedFirst=none hadPotions=yes`, and there was no
+                            // way to tell that the seats only held bottles `CanModelPotion` refuses.
+                            // `usableBottles` keeps the raw count beside it, so the two together say
+                            // "3 bottles, 0 the kernel can simulate".
+                            + $"hadPotions={(tournamentParty!.Any(p => tournamentRoot!.UsablePotions(p).Any(KernelSession.CanModelPotion)) ? "yes" : "no")} "
+                            + $"usableBottles={tournamentParty!.Sum(p => tournamentRoot!.UsablePotions(p).Count)} "
+                            + $"immediateBenefit={immediateBenefit:F1} "
+                            + $"enemyHp={firstPass?.RemainingEnemyHp}->{result.Record?.RemainingEnemyHp} "
+                            + $"survival={firstPass?.RoundsSurvived}->{result.Record?.RoundsSurvived}");
+                        if (!better) result = tournamentFirstPass!;
+                    }
+
+                    tournamentCompletedResult = result;
+                    tournamentCompletedResultPrepared = true;
                 }
 
                 // Modeled bottles have already received native comparisons.
                 // Preserve that card/bottle script, including losing lines.
                 // Unmodeled full-belt choices still resolve live before capture.
-                if (result.FirstAction?.Potion is null
-                    && TryPotionOpportunity(combat, actors, result.Record, result.Script))
-                    return FinishTournament(TournamentOutcome.Decided);
+                if (!tournamentCompletedOpportunityReviewed)
+                {
+                    var potionChosen = result.FirstAction?.Potion is null
+                        && TryPotionOpportunity(combat, actors, result.Record, result.Script);
+                    if (mixedOpportunityPending) return TournamentOutcome.Pending;
+                    // Choose has completed even when its native rescue still
+                    // owns a worker. Resume that rescue on later frames, then
+                    // deploy this same result instead of starting Choose again.
+                    tournamentCompletedOpportunityReviewed = true;
+                    if (potionChosen) return FinishTournament(TournamentOutcome.Decided);
+                }
                 if (emergencyPotionPending) return TournamentOutcome.Pending;
                 if (emergencyPotionRepaired) { emergencyPotionRepaired = false; continue; }
                 var next = result.FirstAction;
@@ -3296,7 +3384,7 @@ internal sealed partial class KernelCombatPlanner
                     if (MixedTable(combat) && (currentRequest.DeadlineReached
                         || result.StopReason.Contains("deadline", StringComparison.Ordinal)
                         || result.StopReason.Contains("budget", StringComparison.Ordinal)))
-                        return ParkStoppedMixedSearch(point, result.StopReason);
+                        return ParkStoppedMixedSearch(point, result.StopReason, humansFinished);
                     // A stored line was already tried at the top of the loop, so there is
                     // nothing left to fall back to here.
                     Log.Info($"CoopBots tournament: declined — {result.StopReason}");
@@ -3403,11 +3491,10 @@ internal sealed partial class KernelCombatPlanner
     private TournamentOutcome FinishTournament(TournamentOutcome outcome)
     {
         Log.Info($"CoopBots tournament: decision-ms={tournamentWatch?.Elapsed.TotalMilliseconds:F1} "
-            + $"(sliced {TournamentSliceMs}ms/frame)");
+            + (tournamentOptions?.RunInBackground == true ? "(frozen search on background controller)" : $"(sliced {TournamentSliceMs}ms/frame)"));
         // The B1 reading. `decision-ms` above is wall time and so cannot separate "the
         // search is expensive" from "the frame was stolen by a collection"; this line is
         // the one that can, and it is the ratio B1 is actually gated on.
-        if (tournamentRequest is { } accounted) AccountMixedForegroundRequest(accounted);
         ReportTournamentCost(outcome.ToString().ToLowerInvariant());
         ClearTournament();
         tournamentPoint = null;

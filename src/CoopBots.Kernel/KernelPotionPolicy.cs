@@ -1,4 +1,4 @@
-using MegaCrit.Sts2.Core.Entities.Creatures;
+﻿using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Potions;
@@ -26,9 +26,15 @@ public static class KernelPotionPolicy
                 * HealingReservationDiscount
             : Objective.ConsumableUnitCost;
 
+    public static double PreservationValue(KernelSession session, PotionModel potion, IReadOnlyList<Player> party)
+        => potion is Ambergris && party.Count > 0
+            ? party.Max(p => session.MaxHp(p.Creature)) * (double)session.PotionValue(potion, "HealPercent") / 100
+                * HealingReservationDiscount
+            : Objective.ConsumableUnitCost;
+
     internal static double ConsumedPreservationPremium(KernelSession session, IReadOnlyList<Player> party)
-        => party.SelectMany(p => p.Potions).Where(p => p is Ambergris && !session.HoldsPotion(p))
-            .Sum(p => Math.Max(0, PreservationValue(p, party) - Objective.ConsumableUnitCost));
+        => party.SelectMany(session.CapturedPotions).Where(p => p is Ambergris && !session.HoldsPotion(p))
+            .Sum(p => Math.Max(0, PreservationValue(session, p, party) - Objective.ConsumableUnitCost));
 
     public static bool WorthComparing(KernelSession root, IReadOnlyList<Player> actors,
         IReadOnlyList<Player> party, TerminalRecord? baseline)
@@ -57,8 +63,10 @@ public static class KernelPotionPolicy
     }
 
     public static double ImmediateBenefit(KernelSession root, IReadOnlyList<Player> party,
-        KernelTeamSearch.Action? opening, IReadOnlyList<KernelTeamSearch.Action>? plan = null)
+        KernelTeamSearch.Action? opening, IReadOnlyList<KernelTeamSearch.Action>? plan = null,
+        KernelDecisionRequest? request = null)
     {
+        if (request?.IsStopped == true) return 0;
         if (opening?.Potion is not { } potion) return 0;
         // A damage bottle spent into IntangiblePower is a 1-damage bottle. Do not
         // let the "both lines wipe, prefer a useful effect" fallback count it.
@@ -75,15 +83,20 @@ public static class KernelPotionPolicy
         var branch = root.Fork();
         var resolved = KernelSession.RequiresPotionChoiceContract(potion)
             ? branch.ReplayPlanned(opening, 80, out _) : branch.UsePotion(potion, opening.Target, out _);
-        if (!resolved) return 0;
+        if (!resolved || request?.IsStopped == true) return 0;
         var raw = KernelTacticalPolicy.Value(branch, party) - KernelTacticalPolicy.Value(root, party);
         if (plan is null || potion.GetType().Name is not ("ShacklingPotion" or "BeetleJuice" or "WeakPotion" or "BlockPotion" or "Fortifier")) return raw;
+        if (request?.IsStopped == true) return 0;
         var baseline = root.Fork();
         foreach (var action in plan.Take(64))
         {
+            if (request?.IsStopped == true) return 0;
             if (action.EndTurn) break;
             if (ReferenceEquals(action, opening) || action.Potion == potion) continue;
-            if (!baseline.ReplayPlanned(action, 80, out _) || !branch.ReplayPlanned(action, 80, out _)) return raw;
+            if (!baseline.ReplayPlanned(action, 80, out _)) return raw;
+            if (request?.IsStopped == true) return 0;
+            if (!branch.ReplayPlanned(action, 80, out _)) return raw;
+            if (request?.IsStopped == true) return 0;
             if (baseline.HasTerminal || branch.HasTerminal) break;
         }
         // In particular: a subsequent Whistle cancels this enemy action on both

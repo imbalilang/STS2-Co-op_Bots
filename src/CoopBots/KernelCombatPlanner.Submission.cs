@@ -1,4 +1,4 @@
-using CoopBots.Kernel;
+﻿using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.GameActions;
 
 namespace CoopBots;
@@ -19,6 +19,8 @@ internal sealed partial class KernelCombatPlanner
     }
     private PreparedSubmission? preparedSubmission;
     private string? mixedStoppedPoint;
+    private long mixedStoppedUntil;
+    private bool mixedStoppedHumansFinished;
     internal bool HasPreparedSubmission => preparedSubmission is not null;
 
     private TournamentOutcome InstallCompletedMixedResult(TournamentResult result,
@@ -33,11 +35,22 @@ internal sealed partial class KernelCombatPlanner
         return tournamentScript is not null ? TournamentOutcome.Pending : TournamentOutcome.Declined;
     }
 
-    private TournamentOutcome ParkStoppedMixedSearch(string point, string reason)
+    private TournamentOutcome ParkStoppedMixedSearch(string point, string reason, bool humansFinished)
     {
+        // A funded full tournament with no settled native action has failed
+        // at this root. Use the existing named decline memo, not a fresh copy
+        // of the same five-second computation every 1.5 seconds. A request
+        // admitted with no allowance still gets its one necessary funded retry.
+        if (tournamentRequest is { BudgetMs: > 0 })
+        {
+            MegaCrit.Sts2.Core.Logging.Log.Warn($"CoopBots mixed search: no settled native proposal at {reason}; root declined once, no timed restart");
+            return FinishTournament(TournamentOutcome.Declined);
+        }
         mixedStoppedPoint = point;
+        mixedStoppedHumansFinished = humansFinished;
+        mixedStoppedUntil = Environment.TickCount64 + 1500;
         MegaCrit.Sts2.Core.Logging.Log.Warn($"CoopBots mixed search: no settled candidate at {reason}; "
-            + "waiting for a changed actual root; no legacy action or renewed allowance");
+            + "bounded repair retry after 1500ms; current request retired, no legacy action");
         return FinishTournament(TournamentOutcome.Pending);
     }
     private readonly HashSet<MegaCrit.Sts2.Core.Models.CardModel> mixedPhysicalCards = new(ReferenceEqualityComparer.Instance);

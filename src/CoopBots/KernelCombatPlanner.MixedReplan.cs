@@ -26,10 +26,10 @@ internal sealed partial class KernelCombatPlanner
         internal required Player[] Actors;
         internal required KernelDecisionRequest Request;
         internal required TournamentOptions Options;
-        internal required KernelScriptReplayRun BaselineReplay;
+        internal required TournamentResult Proposal;
+        internal KernelBackgroundValue<TournamentResult?>? Work;
         internal TournamentResult? Baseline;
         internal TournamentRun? Search;
-        internal KernelScriptReplayRun? CandidateReplay;
         internal double ReplayComputeMs;
     }
 
@@ -58,6 +58,10 @@ internal sealed partial class KernelCombatPlanner
         // old-root workers must still be retired before a settled recapture.
         if (!HasTournamentScript)
         {
+            mixedInterruptedBaseline ??= mixedAvailableBaseline;
+            if (mixedInterruptedBaseline is null && mixedSearchOrigin is { } origin
+                && tournamentRun?.LatestSettledProposal is { } settled)
+                mixedInterruptedBaseline = new(origin.Combat, origin.Round, origin.Control, settled, origin.Cards);
             tournamentRequest?.Cancel("settled external player input");
             tournamentRun?.Cancel("settled external player input");
         }
@@ -74,44 +78,33 @@ internal sealed partial class KernelCombatPlanner
         mixedNextAdmissionAt = 0;
     }
 
-    // Foreground and optional background requests consume one round/control
-    // allowance. Inputs/restarts do not grant another full tournament budget.
+    // Necessary initialization/repair owns a complete bounded request. Only
+    // optional improvement consumes the round ledger; it cannot starve execution.
     private int MixedRemainingDecisionBudget(CombatState combat)
+        => checked(2 * TournamentBudget(combat));
+
+    private int MixedRemainingReplanBudget(CombatState combat)
     {
         EnsureMixedBudget(combat);
         return Math.Max(0, (int)Math.Floor(2 * TournamentBudget(combat) - mixedEpisodeSpentMs));
     }
 
-    private void AccountMixedForegroundRequest(KernelDecisionRequest request)
-    {
-        if (mixedBudgetCombat is null || !MixedTable(mixedBudgetCombat)
-            || !mixedAccountedRequests.Add(request.RootGeneration)) return;
-        // The round ledger measures actual work. Request deadlines separately
-        // bound wall time; cadence, animation and waiting for human input are
-        // not new computation and must not erase all later improvement time.
-        var unobservedRun = tournamentPhase == TournamentPhase.NoPotions ? tournamentScopes == 0
-            : tournamentPhase == TournamentPhase.Potions && tournamentScopes < 2;
-        var actual = tournamentComputeMs + (unobservedRun ? tournamentRun?.ComputeMs ?? 0 : 0);
-        // ComputeMs includes overlapping rollout worker intervals. Capping at
-        // request wall time avoids charging that parallel interval repeatedly;
-        // taking the smaller value also excludes pure between-frame waiting.
-        mixedEpisodeSpentMs += Math.Max(0, Math.Min(actual, request.ElapsedMs));
-    }
-
     // Runtime calls this only at a settled native queue boundary. A prepared
     // card does not stop frozen computation, but excludes candidate adoption.
-    internal void AdvanceMixedReplan(CombatState combat, long now)
+    internal void AdvanceMixedReplan(CombatState combat, long now, bool humansFinished = false)
     {
         if (!MixedTable(combat)) { ClearMixedReplan("all-Bot table"); return; }
+        if (humansFinished) { ClearMixedReplan("human finished; executable suffix has priority"); return; }
         EnsureMixedBudget(combat);
         ReviewMixedInput(combat);
         if (mixedReplan is { } stale && (!ReferenceEquals(stale.Combat, combat)
             || stale.Control != ControlKey(combat) || stale.Revision != KernelInputObserver.Revision
-            || !ReferenceEquals(stale.Source, tournamentScript) || stale.Cursor != tournamentScriptIndex))
+            || !ReferenceEquals(stale.Source, tournamentScript) || !HasTournamentScript || stale.Cursor != tournamentScriptIndex))
         {
             // Never retag a result or trim N actions to pretend it has reached
             // today's root. Discard optional work and let the existing line run.
-            mixedReplanDirty |= ReferenceEquals(stale.Combat, combat) && MixedTable(combat);
+            // Only a newly settled human revision can readmit optional work.
+            // Bot cursor progress is not another external input.
             ClearMixedReplan("foreground advanced or newer settled input");
         }
         // Foreground repair/initial work has priority. A prepared submission is
@@ -120,10 +113,9 @@ internal sealed partial class KernelCombatPlanner
         if (mixedReplan is null)
         {
             if (!mixedReplanDirty || now < mixedNextAdmissionAt || !HasTournamentScript) return;
-            var remaining = MixedRemainingDecisionBudget(combat);
-            // Reserve necessary repair work without starving improvement after
-            // an initial full no-potion pass. This is a scheduling allowance,
-            // shared across input restarts, never a smaller search portfolio.
+            var remaining = MixedRemainingReplanBudget(combat);
+            // Leave optional credit for subsequent input; necessary repair has
+            // its own request. The complete search portfolio remains unchanged.
             var reserve = Math.Min(TournamentBudget(combat) / 2, (remaining + 1) / 2);
             var optional = remaining - reserve;
             if (optional <= 0) { mixedReplanDirty = false; return; }
@@ -140,8 +132,9 @@ internal sealed partial class KernelCombatPlanner
             var proposal = new TournamentResult(suffix[0], previous, [], 0, 0, "mixed-historical-proposal") { Script = suffix };
             var options = WithMixedFocusOptions(new TournamentOptions(TournamentDriveTopK,
                 Rollout: new RolloutOptions(RolloutPolicyKind.Kill, Seed: combat.RoundNumber),
-                IncludePotions: true, IncludeEndTurns: TournamentCanEndTurn(combat,
-                    party.Where(p => p.Creature.IsAlive && !AutoPilot.Drives(p.NetId)).All(p => !root.CanAct(p))),
+                // Computing/retaining an ending is independent of permission
+                // to submit it. The foreground still waits for human ready.
+                IncludePotions: true, IncludeEndTurns: true,
                 MaxDegreeOfParallelism: TournamentParallelism, Objective: KernelPotionPolicy.Objective,
                 ContinuationActors: party.Where(p => AutoPilot.Drives(p.NetId)).ToArray(),
                 EnableJointSearch: true) { Request = request, MixedIncrementalOpenings = true });
@@ -149,7 +142,7 @@ internal sealed partial class KernelCombatPlanner
                 Revision = KernelInputObserver.Revision, Source = tournamentScript!, Cursor = tournamentScriptIndex,
                 Root = root, Evidence = root.PlanningState(ControlledSeats(combat)), Party = party,
                 Actors = actors, Request = request, Options = options,
-                BaselineReplay = new(root, party, proposal, options.Rollout!.MaxRounds, request) };
+                Proposal = proposal };
             mixedReplan.ReplayComputeMs += captureClock.Elapsed.TotalMilliseconds;
             mixedReplanDirty = false;
             mixedNextAdmissionAt = now + 1500;
@@ -160,44 +153,40 @@ internal sealed partial class KernelCombatPlanner
         var job = mixedReplan!;
         try
         {
-            if (!job.BaselineReplay.Done)
-            {
-                var replayClock = Stopwatch.StartNew();
-                job.BaselineReplay.Advance(TimeSpan.FromMilliseconds(2));
-                job.ReplayComputeMs += replayClock.Elapsed.TotalMilliseconds;
-                if (!job.BaselineReplay.Done) return;
-                job.Baseline = job.BaselineReplay.Result;
-                // A fully replayed current-root victory already satisfies the
-                // objective. Merely receiving input need not launch a search.
-                if (job.Baseline?.Record is { Verified: true, Victory: true })
-                { ClearMixedReplan("current-root baseline remains a victory"); return; }
-            }
-            if (job.CandidateReplay is not null)
-            {
-                var replayClock = Stopwatch.StartNew();
-                job.CandidateReplay.Advance(TimeSpan.FromMilliseconds(2));
-                job.ReplayComputeMs += replayClock.Elapsed.TotalMilliseconds;
-                if (!job.CandidateReplay.Done) return;
-                if (job.CandidateReplay.Result is { } candidate && !HasPreparedSubmission)
-                    TryAdoptMixedCandidate(combat, job, candidate);
-                // A ready candidate can wait behind a prepared card, but must
-                // be discarded as soon as that card advances the source root.
-                if (HasPreparedSubmission && job.CandidateReplay.Result is not null) return;
-                ClearMixedReplan("candidate consumed"); return;
-            }
-            if (job.Request.IsStopped)
-            { ClearMixedReplan(job.Request.StopReason); return; }
-            job.Search ??= new TournamentRun(job.Root, job.Party, job.Actors,
-                job.Options with { ReferenceResult = job.Baseline }, job.Request.RemainingMs);
-            if (!job.Search.Advance(TimeSpan.FromMilliseconds(2))) return;
-            var result = job.Search.Result;
-            if (result?.FirstAction is null || result.Record is null
-                || FreshEndingDoesNotBeat(result.Record, job.Baseline?.Record))
-            { ClearMixedReplan("current-root baseline kept"); return; }
-            job.CandidateReplay = new(job.Root, job.Party, result, job.Options.Rollout!.MaxRounds, job.Request);
+            // Everything after the settled root capture has one background
+            // owner, including replay, constructor preparation and nested probes.
+            job.Work ??= new(() => ComputeMixedReplan(job), job.Request);
+            if (!job.Work.Poll()) return;
+            if (job.Work.Value is { } candidate && !HasPreparedSubmission
+                && job.Cursor == tournamentScriptIndex)
+                TryAdoptMixedCandidate(combat, job, candidate);
+            else if (HasPreparedSubmission && job.Work.Value is not null
+                && job.Cursor == tournamentScriptIndex) return;
+            ClearMixedReplan(job.Cursor == tournamentScriptIndex ? "candidate consumed" : "input consumed; foreground advanced");
         }
         catch (Exception error)
         { Log.Warn($"CoopBots mixed replan: failed {error}"); ClearMixedReplan("exception"); }
+    }
+
+    private static TournamentResult? ComputeMixedReplan(MixedReplanJob job)
+    {
+        var watch = Stopwatch.StartNew();
+        var replay = new KernelScriptReplayRun(job.Root, job.Party, job.Proposal, job.Options.Rollout!.MaxRounds, job.Request);
+        while (!replay.Done) { replay.Advance(TimeSpan.FromMilliseconds(4)); KernelBackgroundOperation.Yield(); }
+        job.ReplayComputeMs += watch.Elapsed.TotalMilliseconds;
+        job.Baseline = replay.Result;
+        if (job.Request.IsStopped || job.Baseline?.Record is { Verified: true, Victory: true }) return null;
+        job.Search = new TournamentRun(job.Root, job.Party, job.Actors,
+            job.Options with { ReferenceResult = job.Baseline }, job.Request.RemainingMs);
+        while (!job.Search.Advance(TimeSpan.FromMilliseconds(4))) KernelBackgroundOperation.Yield();
+        var result = job.Search.Result;
+        if (job.Request.IsCancelled || result?.FirstAction is null || result.Record is null
+            || FreshEndingDoesNotBeat(result.Record, job.Baseline?.Record)) return null;
+        watch.Restart();
+        var candidate = new KernelScriptReplayRun(job.Root, job.Party, result, job.Options.Rollout.MaxRounds, job.Request);
+        while (!candidate.Done) { candidate.Advance(TimeSpan.FromMilliseconds(4)); KernelBackgroundOperation.Yield(); }
+        job.ReplayComputeMs += watch.Elapsed.TotalMilliseconds;
+        return candidate.Result;
     }
 
     private bool TryAdoptMixedCandidate(CombatState combat, MixedReplanJob job, TournamentResult result)
@@ -228,10 +217,12 @@ internal sealed partial class KernelCombatPlanner
     {
         if (mixedReplan is { } job)
         {
+            // Conservative optional wall credit includes queue/cadence waiting.
+            // Never sample mutable worker counters while cancelling; necessary
+            // initialization/repair has its independent bounded allowance.
             if (mixedAccountedRequests.Add(job.Request.RootGeneration))
-                mixedEpisodeSpentMs += Math.Min(job.Request.ElapsedMs,
-                    job.ReplayComputeMs + (job.Search?.ComputeMs ?? 0));
-            job.Request.Cancel(reason); job.Search?.Cancel(reason);
+                mixedEpisodeSpentMs += Math.Min(job.Request.BudgetMs, job.Request.ElapsedMs);
+            job.Request.Cancel(reason);
             mixedReplanRetired++;
             Log.Info($"CoopBots mixed replan: retired reason={reason} revision={job.Revision} "
                 + $"wall={job.Request.ElapsedMs:F1}ms spent={mixedEpisodeSpentMs:F1}ms retired={mixedReplanRetired}");

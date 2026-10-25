@@ -1,4 +1,5 @@
 using MegaCrit.Sts2.Core.Combat;
+using CoopBots.Kernel;
 
 namespace CoopBots;
 
@@ -11,7 +12,48 @@ internal sealed partial class KernelCombatPlanner
         => ClearChoiceDependentState(combat, detail, externalInput: false);
 
     internal void InvalidateExternalTurnChoiceState(CombatState combat, string detail)
-        => ClearChoiceDependentState(combat, detail, externalInput: true);
+    {
+        if (RetireMixedChoiceContracts(combat, "future turn-start plan superseded by external input: " + detail))
+        {
+            NoteMixedInput();
+            return;
+        }
+        ClearChoiceDependentState(combat, detail, externalInput: true);
+    }
+
+    // Future turn-start contracts and terminal evidence depend on the old
+    // root. Keep immediate card-choice contracts: their complete native menu
+    // identity is still checked when opened, preserving the searched answer.
+    // A queued action owns its existing receipt and choice transaction.
+    internal bool RetireMixedChoiceContracts(CombatState combat, string reason)
+    {
+        if (!ReferenceEquals(tournamentScriptCombat, combat) || !HasTournamentScript || !UsesMixedExecution(combat))
+            return false;
+        var old = tournamentScript!;
+        var first = tournamentScriptIndex + (preparedSubmission?.Queued is not null ? 1 : 0);
+        var retained = old.ToArray();
+        for (var i = first; i < retained.Length; i++)
+            retained[i] = retained[i] with { TurnStartChoices = null };
+        tournamentScript = retained;
+        mixedHistoricalScript = retained;
+        if (preparedSubmission is { Queued: not null } queued)
+        { queued.Script = retained; queued.Cursor = tournamentScriptIndex; }
+        else AbandonPreparedSubmission(reason);
+        if (tournamentScriptRecord is { } record)
+            tournamentScriptRecord = record with { Victory = false, Kind = EvidenceKind.EstimatedCutoff,
+                CutoffReason = "mixed-choice-contract-retired-quality-unverified", IrreversibleLoss = 0 };
+        mixedContinuation = null;
+        mixedProposal = null; mixedProposalReplay = null; mixedProposalClock = null;
+        ClearMixedReplan(reason);
+        ClearRefinement(reason);
+        ClearTournament(reason);
+        victoryReview = null; victoryReviewRoot = null; victoryReviewStamp = null; victoryCheckedRound = 0;
+        shortVictory = null; shortVictoryStamp = null;
+        endTurnComparison = null; endTurnComparisonStamp = null; endTurnComparisonIndex = -1;
+        ConfirmedEndTurnChoices = null;
+        ReportSearchLine(reason + $"; retired future turn-start contracts, retained physical suffix and validated card menus cursor={tournamentScriptIndex}/{retained.Length}");
+        return true;
+    }
 
     private void ClearChoiceDependentState(CombatState combat, string detail, bool externalInput)
     {

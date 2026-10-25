@@ -180,7 +180,7 @@ internal static class MixedRoomAndHandshakeScenarios
         try
         {
             GameAction[] actions = [new PlayCardAction(human, NetCombatCard.ForTesting(0), ModelDb.Card<StrikeIronclad>().Id, null),
-                new UsePotionAction(human, 0, null, null, true), new EndPlayerTurnAction(human, 1),
+                new UsePotionAction(human, 0, null, null, true),
                 new UndoEndPlayerTurnAction(human, 1), new DiscardPotionGameAction(human, 0, true), new UnknownStateAction(human)];
             foreach (var action in actions)
             {
@@ -188,8 +188,13 @@ internal static class MixedRoomAndHandshakeScenarios
                 AccessTools.Method(NativeFixture, "Install").Invoke(fixture, [contract]);
                 queue.EnqueueWithoutSynchronizing(action);
                 Check(GetSync("contract") is null && GetSync("installed") is null && OldPredictionCleared(fixture),
-                    "a real human " + action.GetType().Name + " enqueue must retire the future choice and cached script");
+                    "a real human " + action.GetType().Name + " enqueue must retire the future choice and cached root prediction");
             }
+            AccessTools.Method(NativeFixture, "SeedOldPrediction").Invoke(fixture, null);
+            AccessTools.Method(NativeFixture, "Install").Invoke(fixture, [contract]);
+            queue.EnqueueWithoutSynchronizing(new EndPlayerTurnAction(human, 1));
+            Check(ReferenceEquals(GetSync("contract"), contract) && !OldPredictionCleared(fixture),
+                "a pure native human readiness signal must retain the unconsumed future menu and physical script");
             AutoPilot.Set(human.NetId, true);
             AccessTools.Method(NativeFixture, "SeedOldPrediction").Invoke(fixture, null);
             AccessTools.Method(NativeFixture, "Install").Invoke(fixture, [contract]);
@@ -198,7 +203,7 @@ internal static class MixedRoomAndHandshakeScenarios
                 "a handed-over seat's delegated card action must retain the future contract");
         }
         finally { queue.ActionEnqueued -= observe; }
-        Console.WriteLine("PASS: real human card/potion/end/undo/discard and unknown actions invalidate future choices; delegated cards retain them.");
+        Console.WriteLine("PASS: material human actions retire future choices; native readiness and delegated cards retain them.");
     }
 
     private sealed class UnknownStateAction(Player owner) : GameAction

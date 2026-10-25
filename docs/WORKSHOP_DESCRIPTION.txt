@@ -1,19 +1,19 @@
 [h1]Co-op Bots / 联机机器人[/h1]
 为《杀戮尖塔 2》的官方多人房间加入 AI 队友。Bot 使用真实玩家席位，动作通过游戏队列同步；所有真人需安装相同版本。
 
-[h2]最新更新 / Latest：0.39.4（2026-10-24）[/h2]
+[h2]最新更新 / Latest：0.40.0（2026-10-25）[/h2]
 [list]
-[*]混合局恢复稳定剧本续打；真人结束前后保持同一套完整锦标赛，不再每张真人牌都前台重搜。
-[*]真人行动时默认Pro/Cheated全队约1.5秒一张卡，Flash保留0.5秒；真人结束后取消人为间隔，按已有剧本快速收尾。
-[*]混合局后台按真人已结算动作比较新盘面，不阻塞合法旧剧本；全Bot保留原有未来回合优化。
-[*]修复重复采纳、游标提前消费和超时循环，补齐冷开局分帧、托管/死亡切换及原生回归。
+[*]混合局完整锦标赛、药水比较和剧本重放改为后台执行，修复搜索引起的画面卡顿与拖牌受阻。
+[*]真人结束不再无谓取消搜索，提前保留收尾；死亡目标局部修复、回合开始选择合同及时退休，减少剧本中断与额外长考。
+[*]真人结束前后保持同一完整锦标赛；默认Pro/Cheated全队约1.5秒一张，Flash保留0.5秒，真人结束后取消人为间隔、按已有剧本快速收尾。
+[*]必要/可选搜索分开预算，保留已结算前缀，修复结果重复采纳、药水库存变化及超时循环；全Bot保留未来回合优化。
 [/list]
-发布验证收据随GitHub Release提供。尚未完成双客户端混合局实机验收；初次搜索、动画和同步选择可能延长实际间隔，未验证实机延迟或胜率改善。
-Mixed tables retain legal scripts and use one full tournament in both human phases. Pro/Cheated share a 1.5-second team cadence while humans act, then remove artificial delay for scripted cleanup. Human-driven optional replanning preserves all-Bot future optimization. Release validation is on GitHub; two-client latency and win-rate improvements remain unverified.
+已通过纯Bot局与人机混合局强度测试。发布验证收据随GitHub Release提供。
+Background mixed-table search addresses rendering and card-drag stalls. Human EndTurn preserves active search and computed cleanup. The same full tournament, team cadence and all-Bot future optimization remain. Both all-Bot and mixed-table strength tests have passed. Release validation is on GitHub.
 
 [h2]此前公开快照（2026-10-13）[/h2]
 公开当前算法、Agent 规范与技能、完整回归和 Steam 实机测试管线，邀请社区共同优化。GitHub 源码更新与工坊安装包身份分别核对。
-v21 修复多人初始化抽弃牌能力等待问题，历史完整回归887项通过。五局同一冻结候选全 Bot A10 实机测试：0通关、5自然失败、0卡死。仍有状态差异和策略问题待修复，尚未证明50%通关目标，混合桌单独验证。
+v21 修复多人初始化抽弃牌能力等待问题，历史完整回归887项通过。五局同一冻结候选全 Bot A10 实机测试：0通关、5自然失败、0卡死。仍有状态差异和策略问题待修复，该历史样本尚未证明50%通关目标；当前版本测试状态见上。
 [url=https://github.com/imbalilang/STS2-Co-op_Bots]源码、贡献指南、算法地图与公开测试证据[/url]
 
 [h2]玩法[/h2]

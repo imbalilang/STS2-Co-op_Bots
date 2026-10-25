@@ -1,12 +1,69 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using CoopBots.Kernel;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Logging;
+using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Models;
 
 namespace CoopBots;
 
 internal sealed partial class KernelCombatPlanner
 {
+    private sealed record MixedBaselineProposal(CombatState Combat, int Round, string Control,
+        TournamentResult Result, CardModel[] PhysicalCards);
+    private MixedBaselineProposal? mixedAvailableBaseline, mixedInterruptedBaseline;
+    private sealed record MixedSearchOrigin(CombatState Combat, int Round, string Control, CardModel[] Cards);
+    private MixedSearchOrigin? mixedSearchOrigin;
+    private void RememberMixedSearchRoot(CombatState combat)
+        => mixedSearchOrigin = new(combat, combat.RoundNumber, ControlKey(combat),
+            combat.Players.Where(p => p.PlayerCombatState is not null).SelectMany(p =>
+                p.PlayerCombatState!.Hand.Cards.Concat(p.PlayerCombatState.DrawPile.Cards)
+                .Concat(p.PlayerCombatState.DiscardPile.Cards).Concat(p.PlayerCombatState.ExhaustPile.Cards))
+                .Distinct(ReferenceEqualityComparer.Instance).Cast<CardModel>().ToArray());
+
+
+    // Freeze only native card identity here; a later human input withdraws the
+    // terminal proof, while these physical action proposals may still be legal.
+    private void RememberMixedBaseline(TournamentResult result, CombatState combat)
+    {
+        mixedAvailableBaseline = result.Script is { Count: > 0 } script
+            && result.ScriptAliveStates?.Count == script.Count
+            && result.ScriptEnemyStates?.Count == script.Count && result.Record is not null
+            ? new(combat, combat.RoundNumber, ControlKey(combat), result,
+                combat.Players.Where(p => p.PlayerCombatState is not null).SelectMany(p =>
+                    p.PlayerCombatState!.Hand.Cards.Concat(p.PlayerCombatState.DrawPile.Cards)
+                        .Concat(p.PlayerCombatState.DiscardPile.Cards).Concat(p.PlayerCombatState.ExhaustPile.Cards))
+                    .Distinct(ReferenceEqualityComparer.Instance).Cast<CardModel>().ToArray())
+            : null;
+    }
+
+    private bool RestoreInterruptedMixedBaseline(CombatState combat, IReadOnlyList<Player> actors,
+        bool humansFinished, out TournamentOutcome outcome, out TeamCombatPlanner.Decision? decision)
+    {
+        outcome = TournamentOutcome.Pending; decision = null;
+        if (mixedInterruptedBaseline is not { } saved) return false;
+        mixedInterruptedBaseline = null;
+        if (!ReferenceEquals(saved.Combat, combat) || saved.Round != combat.RoundNumber
+            || saved.Control != ControlKey(combat))
+        { Log.Info("CoopBots mixed baseline: retired after combat/round/control change"); return false; }
+        // Do not retag the request or promote old-root victory. Adoption here
+        // installs historical physical proposals, checked by the normal emitter.
+        var historical = saved.Result with { Record = saved.Result.Record! with {
+            Victory = false, Kind = EvidenceKind.EstimatedCutoff,
+            CutoffReason = "mixed-interrupted-baseline-quality-unverified", IrreversibleLoss = 0 } };
+        ClearTournament("completed baseline retained after settled human input");
+        // The cancelled worker still owns its old frozen parent until its
+        // current native transaction settles. Never Fork that parent here.
+        tournamentRoot = rootSession = KernelCombatCapture.Capture(combat);
+        AdoptTournamentScript(historical, combat);
+        RetireMixedChoiceContracts(combat, "interrupted historical root cannot retain future choice contracts");
+        mixedPhysicalCards.Clear(); mixedPhysicalCards.UnionWith(saved.PhysicalCards);
+        Log.Info("CoopBots mixed baseline: retained completed physical proposals; old-root quality withdrawn");
+        if (TryEmitFromTournamentScript(combat, actors, humansFinished, out decision))
+        { outcome = TournamentOutcome.Decided; return true; }
+        return HasTournamentScript;
+    }
+
     private KernelPlanContinuation? mixedContinuation;
     private long mixedInputRevision;
     private string mixedControl = "";
@@ -67,6 +124,8 @@ internal sealed partial class KernelCombatPlanner
         var changed = mixedInputRevision != KernelInputObserver.Revision;
         var domainChanged = controlChanged || modeChanged || livingChanged;
         if (!changed && !domainChanged) return false;
+        if (changed && tournamentScript.Skip(tournamentScriptIndex).Any(step => step.TurnStartChoices is not null))
+            RetireMixedChoiceContracts(combat, "settled material input retired historical choice dependencies");
         if (domainChanged)
         {
             ClearMixedReplan("control changed");

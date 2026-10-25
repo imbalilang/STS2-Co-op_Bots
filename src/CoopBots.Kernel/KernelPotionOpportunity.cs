@@ -90,7 +90,7 @@ public static class KernelPotionOpportunity
         // 已建模收益）仍可以花掉它，只是不再"为了清空而浪费"。
         if (bossOpening)
         {
-            foreach (var owner in actors.Where(p => root.CanAct(p) && p.CanUseOrRemovePotions))
+            foreach (var owner in actors.Where(p => root.CanAct(p) && root.CanUsePotions(p)))
             foreach (var potion in root.UsablePotions(owner))
             {
                 if (request?.IsStopped == true) return null;
@@ -120,8 +120,8 @@ public static class KernelPotionOpportunity
         // a full belt releases a usable bottle whose full-belt value is unknown.
         // Do not simulate its benefit: live dispatch clears the old script and
         // captures the native result before planning again, even for a winning tail.
-        foreach (var owner in actors.Where(p => root.CanAct(p) && p.CanUseOrRemovePotions
-                     && p.MaxPotionCount > 0 && root.HeldPotionCount(p) >= p.MaxPotionCount))
+        foreach (var owner in actors.Where(p => root.CanAct(p) && root.CanUsePotions(p)
+                     && root.PotionCapacity(p) > 0 && root.HeldPotionCount(p) >= root.PotionCapacity(p)))
         foreach (var potion in root.UsablePotions(owner).Where(p => !HasFullBeltValuation(p)))
         {
             if (request?.IsStopped == true) return null;
@@ -141,7 +141,7 @@ public static class KernelPotionOpportunity
         if (forecast is { Verified: true, Victory: true } && plan is { Count: > 0 }) return null;
         Choice? best = null;
         var bestScore = double.NegativeInfinity;
-        foreach (var owner in actors.Where(p => root.CanAct(p) && p.CanUseOrRemovePotions))
+        foreach (var owner in actors.Where(p => root.CanAct(p) && root.CanUsePotions(p)))
         {
             if (request?.IsStopped == true) return best;
             // A verified loss ten rounds away is not the last opportunity to
@@ -149,7 +149,7 @@ public static class KernelPotionOpportunity
             // imminent death and a critically wounded forecast victim still
             // release every useful bottle, including repeated free actions.
             var emergency = LastChance(root, owner, party, forecast);
-            var full = root.HeldPotionCount(owner) >= owner.MaxPotionCount && owner.MaxPotionCount > 0;
+            var full = root.HeldPotionCount(owner) >= root.PotionCapacity(owner) && root.PotionCapacity(owner) > 0;
             if (!emergency && !full) continue;
             foreach (var potion in root.UsablePotions(owner))
             foreach (var target in root.PotionTargets(potion))
@@ -203,7 +203,7 @@ public static class KernelPotionOpportunity
             // Resolve an eligible offensive/draw/choice bottle first, through
             // the existing use-and-recapture path. An unresolved AnyPlayer
             // chooser is not evidence that block has zero future utility.
-            foreach (var nextOwner in (actors ?? root.Party).Where(p => root.CanAct(p) && p.CanUseOrRemovePotions))
+            foreach (var nextOwner in (actors ?? root.Party).Where(p => root.CanAct(p) && root.CanUsePotions(p)))
             foreach (var next in root.UsablePotions(nextOwner).Where(q => q.GetType() != typeof(BlockPotion)))
             {
                 if (request?.IsStopped == true) return null;
@@ -245,7 +245,7 @@ public static class KernelPotionOpportunity
             var bestMissing = 0;
             foreach (var target in targets)
             {
-                if (target is not { IsAlive: true } || target.Player is null) continue;
+                if (target is null || root.Hp(target) <= 0 || target.Player is null) continue;
                 var missing = root.MaxHp(target) - root.Hp(target);
                 if (missing <= bestMissing) continue;
                 bestMissing = missing;
@@ -257,7 +257,7 @@ public static class KernelPotionOpportunity
         // IntangiblePower 时才允许 Boss 开幕使用。
         if (name is "FirePotion" or "PotionShapedRock" or "ExplosiveAmpoule")
         {
-            var enemies = targets.Where(t => t is { IsAlive: true, Monster: not null }).ToArray();
+            var enemies = targets.Where(t => t is { Monster: not null } && root.Hp(t) > 0).ToArray();
             if (enemies.Length == 0) return null;
             if (enemies.All(t => root.Power<IntangiblePower>(t!) > 0)) return null;
         }
@@ -446,12 +446,12 @@ public static class KernelPotionOpportunity
         if (name == "ExplosiveAmpoule") return (damage + saved, damage >= 30);
         if (name is "FirePotion" or "PotionShapedRock")
         {
-            var nominal = potion.DynamicVars.Values.Where(v => v.Name == "Damage").Sum(v => (double)v.BaseValue);
+            var nominal = (double)root.PotionValue(potion, "Damage");
             return (damage + saved, nominal > 0 && damage >= nominal);
         }
         if (name == "BloodPotion" && target is not null)
         {
-            var dose = Math.Floor(root.MaxHp(target) * (double)potion.DynamicVars["HealPercent"].BaseValue / 100);
+            var dose = Math.Floor(root.MaxHp(target) * (double)root.PotionValue(potion, "HealPercent") / 100);
             var useful = after.Hp(target) - root.Hp(target);
             return (useful, dose > 0 && useful >= dose);
         }

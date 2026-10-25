@@ -48,7 +48,7 @@ internal static class MixedRuntimePacingScenarios
             ("team", TeamCadence), ("finished", FinishedCleanup), ("delay", DelayedCard),
             ("invalid", InvalidProposal), ("pause", PauseAndBusy), ("flash", FlashCadence),
             ("enqueue", SuccessfulQueueClock), ("resume", ResumedCardClock),
-            ("focus", ExplicitFocusRetiresOnlyUnsubmittedCard) })
+            ("focus", ExplicitFocusRetiresOnlyUnsubmittedCard), ("material-choices", MaterialChoiceRetirement) })
             if (selected is null || selected == test.Name)
             { test.Body(); Console.WriteLine("PASS: mixed runtime pacing " + test.Name); }
     }
@@ -143,11 +143,13 @@ internal static class MixedRuntimePacingScenarios
             AccessTools.Field(typeof(KernelCombatPlanner), "tournamentRun").SetValue(Planner, background);
             AutoPilot.Set(Human.NetId, false); active = this;
         }
-        internal object Prepare(int seat, Creature? target = null)
+        internal object Prepare(int seat, Creature? target = null, bool withChoiceContract = false)
         {
             var player = Bots[seat]; var card = player.PlayerCombatState!.Hand.Cards.First();
             var decision = new TeamCombatPlanner.Decision(player,
-                new BotBrain.CombatMove(card, target ?? Enemy, 10, "runtime-cadence-fixture"), 1);
+                new BotBrain.CombatMove(card, target ?? Enemy, 10, "runtime-cadence-fixture") {
+                    TurnStartChoices = withChoiceContract
+                        ? new(1, 2, new Dictionary<ulong, int> { [player.NetId] = 2 }, true, []) : null }, 1);
             var type = AccessTools.Inner(typeof(BotRuntime), "PendingCardSubmission");
             var pending = Activator.CreateInstance(type, Instance, null,
                 [Combat, decision, KernelCombatPlanner.Status.Ready, "剧本", Now], null)!;
@@ -312,6 +314,20 @@ internal static class MixedRuntimePacingScenarios
         Check(s.Pending is null && s.Submitted.Count == 2,
             "the focus command must take effect at the next stable submission boundary");
     }
+
+    private static void MaterialChoiceRetirement()
+    {
+        using var s = new Scope(); s.Prepare(0); s.Tick(1000); s.Tick(2500);
+        s.Prepare(1, withChoiceContract: true); s.Tick(2600);
+        BotRuntime.ExternalInputSettled();
+        Check(s.Pending is null && s.Submitted.Count == 1,
+            "material human input must retire an unsubmitted card's old-root choice contract");
+        s.Prepare(1); s.Tick(3999);
+        Check(s.Submitted.Count == 1, "choice retirement must preserve the original team card deadline");
+        s.Tick(4000);
+        Check(s.Submitted.Count == 2 && s.Submitted[^1].At == 4000 && s.Enemy.CurrentHp == 488,
+            "a re-prepared physical card must pay and land at the existing 1500ms deadline after its choice lease retires");
+    }
     private static void SetFocus(uint? target)
         => AccessTools.Property(typeof(BotCooperation), "FocusTarget").SetValue(null, target);
     private static bool Enqueue(GameAction __0, ulong __1)
@@ -339,3 +355,7 @@ internal static class MixedRuntimePacingScenarios
     private static void Check(bool okay, string message)
     { if (!okay) throw new InvalidOperationException("Mixed runtime pacing: " + message); }
 }
+
+// R2 actual 2026-10-25: material-prepared-choice build0 / named RED1 / exact restore / build0 / GREEN0.
+// Private receipt: work/mixed-quality-fix-20261025T083140Z/choice-lease-r2/receipts.json
+// System.InvalidOperationException: Mixed runtime pacing: material human input must retire an unsubmitted card's old-root choice contract

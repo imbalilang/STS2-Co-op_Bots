@@ -1,8 +1,10 @@
-using MegaCrit.Sts2.Core.Commands.Builders;
+﻿using MegaCrit.Sts2.Core.Commands.Builders;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Powers;
+using CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors.Hooks.Attack;
 using CoopBots.Kernel.Vendor.Engine.Common;
 using CoopBots.Kernel.Vendor.Engine.InCombat.Mirrors;
 
@@ -19,10 +21,17 @@ internal sealed partial class CombatPredictionSimulator
         return BeginAttackContext(command);
     }
 
+    // Upstream completes paired powers from the current listener list. A
+    // multiplayer actor can die to thorns during its own attack and disappear
+    // from that list. Retain only the paired start listeners until completion
+    // (owner stutter/Vigor repair, 2026-10-25), never across a settled fork.
+    private Dictionary<AttackCommand, AbstractModel[]>? pairedAttackListeners;
     public AttackCommand BeginAttackContext(AttackCommand command)
     {
         _ = command.Attacker
             ?? throw new InvalidOperationException("Attack context must have an attacker.");
+        var paired = State.IterateHookListeners().Where(p => p is VigorPower or GigantificationPower).ToArray();
+        if (paired.Length > 0) (pairedAttackListeners ??= new())[command] = paired;
         HookMirrors.BeforeAttack(this, command);
         return command;
     }
@@ -55,20 +64,25 @@ internal sealed partial class CombatPredictionSimulator
 
     public void EndAttackContext(AttackCommand attackContext, bool completed = true)
     {
-        if (!completed)
+        try
         {
-            HookMirrors.AbortAttack(this, attackContext);
-            return;
+            if (!completed) { HookMirrors.AbortAttack(this, attackContext); return; }
+            Creature attacker = attackContext.Attacker
+                ?? throw new InvalidOperationException("Attack context must have an attacker.");
+            History.CreatureAttacked(attacker, FlattenAttackResults(attackContext));
+            if (State.CombatState is ICombatPredictionCardEventSink eventSink)
+                eventSink.RecordCreatureAttacked(attacker);
+            HookMirrors.AfterAttack(this, attackContext);
         }
-
-        Creature attacker = attackContext.Attacker
-            ?? throw new InvalidOperationException("Attack context must have an attacker.");
-        History.CreatureAttacked(
-            attacker,
-            FlattenAttackResults(attackContext));
-        if (State.CombatState is ICombatPredictionCardEventSink eventSink)
-            eventSink.RecordCreatureAttacked(attacker);
-        HookMirrors.AfterAttack(this, attackContext);
+        finally
+        {
+            if (pairedAttackListeners?.Remove(attackContext, out var paired) == true)
+            {
+                var context = new AfterAttackMirrorContext { Simulator = this, Command = attackContext };
+                foreach (var listener in paired)
+                    AfterAttackMirrors.CompleteOrAbortPairedState(listener, context, completed);
+            }
+        }
     }
 
     /// <summary>

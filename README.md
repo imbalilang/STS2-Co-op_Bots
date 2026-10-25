@@ -1,18 +1,18 @@
-﻿# Co-op Bots / 联机机器人
+# Co-op Bots / 联机机器人
 
 为《杀戮尖塔 2》的官方多人房间加入可配置的 AI 队友。Bot 使用真实玩家席位，通过游戏的动作队列同步出牌、选牌和局外决策。
 
 Configurable AI teammates for Slay the Spire 2's official multiplayer lobbies. Contributions from developers and coding agents are welcome; start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## 最新更新 / Latest：0.39.4（2026-10-24）
+## 最新更新 / Latest：0.40.0（2026-10-25）
 
-- 混合局恢复稳定剧本续打，真人结束前后使用同一套完整锦标赛；真人出牌不再逐张触发前台重搜。
-- 真人行动时，默认 Pro / Cheated 全队按约 1.5 秒一张卡的节奏提交；Flash 保留 0.5 秒。真人结束后取消人为间隔，按现有剧本快速收尾。
-- 混合局后台改为真人输入驱动的实际盘面比较，不阻塞可执行旧剧本；全 Bot 保留原有未来回合优化。
-- 修复完成结果重复采纳、提交前误消费游标及超时重搜循环；补齐冷开局分帧、取消、托管切换和死亡席位回归。
-- 发布构建、完整回归和故障注入证据随 GitHub Release 提供。尚未完成双客户端混合局实机验收；首次搜索、动画和同步选择仍可能延长实际出牌间隔，未对实机延迟或胜率改善作结论。
+- 混合局的完整锦标赛、药水比较与剧本重放在后台运行，主线程负责实盘捕获、校验和动作提交，修复搜索造成的画面卡顿与拖牌受阻。
+- 真人结束回合不再无谓取消搜索；提前计算并保留收尾动作，提交仍等待真人结束。目标死亡时保留同一实体牌并修复合法目标，回合开始选择合同及时退休，减少剧本中断与额外长考。
+- 真人结束前后保持同一套完整锦标赛。默认 Pro / Cheated 全队约 1.5 秒提交一张卡，Flash 保留 0.5 秒；真人结束后取消人为间隔，按现有剧本快速收尾。
+- 必要搜索与可选后台比较分开预算；保留已结算前缀，修复结果重复采纳、药水库存变化和超时重搜循环。混合局按真人输入驱动后台比较，全 Bot 保留未来回合优化。
+- 已通过纯 Bot 局与人机混合局强度测试。发布构建、完整回归、故障注入及双 DLL 哈希以 GitHub Release 附件为准。
 
-Mixed tables now retain executable scripts and use the same full tournament before and after human EndTurn. A shared team clock spaces Pro / Cheated cards by about 1.5 seconds while humans act, then removes artificial delay for scripted cleanup. Human inputs drive optional current-board replanning; all-Bot future-turn optimization remains. Fixes result reuse, premature cursor consumption and deadline loops, with release validation attached on GitHub. Two-client gameplay, actual latency and win-rate improvements remain unverified.
+Mixed-table tournaments, potion comparisons and replay now run in the background to address rendering and card-drag stalls. Human EndTurn preserves ongoing search and prepared cleanup; dead targets and completed choice contracts no longer discard otherwise executable scripts. The same full tournament remains active in both human phases, with a shared 1.5-second Pro / Cheated cadence and no artificial delay after humans finish. All-Bot future-turn optimization is retained. Both all-Bot and mixed-table strength tests have passed. Release validation accompanies the GitHub Release.
 
 完整变更见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -22,7 +22,7 @@ Mixed tables now retain executable scripts and use the same full tournament befo
 
 - 战斗使用 CombatSolver 0.41.0 导入内核，结合四席联合规划、有界搜索、完整状态核对和失效后重新规划。
 - 选牌、药水与跨回合计划携带执行合同；单回合力量/敏捷按实际持续时间估值，升级和构筑使用卡组上下文。
-- v21 修复多人初始化阶段带抽弃牌能力时的等待问题。历史完整门禁通过 **887 项**；后续同一冻结候选五局全 Bot A10 实机结果为 **0 通关、5 自然失败、0 卡死**。这五局属于开发诊断样本，尚未证明 50% 通关目标，也未完成混合桌验收。
+- v21 修复多人初始化阶段带抽弃牌能力时的等待问题。历史完整门禁通过 **887 项**；后续同一冻结候选五局全 Bot A10 实机结果为 **0 通关、5 自然失败、0 卡死**。这五局属于当时的开发诊断样本，未证明 50% 通关目标；当时未完成混合桌验收。
 - 公开 Agent 规范、九项项目技能、类型加载检查、内核回归、原生对照入口、种子划分及日志归档/分析工具。
 
 完整变更见 [CHANGELOG.md](CHANGELOG.md)；当前证据、边界与优化优先级见 [docs/STATUS.md](docs/STATUS.md)。旧候选记录保存在 [历史说明](docs/LOCAL_CANDIDATE_HISTORY.md)。

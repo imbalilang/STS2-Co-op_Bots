@@ -217,6 +217,11 @@ internal static class BotTurnStartChoiceSync
     private static void ActionEnqueued(GameAction action)
     {
         if (installed is null) return;
+        // Native StartTurn opens the action queue immediately before invoking
+        // TurnStarted. A human card can arrive in that small window. Retire
+        // only after every recorded setup really reached Play and every menu
+        // was consumed; another peer retires independently on its own board.
+        if (TryRetireCompletedLease()) return;
         if (action.Id == installed.Action && action.OwnerId == installed.Owner)
         {
             boundAction = action;
@@ -224,8 +229,19 @@ internal static class BotTurnStartChoiceSync
             action.AfterFinished += AfterFinished;
             return;
         }
-        if (ExternalCombatInput.IsHumanAction(action))
+        if (ExternalCombatInput.IsHumanAction(action) && !KernelInputObserver.IsReadinessOnly(action))
             ExternalInput("human action enqueued before planned turn-start choices");
+    }
+
+    private static bool TryRetireCompletedLease()
+    {
+        if (!active || combat is null || contract is null || index != contract.Choices.Count
+            || combat.RoundNumber != contract.ToRound || contract.OwnersTurnNumbers.Any(pair =>
+                combat.Players.FirstOrDefault(player => player.NetId == pair.Key) is not { } player
+                || player.PlayerCombatState?.TurnNumber != pair.Value
+                || player.Creature.IsAlive && player.PlayerCombatState.Phase != PlayerTurnPhase.Play)) return false;
+        CompletePlayerTurn(combat);
+        return true;
     }
 
     private static string ActionKey(GameAction action) => action switch {
